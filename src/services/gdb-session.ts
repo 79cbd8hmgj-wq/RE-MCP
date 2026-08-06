@@ -125,10 +125,10 @@ export class GdbSession {
     await previous;
 
     try {
+      await this.connect();
       if (this.#state !== "stopped") {
         throw new Error(`GDB command requires stopped state; current state is ${this.#state}`);
       }
-      await this.connect();
       const socket = this.#socket;
       if (socket === null || socket.destroyed) {
         throw new Error("GDB RSP session is unavailable");
