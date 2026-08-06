@@ -14,7 +14,7 @@ export function buildDesmumeArguments(
 ): readonly string[] {
   validateGdbPort(port);
   if (mode === "macos-cocoa") {
-    return [romPath];
+    return [romPath, port.toString(10)];
   }
   return [`--arm9gdb=${port}`, romPath];
 }
