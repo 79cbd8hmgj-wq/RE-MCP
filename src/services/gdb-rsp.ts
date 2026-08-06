@@ -1,6 +1,6 @@
 import net from "node:net";
 
-function checksum(payload: string): string {
+export function rspChecksum(payload: string): string {
   let sum = 0;
   for (const byte of Buffer.from(payload, "ascii")) {
     sum = (sum + byte) & 0xff;
@@ -9,7 +9,34 @@ function checksum(payload: string): string {
 }
 
 export function encodeRspPacket(payload: string): string {
-  return `$${payload}#${checksum(payload)}`;
+  return `$${payload}#${rspChecksum(payload)}`;
+}
+
+export interface ParsedRspPacket {
+  readonly payload: string;
+  readonly raw: string;
+  readonly consumed: number;
+}
+
+export function parseRspPacket(buffer: string): ParsedRspPacket | null {
+  const start = buffer.indexOf("$");
+  if (start < 0) return null;
+
+  const marker = buffer.indexOf("#", start + 1);
+  if (marker < 0 || buffer.length < marker + 3) return null;
+
+  const payload = buffer.slice(start + 1, marker);
+  const expected = buffer.slice(marker + 1, marker + 3).toLowerCase();
+  if (!/^[0-9a-f]{2}$/.test(expected) || rspChecksum(payload) !== expected) {
+    throw new Error("GDB RSP reply checksum mismatch");
+  }
+
+  const end = marker + 3;
+  return {
+    payload,
+    raw: buffer.slice(start, end),
+    consumed: end,
+  };
 }
 
 export interface RspReply {
@@ -46,19 +73,19 @@ export async function sendRspCommand(
         finishError(new Error("GDB RSP reply exceeded configured limit"));
         return;
       }
-      const start = buffer.indexOf("$");
-      const marker = start >= 0 ? buffer.indexOf("#", start + 1) : -1;
-      if (start < 0 || marker < 0 || buffer.length < marker + 3) return;
 
-      const payload = buffer.slice(start + 1, marker);
-      const expected = buffer.slice(marker + 1, marker + 3).toLowerCase();
-      if (checksum(payload) !== expected) {
-        finishError(new Error("GDB RSP reply checksum mismatch"));
+      let packet: ParsedRspPacket | null;
+      try {
+        packet = parseRspPacket(buffer);
+      } catch (error) {
+        finishError(error instanceof Error ? error : new Error(String(error)));
         return;
       }
+      if (packet === null) return;
+
       settled = true;
       socket.write("+", "ascii", () => socket.end());
-      resolve({ payload, raw: buffer.slice(0, marker + 3) });
+      resolve({ payload: packet.payload, raw: buffer.slice(0, packet.consumed) });
     });
   });
 }
