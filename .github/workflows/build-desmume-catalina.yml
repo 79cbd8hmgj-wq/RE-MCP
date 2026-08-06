@@ -17,6 +17,39 @@ jobs:
         run: |
           git clone --depth 1 --branch release_0_9_13 \
             https://github.com/TASEmulators/desmume.git /tmp/desmume
+      - name: Add RE-MCP ARM9 autostart hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/tmp/desmume/desmume/src/frontend/cocoa/userinterface/appDelegate.mm')
+          text = path.read_text(encoding='utf-8')
+          signature = '- (void)applicationDidFinishLaunching:(NSNotification *)aNotification\n{'
+          start = text.index(signature)
+          anchor = '\tEmuControllerDelegate *emuControl = (EmuControllerDelegate *)[emuControlController content];\n'
+          position = text.index(anchor, start) + len(anchor)
+          hook = r'''
+#if defined(GDB_STUB)
+	NSString *reMcpPortString = [[[NSProcessInfo processInfo] environment] objectForKey:@"RE_MCP_ARM9_GDB_PORT"];
+	if (reMcpPortString != nil && [reMcpPortString length] > 0)
+	{
+		const NSInteger reMcpPort = [reMcpPortString integerValue];
+		if (reMcpPort >= 1024 && reMcpPort <= 65535)
+		{
+			CocoaDSCore *reMcpCore = (CocoaDSCore *)[cdsCoreController content];
+			ClientExecutionControl *reMcpExecControl = [reMcpCore execControl];
+			reMcpExecControl->SetGDBStubARM9Enabled(true);
+			reMcpExecControl->SetGDBStubARM9Port((uint16_t)reMcpPort);
+			reMcpExecControl->SetIsGDBStubStarted(true);
+		}
+	}
+#endif
+'''
+          text = text[:position] + hook + text[position:]
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Discover Xcode projects and schemes
         shell: bash
         run: |
@@ -69,18 +102,20 @@ jobs:
           cat > "$root/run-desmume-debug.command" <<'SCRIPT'
           #!/bin/bash
           set -euo pipefail
-          if [[ $# -ne 1 ]]; then
-            echo "usage: $0 /absolute/path/to/game.nds" >&2
+          if [[ $# -ne 2 ]]; then
+            echo "usage: $0 /absolute/path/to/game.nds ARM9_GDB_PORT" >&2
             exit 64
           fi
           app_dir="$(cd "$(dirname "$0")" && pwd)"
-          open -n -a "$app_dir/DeSmuME Debug.app" --args "$1"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/DeSmuME Debug.app/Contents/Info.plist")"
+          exec env RE_MCP_ARM9_GDB_PORT="$2" \
+            "$app_dir/DeSmuME Debug.app/Contents/MacOS/$executable" "$1"
           SCRIPT
           chmod +x "$root/run-desmume-debug.command"
           printf '%s\n' \
-            'This is an Intel x86_64 DeSmuME dev+ build targeting macOS 10.15.' \
-            'Open Tools > Show GDB Stub Control and start ARM9 on port 20000.' \
-            'The next RE-MCP patch will automate that control path.' \
+            'Intel x86_64 DeSmuME dev+ build targeting macOS 10.15.' \
+            'The launcher starts the ARM9 GDB stub automatically from its second argument.' \
+            'RE-MCP mode: macos-cocoa.' \
             > "$root/README.txt"
           ditto -c -k --sequesterRsrc --keepParent "$root" /tmp/desmume-catalina-debug.zip
           shasum -a 256 /tmp/desmume-catalina-debug.zip > /tmp/desmume-catalina-debug.zip.sha256
