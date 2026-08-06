@@ -44,8 +44,9 @@ jobs:
       - name: Build Intel dev+ application for Catalina
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           source /tmp/desmume-selection.env
+          set +e
           xcodebuild \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -55,7 +56,15 @@ jobs:
             ONLY_ACTIVE_ARCH=YES \
             MACOSX_DEPLOYMENT_TARGET=10.15 \
             CODE_SIGNING_ALLOWED=NO \
-            build | tee /tmp/desmume-build.log
+            build 2>&1 | tee /tmp/desmume-build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 ]]; then
+            echo '===== Xcode failure summary ====='
+            grep -nE '(^|[[:space:]])(error:|fatal error:)|BUILD FAILED|CompileC|Ld ' \
+              /tmp/desmume-build.log | tail -n 250 | tee /tmp/desmume-build-errors.txt || true
+            exit "$status"
+          fi
       - name: Assemble and inspect Catalina bundle
         shell: bash
         run: |
@@ -91,15 +100,18 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$root" /tmp/desmume-catalina-debug.zip
           shasum -a 256 /tmp/desmume-catalina-debug.zip > /tmp/desmume-catalina-debug.zip.sha256
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: desmume-catalina-debug-bundle
           path: |
             /tmp/desmume-catalina-debug.zip
             /tmp/desmume-catalina-debug.zip.sha256
             /tmp/xcode-discovery.txt
+            /tmp/desmume-selection.env
             /tmp/desmume-build.log
+            /tmp/desmume-build-errors.txt
             /tmp/desmume-binary.txt
             /tmp/desmume-architectures.txt
             /tmp/desmume-minos.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
