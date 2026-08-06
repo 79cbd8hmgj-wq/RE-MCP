@@ -31,14 +31,22 @@ test("Catalina workflow pins Intel source and target", async () => {
   assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
 });
 
-test("Catalina workflow forces the OpenGL backend", async () => {
-  const workflow = await read(workflowPath);
+test("Catalina patch disables Metal guards in the three failing translation units", async () => {
   const patch = await read(patchPath);
+  assert.match(patch, /DisplayWindowController\.mm/);
+  assert.match(patch, /cocoa_GPU\.mm/);
+  assert.match(patch, /MacScreenshotCaptureTool\.mm/);
+  assert.match(patch, /RE_MCP_CATALINA_USE_METAL/);
+  assert.match(patch, /replace_metal_guards/);
+  assert.match(patch, /expected at least one ENABLE_APPLE_METAL guard/);
+});
+
+test("Catalina workflow rejects remaining Metal compilation or symbols", async () => {
+  const workflow = await read(workflowPath);
   assert.match(workflow, /EXCLUDED_SOURCE_FILE_NAMES=MacMetalDisplayView\.mm/);
+  assert.match(workflow, /MacMetalDisplayView\.mm was still compiled/);
   assert.match(workflow, /Metal frontend symbols remained in the OpenGL-only build/);
-  assert.match(workflow, /RE_MCP_FORCE_OPENGL/);
-  assert.match(patch, /#undef ENABLE_APPLE_METAL/);
-  assert.match(patch, /built-in OpenGL fallback paths/);
+  assert.match(workflow, /RE_MCP_CATALINA_USE_METAL/);
 });
 
 test("Catalina launcher validates and directly execs the app binary", async () => {
