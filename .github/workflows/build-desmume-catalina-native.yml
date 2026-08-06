@@ -128,14 +128,18 @@ jobs:
           SCRIPT
           chmod +x "$root/run-desmume-debug.command"
 
+          inspection_binary=/tmp/desmume-catalina-inspection-binary
+          cp "$binary" "$inspection_binary"
+          chmod +x "$inspection_binary"
+
           file "$binary" | tee /tmp/desmume-binary.txt
-          architectures="$(lipo -archs "$binary")"
+          architectures="$(lipo -archs "$inspection_binary")"
           printf '%s\n' "$architectures" | tee /tmp/desmume-architectures.txt
           [[ "$architectures" == "x86_64" ]]
-          otool -L "$binary" | tee /tmp/desmume-dependencies.txt
-          otool -l "$binary" > /tmp/desmume-load-commands.txt
+          otool -L "$inspection_binary" | tee /tmp/desmume-dependencies.txt
+          otool -l "$inspection_binary" > /tmp/desmume-load-commands.txt
 
-          python3 - "$binary" <<'PY' | tee /tmp/desmume-minos.txt
+          python3 - "$inspection_binary" <<'PY' | tee /tmp/desmume-minos.txt
           import re
           import subprocess
           import sys
