@@ -29,9 +29,10 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           root="/tmp/re-mcp-${version}"
-          mkdir -p "$root"
+          mkdir -p "$root/dist"
           cp package.json README.md mcp-config.example.json "$root/"
-          cp -R dist scripts "$root/"
+          cp -R scripts "$root/"
+          cp -R dist/src/. "$root/dist/"
           (
             cd "$root"
             npm install --omit=dev --ignore-scripts
