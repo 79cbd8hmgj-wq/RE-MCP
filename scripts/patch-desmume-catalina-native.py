@@ -5,8 +5,10 @@ import sys
 
 TARGET = pathlib.Path("desmume/src/frontend/cocoa/userinterface/appDelegate.mm")
 MARKER = "RE_MCP_ARM9_GDB_PORT"
-ANCHOR = "\t[emuControl appInit];\n\t[prefWindowDelegate markUnsupportedOpenGLMSAAMenuItems];"
-INSERTION = r'''	[emuControl appInit];
+INCLUDE_ANCHOR = '#import "cocoa_util.h"\n'
+INCLUDE_INSERTION = '#import "cocoa_util.h"\n\n#include <stdlib.h>\n'
+STARTUP_ANCHOR = "\t[emuControl appInit];\n\t[prefWindowDelegate markUnsupportedOpenGLMSAAMenuItems];"
+STARTUP_INSERTION = r'''	[emuControl appInit];
 
 #ifdef GDB_STUB
 	const char *reMcpArm9GdbPort = getenv("RE_MCP_ARM9_GDB_PORT");
@@ -26,14 +28,28 @@ INSERTION = r'''	[emuControl appInit];
 	[prefWindowDelegate markUnsupportedOpenGLMSAAMenuItems];'''
 
 
+def replace_exactly_once(source: str, anchor: str, replacement: str, label: str) -> str:
+    if source.count(anchor) != 1:
+        raise ValueError(f"expected exactly one DeSmuME 0.9.13 {label} anchor; source layout changed")
+    return source.replace(anchor, replacement, 1)
+
+
 def apply_patch(source: str) -> str:
     if MARKER in source:
         return source
-    if source.count(ANCHOR) != 1:
-        raise ValueError(
-            "expected exactly one DeSmuME 0.9.13 appInit anchor; source layout changed"
-        )
-    return source.replace(ANCHOR, INSERTION, 1)
+
+    patched = replace_exactly_once(
+        source,
+        INCLUDE_ANCHOR,
+        INCLUDE_INSERTION,
+        "include",
+    )
+    return replace_exactly_once(
+        patched,
+        STARTUP_ANCHOR,
+        STARTUP_INSERTION,
+        "appInit",
+    )
 
 
 def main() -> int:
