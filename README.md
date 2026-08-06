@@ -23,6 +23,7 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 ### DeSmuME and ARM9 GDB
 
 - Start, inspect, and stop one server-owned DeSmuME process
+- Linux CLI and macOS Catalina Cocoa launcher modes
 - Probe and wait for the owned ARM9 GDB port
 - Read the raw ARM9 register packet
 - Read up to 4096 bytes of ARM9 memory
@@ -35,28 +36,53 @@ RE-MCP does not currently expose breakpoints, execution control, register writes
 - Node.js 20 or newer
 - An MCP host that can launch local stdio servers
 - A dedicated workspace containing the intended repositories and private ROM-development inputs
-- For emulator tools, the extracted Linux DeSmuME debug bundle
+- For emulator tools, either the Linux bundle or the Catalina debug bundle
 
-## Downloadable bundle
+## Downloadable RE-MCP bundle
 
-The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` artifact containing:
-
-- Compiled JavaScript
-- Production dependencies
-- Configuration template
-- Installation self-check
-- SHA-256 checksum
+The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` artifact containing compiled JavaScript, production dependencies, a configuration template, an installation self-check, and a SHA-256 checksum.
 
 After downloading and extracting the archive:
 
 ```bash
-cd re-mcp-0.6.0
+cd re-mcp-0.7.0
 node scripts/check-install.mjs .
 ```
 
 Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
 
-## Build from source
+## Build the Catalina DeSmuME debug bundle
+
+The hosted workflow builds DeSmuME 0.9.13's documented macOS **dev+** configuration as Intel `x86_64`, with a macOS 10.15 deployment target and an RE-MCP-specific ARM9 GDB autostart hook.
+
+A local builder is also included:
+
+```bash
+chmod +x scripts/build-desmume-catalina.sh
+./scripts/build-desmume-catalina.sh
+```
+
+Output:
+
+```text
+.build/desmume-catalina/output/desmume-catalina-debug.zip
+.build/desmume-catalina/output/desmume-catalina-debug.zip.sha256
+```
+
+Place the extracted bundle under the dedicated RE-MCP workspace. Start it with `desmume_start` using:
+
+```json
+{
+  "launcher": "private/desmume-catalina/run-desmume-debug.command",
+  "rom": "private/Bakugan.nds",
+  "mode": "macos-cocoa",
+  "arm9GdbPort": 20000
+}
+```
+
+The launcher passes the selected port through `RE_MCP_ARM9_GDB_PORT`; the patched dev+ application starts its ARM9 GDB stub automatically.
+
+## Build RE-MCP from source
 
 ```bash
 npm install
@@ -73,12 +99,18 @@ node dist/index.js
 
 The server refuses to start without an explicit workspace root.
 
-## DeSmuME launcher contract
+## Launcher contracts
 
-The emulator launcher follows the verified Bakugan debug-bundle interface:
+Linux:
 
 ```bash
 run-desmume-debug.sh --arm9gdb=20000 /path/to/game.nds
+```
+
+Catalina:
+
+```bash
+run-desmume-debug.command /path/to/game.nds 20000
 ```
 
 RE-MCP owns at most one emulator child process per server instance. It rejects duplicate starts, captures bounded logs, and terminates the owned emulator during MCP shutdown.
