@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  type ChildProcessByStdio,
+} from "node:child_process";
+import type { Readable } from "node:stream";
 
 export interface OwnedProcessStart {
   readonly executable: string;
@@ -22,8 +26,10 @@ export interface OwnedProcessStatus {
   readonly lastSignal: NodeJS.Signals | null;
 }
 
+type OwnedChild = ChildProcessByStdio<null, Readable, Readable>;
+
 interface ActiveProcess {
-  readonly child: ChildProcessWithoutNullStreams;
+  readonly child: OwnedChild;
   readonly startedAt: string;
   readonly executable: string;
   readonly args: readonly string[];
