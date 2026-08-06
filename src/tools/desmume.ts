@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import type { ServerConfig } from "../config.js";
 import { resolveInside } from "../security/paths.js";
+import { sendRspCommand, validateMemoryRead } from "../services/gdb-rsp.js";
 import { OwnedProcessManager } from "../services/owned-process.js";
 import { probeTcpPort, waitForTcpPort } from "../services/tcp-probe.js";
 import { buildDesmumeArguments, validateGdbPort } from "./desmume-policy.js";
@@ -63,11 +64,7 @@ export function registerDesmumeTools(
           args: buildDesmumeArguments(port, romPath),
           cwd: path.dirname(launcherPath),
           maxOutputBytes: config.maxOutputBytes,
-          metadata: {
-            emulator: "desmume",
-            arm9GdbPort: port,
-            rom: romPath,
-          },
+          metadata: { emulator: "desmume", arm9GdbPort: port, rom: romPath },
         });
         return textResult(status);
       } catch (error) {
@@ -76,31 +73,22 @@ export function registerDesmumeTools(
     },
   );
 
-  server.tool(
-    "desmume_probe_gdb",
-    "Probe the localhost ARM9 GDB port belonging to the owned DeSmuME session.",
-    {},
-    async () => {
-      try {
-        const result = await probeTcpPort("127.0.0.1", ownedGdbPort(manager), 1_000);
-        return textResult(result, !result.reachable);
-      } catch (error) {
-        return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
-      }
-    },
-  );
+  server.tool("desmume_probe_gdb", "Probe the owned localhost ARM9 GDB port.", {}, async () => {
+    try {
+      const result = await probeTcpPort("127.0.0.1", ownedGdbPort(manager), 1_000);
+      return textResult(result, !result.reachable);
+    } catch (error) {
+      return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
+    }
+  });
 
   server.tool(
     "desmume_wait_for_gdb",
-    "Wait a bounded interval for the owned DeSmuME ARM9 GDB port to become reachable.",
+    "Wait a bounded interval for the owned ARM9 GDB port.",
     { timeoutMs: z.number().int().min(100).max(30_000).default(10_000) },
     async ({ timeoutMs }) => {
       try {
-        const result = await waitForTcpPort(
-          "127.0.0.1",
-          ownedGdbPort(manager),
-          timeoutMs,
-        );
+        const result = await waitForTcpPort("127.0.0.1", ownedGdbPort(manager), timeoutMs);
         return textResult(result, !result.reachable);
       } catch (error) {
         return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
@@ -108,16 +96,54 @@ export function registerDesmumeTools(
     },
   );
 
+  server.tool("desmume_read_register_packet", "Read the raw ARM9 GDB register packet.", {}, async () => {
+    try {
+      const reply = await sendRspCommand(
+        "127.0.0.1",
+        ownedGdbPort(manager),
+        "g",
+        3_000,
+        config.maxOutputBytes,
+      );
+      return textResult({ registerHex: reply.payload, byteLength: reply.payload.length / 2 });
+    } catch (error) {
+      return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
+    }
+  });
+
   server.tool(
-    "desmume_stop",
-    "Stop only the DeSmuME process owned by this RE-MCP server instance.",
-    {},
-    async () => {
+    "desmume_read_memory",
+    "Read at most 4096 bytes from ARM9 memory through GDB RSP.",
+    {
+      address: z.number().int().min(0).max(0xffffffff),
+      length: z.number().int().min(1).max(4096),
+    },
+    async ({ address, length }) => {
       try {
-        return textResult(await manager.stop());
+        validateMemoryRead(address, length);
+        const command = `m${address.toString(16)},${length.toString(16)}`;
+        const reply = await sendRspCommand(
+          "127.0.0.1",
+          ownedGdbPort(manager),
+          command,
+          3_000,
+          Math.min(config.maxOutputBytes, length * 2 + 64),
+        );
+        if (reply.payload.startsWith("E")) {
+          throw new Error(`GDB memory read failed: ${reply.payload}`);
+        }
+        return textResult({ address, length, dataHex: reply.payload });
       } catch (error) {
         return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
       }
     },
   );
+
+  server.tool("desmume_stop", "Stop only the owned DeSmuME process.", {}, async () => {
+    try {
+      return textResult(await manager.stop());
+    } catch (error) {
+      return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
+    }
+  });
 }
