@@ -6,6 +6,7 @@ WORK_ROOT="${DESMUME_BUILD_ROOT:-$PWD/.build/desmume-catalina}"
 SOURCE_ROOT="$WORK_ROOT/source"
 DERIVED_ROOT="$WORK_ROOT/derived"
 OUTPUT_ROOT="$WORK_ROOT/output"
+PROJECT_LIST="$WORK_ROOT/xcode-projects.txt"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This builder must run on macOS." >&2
@@ -21,15 +22,15 @@ mkdir -p "$WORK_ROOT" "$OUTPUT_ROOT"
 git clone --depth 1 --branch "$SOURCE_TAG" \
   https://github.com/TASEmulators/desmume.git "$SOURCE_ROOT"
 
-mapfile -t projects < <(find "$SOURCE_ROOT" -name '*.xcodeproj' -print)
-if [[ ${#projects[@]} -eq 0 ]]; then
+find "$SOURCE_ROOT" -name '*.xcodeproj' -print > "$PROJECT_LIST"
+if [[ ! -s "$PROJECT_LIST" ]]; then
   echo "No Xcode projects discovered in DeSmuME source." >&2
   exit 1
 fi
 
 project=""
 scheme=""
-for candidate in "${projects[@]}"; do
+while IFS= read -r candidate; do
   listing="$(xcodebuild -project "$candidate" -list 2>/dev/null || true)"
   candidate_scheme="$(printf '%s\n' "$listing" | sed -n '/Schemes:/,$p' | grep -E 'dev\+|Dev\+' | sed 's/^[[:space:]]*//' | head -n1 || true)"
   if [[ -n "$candidate_scheme" ]]; then
@@ -37,14 +38,14 @@ for candidate in "${projects[@]}"; do
     scheme="$candidate_scheme"
     break
   fi
-done
+done < "$PROJECT_LIST"
 
 if [[ -z "$project" || -z "$scheme" ]]; then
   echo "No DeSmuME dev+ scheme was discovered." >&2
-  for candidate in "${projects[@]}"; do
+  while IFS= read -r candidate; do
     echo "===== $candidate =====" >&2
     xcodebuild -project "$candidate" -list >&2 || true
-  done
+  done < "$PROJECT_LIST"
   exit 1
 fi
 
