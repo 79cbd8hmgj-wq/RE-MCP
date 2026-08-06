@@ -4,6 +4,8 @@ import test from "node:test";
 
 import {
   encodeRspPacket,
+  parseRspPacket,
+  rspChecksum,
   sendRspCommand,
   validateMemoryRead,
 } from "../src/services/gdb-rsp.js";
@@ -18,8 +20,27 @@ async function listen(server: net.Server): Promise<number> {
 }
 
 test("encodeRspPacket adds the standard checksum", () => {
+  assert.equal(rspChecksum("OK"), "9a");
   assert.equal(encodeRspPacket("g"), "$g#67");
   assert.equal(encodeRspPacket("m2000000,10"), "$m2000000,10#4c");
+});
+
+test("parseRspPacket accepts a leading acknowledgement", () => {
+  assert.deepEqual(parseRspPacket("+$OK#9a"), {
+    payload: "OK",
+    raw: "$OK#9a",
+    consumed: 7,
+  });
+});
+
+test("parseRspPacket returns null for incomplete packets", () => {
+  assert.equal(parseRspPacket("+"), null);
+  assert.equal(parseRspPacket("$OK"), null);
+  assert.equal(parseRspPacket("$OK#9"), null);
+});
+
+test("parseRspPacket rejects invalid checksums", () => {
+  assert.throws(() => parseRspPacket("$OK#00"), /checksum mismatch/);
 });
 
 test("sendRspCommand validates and returns a reply packet", async () => {
