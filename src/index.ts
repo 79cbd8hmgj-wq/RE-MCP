@@ -13,7 +13,7 @@ import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
 
 const config = loadConfig();
-const server = new McpServer({ name: "re-mcp", version: "0.4.0" });
+const server = new McpServer({ name: "re-mcp", version: "0.5.0" });
 const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
@@ -85,13 +85,13 @@ server.tool(
   {},
   async () =>
     textResult({
-      version: "0.4.0",
+      version: "0.5.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
       mutationPolicy: "Milestone 6E install is dry-run only",
       processPolicy: "One DeSmuME process owned by this server instance",
-      debuggerPolicy: "Localhost ARM9 GDB reachability checks only",
+      debuggerPolicy: "Read-only ARM9 registers and bounded memory reads",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -104,6 +104,8 @@ server.tool(
         "desmume_start",
         "desmume_probe_gdb",
         "desmume_wait_for_gdb",
+        "desmume_read_register_packet",
+        "desmume_read_memory",
         "desmume_stop",
         "server_capabilities",
       ],
