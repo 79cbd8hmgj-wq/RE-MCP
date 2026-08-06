@@ -14,7 +14,7 @@ import { registerDesmumeTools } from "./tools/desmume.js";
 import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
-const server = new McpServer({ name: "re-mcp", version: "0.6.0" });
+const server = new McpServer({ name: "re-mcp", version: "0.7.0" });
 const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
@@ -87,12 +87,12 @@ server.tool(
   {},
   async () =>
     textResult({
-      version: "0.6.0",
+      version: "0.7.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
       mutationPolicy: "Milestone 6E install is dry-run only",
-      processPolicy: "One DeSmuME process owned by this server instance",
+      processPolicy: "One Linux CLI or Catalina Cocoa DeSmuME process owned by this server instance",
       debuggerPolicy: "Read-only ARM9 registers and bounded memory reads",
       evidencePolicy: "Atomic raw evidence under project analysis/generated only",
       tools: [
