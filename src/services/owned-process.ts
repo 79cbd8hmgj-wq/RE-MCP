@@ -101,10 +101,17 @@ export class OwnedProcessManager {
       }
     });
 
-    await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+    } catch (error) {
+      if (this.active === active) {
+        this.active = null;
+      }
+      throw error;
+    }
 
     return this.status();
   }
