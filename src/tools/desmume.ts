@@ -10,7 +10,11 @@ import { resolveInside } from "../security/paths.js";
 import { sendRspCommand, validateMemoryRead } from "../services/gdb-rsp.js";
 import { OwnedProcessManager } from "../services/owned-process.js";
 import { probeTcpPort, waitForTcpPort } from "../services/tcp-probe.js";
-import { buildDesmumeArguments, validateGdbPort } from "./desmume-policy.js";
+import {
+  buildDesmumeArguments,
+  type DesmumeLauncherMode,
+  validateGdbPort,
+} from "./desmume-policy.js";
 
 function textResult(value: unknown, isError = false) {
   return {
@@ -45,13 +49,14 @@ export function registerDesmumeTools(
 
   server.tool(
     "desmume_start",
-    "Start the verified DeSmuME debug launcher with one local ROM and ARM9 GDB port.",
+    "Start the verified Linux CLI or macOS Cocoa DeSmuME launcher with one local ROM.",
     {
       launcher: z.string().min(1),
       rom: z.string().min(1),
+      mode: z.enum(["linux-cli", "macos-cocoa"]).default("linux-cli"),
       arm9GdbPort: z.number().int().default(20000),
     },
-    async ({ launcher, rom, arm9GdbPort }) => {
+    async ({ launcher, rom, mode, arm9GdbPort }) => {
       try {
         const launcherPath = resolveInside(config.workspaceRoot, launcher);
         const romPath = resolveInside(config.workspaceRoot, rom);
@@ -59,12 +64,22 @@ export function registerDesmumeTools(
         await access(launcherPath, fsConstants.X_OK);
         await access(romPath, fsConstants.R_OK);
 
+        const launcherMode = mode as DesmumeLauncherMode;
         const status = await manager.start({
           executable: launcherPath,
-          args: buildDesmumeArguments(port, romPath),
+          args: buildDesmumeArguments(launcherMode, port, romPath),
           cwd: path.dirname(launcherPath),
           maxOutputBytes: config.maxOutputBytes,
-          metadata: { emulator: "desmume", arm9GdbPort: port, rom: romPath },
+          metadata: {
+            emulator: "desmume",
+            launcherMode,
+            arm9GdbPort: port,
+            rom: romPath,
+            gdbStartup:
+              launcherMode === "macos-cocoa"
+                ? "Start ARM9 from Tools > Show GDB Stub Control"
+                : "automatic",
+          },
         });
         return textResult(status);
       } catch (error) {
