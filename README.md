@@ -1,49 +1,62 @@
 # RE-MCP
 
-A safety-first Model Context Protocol server for ROM reverse-engineering workflows.
+A safety-first local Model Context Protocol server for ROM reverse-engineering workflows.
 
-The server targets local **stdio** use and wraps allowlisted repository, verification, ROM-analysis, and emulator operations without exposing an unrestricted shell.
+RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestricted shell.
 
-## Current tools
+## Current capabilities
 
 ### General
 
-- `server_capabilities`
-- `get_project_status`
-- `run_project_verification`
-- `verify_file_sha256`
+- Project Git status
+- Allowlisted npm verification
+- SHA-256 file verification
+- Capability and policy reporting
 
-### Bakugan
+### Bakugan DS
 
-- `bakugan_run_quality_suite`
-- `bakugan_regenerate_m6e_contracts`
-- `bakugan_install_m6e_dry_run`
-- `bakugan_analyze_m6e_roster`
+- Compile, Ruff, mypy, pytest, or full quality suite
+- Regenerate Milestone 6E contracts
+- Run the Milestone 6E installer in dry-run mode
+- Generate the Milestone 6E roster analysis
 
-### DeSmuME
+### DeSmuME and ARM9 GDB
 
-- `desmume_status`
-- `desmume_start`
-- `desmume_stop`
+- Start, inspect, and stop one server-owned DeSmuME process
+- Probe and wait for the owned ARM9 GDB port
+- Read the raw ARM9 register packet
+- Read up to 4096 bytes of ARM9 memory
+- Atomically capture raw registers plus labeled memory regions
 
-The DeSmuME launcher follows the verified Bakugan debug-bundle contract:
-
-```bash
-run-desmume-debug.sh --arm9gdb=20000 /path/to/game.nds
-```
-
-RE-MCP owns at most one emulator child process per server instance. It reports that process's PID and bounded logs, rejects duplicate starts, and stops only that owned child. The emulator is terminated during MCP shutdown.
-
-Save-state loading, screenshots, GDB commands, register access, and memory operations remain unavailable until separate contracts are implemented and tested.
+RE-MCP does not currently expose breakpoints, execution control, register writes, memory writes, or arbitrary GDB commands.
 
 ## Requirements
 
 - Node.js 20 or newer
-- Projects and private ROM-development inputs stored below one dedicated workspace directory
-- An MCP host capable of launching local stdio servers
+- An MCP host that can launch local stdio servers
+- A dedicated workspace containing the intended repositories and private ROM-development inputs
 - For emulator tools, the extracted Linux DeSmuME debug bundle
 
-## Install and build
+## Downloadable bundle
+
+The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` artifact containing:
+
+- Compiled JavaScript
+- Production dependencies
+- Configuration template
+- Installation self-check
+- SHA-256 checksum
+
+After downloading and extracting the archive:
+
+```bash
+cd re-mcp-0.6.0
+node scripts/check-install.mjs .
+```
+
+Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
+
+## Build from source
 
 ```bash
 npm install
@@ -51,7 +64,7 @@ npm run check
 npm run build
 ```
 
-## Run
+Run directly:
 
 ```bash
 RE_MCP_WORKSPACE_ROOT=/absolute/path/to/rom-modding \
@@ -60,21 +73,15 @@ node dist/index.js
 
 The server refuses to start without an explicit workspace root.
 
-## Example MCP host configuration
+## DeSmuME launcher contract
 
-```json
-{
-  "mcpServers": {
-    "re-mcp": {
-      "command": "node",
-      "args": ["/absolute/path/to/RE-MCP/dist/index.js"],
-      "env": {
-        "RE_MCP_WORKSPACE_ROOT": "/absolute/path/to/rom-modding"
-      }
-    }
-  }
-}
+The emulator launcher follows the verified Bakugan debug-bundle interface:
+
+```bash
+run-desmume-debug.sh --arm9gdb=20000 /path/to/game.nds
 ```
+
+RE-MCP owns at most one emulator child process per server instance. It rejects duplicate starts, captures bounded logs, and terminates the owned emulator during MCP shutdown.
 
 ## Security model
 
@@ -82,12 +89,13 @@ The server refuses to start without an explicit workspace root.
 - No shell interpolation
 - Fixed executable and argument construction
 - Workspace path containment
-- Narrow project-name validation
 - Process timeouts and bounded output
 - Minimal child-process environment
-- Read-only Git operation
 - Milestone 6E installation restricted to dry-run mode
 - One server-owned DeSmuME process
-- No attachment to unrelated or pre-existing emulator processes
+- GDB restricted to the owned localhost port
+- Read-only `g` and bounded `m` packets
+- Runtime evidence restricted to project `analysis/generated`
+- No attachment to unrelated emulator processes
 
-Do not point the server at your general home directory. Use a dedicated workspace containing only repositories and private ROM-development inputs intended for this server.
+Do not use your general home directory as `RE_MCP_WORKSPACE_ROOT`. Create a dedicated directory containing only the repositories and private inputs intended for RE-MCP.
