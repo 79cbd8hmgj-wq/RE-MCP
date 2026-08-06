@@ -19,7 +19,7 @@ async function listen(server: net.Server): Promise<number> {
 
 test("encodeRspPacket adds the standard checksum", () => {
   assert.equal(encodeRspPacket("g"), "$g#67");
-  assert.equal(encodeRspPacket("m2000000,10"), "$m2000000,10#5b");
+  assert.equal(encodeRspPacket("m2000000,10"), "$m2000000,10#4c");
 });
 
 test("sendRspCommand validates and returns a reply packet", async () => {
