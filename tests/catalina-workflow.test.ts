@@ -22,12 +22,23 @@ test("Catalina workflow is manual-only", async () => {
   assert.doesNotMatch(workflow, /\bpush:/);
 });
 
-test("Catalina workflow pins source and target", async () => {
+test("Catalina workflow pins Intel source and target", async () => {
   const workflow = await read(workflowPath);
   assert.match(workflow, /release_0_9_13/);
+  assert.match(workflow, /DeSmuME \(macOS App; Intel64 dev\+ -- Latest Xcode\)/);
   assert.match(workflow, /ARCHS=x86_64/);
   assert.match(workflow, /MACOSX_DEPLOYMENT_TARGET=10\.15/);
   assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
+});
+
+test("Catalina workflow forces the OpenGL backend", async () => {
+  const workflow = await read(workflowPath);
+  const patch = await read(patchPath);
+  assert.match(workflow, /EXCLUDED_SOURCE_FILE_NAMES=MacMetalDisplayView\.mm/);
+  assert.match(workflow, /Metal frontend symbols remained in the OpenGL-only build/);
+  assert.match(workflow, /RE_MCP_FORCE_OPENGL/);
+  assert.match(patch, /#undef ENABLE_APPLE_METAL/);
+  assert.match(patch, /built-in OpenGL fallback paths/);
 });
 
 test("Catalina launcher validates and directly execs the app binary", async () => {
@@ -41,7 +52,7 @@ test("Catalina launcher validates and directly execs the app binary", async () =
   assert.doesNotMatch(workflow, /\bopen\s+-a\b/);
 });
 
-test("Catalina patch is limited to environment-driven ARM9 GDB startup", async () => {
+test("Catalina patch keeps the GDB startup boundary narrow", async () => {
   const patch = await read(patchPath);
   assert.match(patch, /RE_MCP_ARM9_GDB_PORT/);
   assert.match(patch, /1024/);
