@@ -1,14 +1,19 @@
+import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
-
-import { z } from "zod";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 import type { ServerConfig } from "../config.js";
+import { resolveInside, assertSimpleProjectName } from "../security/paths.js";
 import { runProcess } from "../services/process-runner.js";
-import { assertSimpleProjectName, resolveInside } from "../security/paths.js";
+import {
+  assertGeneratedAnalysisPath,
+  qualityCommand,
+  qualityStages,
+  type BakuganQualityStage,
+} from "./bakugan-policy.js";
 
 const BAKUGAN_PROJECT = "Bakugan-DS-";
 const M6E_AUTHORING = "config/gates/milestone-6e-system2-v1.json";
@@ -52,18 +57,9 @@ export function registerBakuganTools(server: McpServer, config: ServerConfig): v
       try {
         const cwd = projectDirectory(config, project);
         await access(path.join(cwd, "pyproject.toml"));
-
-        const commands: Record<string, readonly string[]> = {
-          compile: ["-m", "compileall", "-q", "src", "tests", "tools"],
-          ruff: ["-m", "ruff", "check", "."],
-          mypy: ["-m", "mypy"],
-          tests: ["-m", "pytest", "-q"],
-        };
-
-        const stages = stage === "full" ? ["compile", "ruff", "mypy", "tests"] : [stage];
         const results = [];
-        for (const current of stages) {
-          const result = await runPython(config, cwd, commands[current] ?? []);
+        for (const current of qualityStages(stage as BakuganQualityStage)) {
+          const result = await runPython(config, cwd, qualityCommand(current));
           results.push({ stage: current, ...result });
           if (result.exitCode !== 0 || result.timedOut) {
             return textResult({ ok: false, results }, true);
@@ -133,10 +129,7 @@ export function registerBakuganTools(server: McpServer, config: ServerConfig): v
     async ({ project, output }) => {
       try {
         const cwd = projectDirectory(config, project);
-        const outputPath = resolveInside(cwd, output);
-        if (!outputPath.startsWith(path.join(cwd, "analysis", "generated") + path.sep)) {
-          throw new Error("Roster reports must be written under analysis/generated");
-        }
+        const outputPath = assertGeneratedAnalysisPath(cwd, output);
         const result = await runPython(config, cwd, [
           "-m",
           "bakugan_ds.cli",
@@ -166,8 +159,12 @@ export function registerBakuganTools(server: McpServer, config: ServerConfig): v
         const filePath = resolveInside(config.workspaceRoot, file);
         const data = await readFile(filePath);
         const actualSha256 = createHash("sha256").update(data).digest("hex");
-        const matches = actualSha256 === expectedSha256.toLowerCase();
-        return textResult({ file: filePath, actualSha256, expectedSha256: expectedSha256.toLowerCase(), matches }, !matches);
+        const normalizedExpected = expectedSha256.toLowerCase();
+        const matches = actualSha256 === normalizedExpected;
+        return textResult(
+          { file: filePath, actualSha256, expectedSha256: normalizedExpected, matches },
+          !matches,
+        );
       } catch (error) {
         return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
       }
