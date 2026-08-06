@@ -3,9 +3,15 @@ import test from "node:test";
 
 import { buildDesmumeArguments, validateGdbPort } from "../src/tools/desmume-policy.js";
 
-test("DeSmuME arguments match the verified debug launcher contract", () => {
-  assert.deepEqual(buildDesmumeArguments(20000, "/workspace/game.nds"), [
+test("Linux DeSmuME arguments match the verified GDB launcher contract", () => {
+  assert.deepEqual(buildDesmumeArguments("linux-cli", 20000, "/workspace/game.nds"), [
     "--arm9gdb=20000",
+    "/workspace/game.nds",
+  ]);
+});
+
+test("Catalina Cocoa launcher receives only the ROM path", () => {
+  assert.deepEqual(buildDesmumeArguments("macos-cocoa", 20000, "/workspace/game.nds"), [
     "/workspace/game.nds",
   ]);
 });
