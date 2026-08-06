@@ -17,6 +17,8 @@ export interface RunResult {
   readonly outputTruncated: boolean;
 }
 
+type AnyBuffer = Buffer<ArrayBufferLike>;
+
 export async function runProcess(request: RunRequest): Promise<RunResult> {
   return await new Promise<RunResult>((resolve, reject) => {
     const child = spawn(request.executable, [...request.args], {
@@ -31,12 +33,12 @@ export async function runProcess(request: RunRequest): Promise<RunResult> {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout: AnyBuffer = Buffer.alloc(0);
+    let stderr: AnyBuffer = Buffer.alloc(0);
     let outputTruncated = false;
     let timedOut = false;
 
-    const append = (current: Buffer, chunk: Buffer): Buffer => {
+    const append = (current: AnyBuffer, chunk: AnyBuffer): AnyBuffer => {
       if (current.length >= request.maxOutputBytes) {
         outputTruncated = true;
         return current;
@@ -48,10 +50,10 @@ export async function runProcess(request: RunRequest): Promise<RunResult> {
       return Buffer.concat([current, chunk.subarray(0, remaining)]);
     };
 
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout.on("data", (chunk: AnyBuffer) => {
       stdout = append(stdout, chunk);
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr.on("data", (chunk: AnyBuffer) => {
       stderr = append(stderr, chunk);
     });
     child.on("error", reject);
