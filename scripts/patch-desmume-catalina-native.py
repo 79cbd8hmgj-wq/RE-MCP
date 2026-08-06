@@ -3,8 +3,10 @@ from __future__ import annotations
 import pathlib
 import sys
 
-TARGET = pathlib.Path("desmume/src/frontend/cocoa/userinterface/appDelegate.mm")
-MARKER = "RE_MCP_ARM9_GDB_PORT"
+APP_DELEGATE = pathlib.Path("desmume/src/frontend/cocoa/userinterface/appDelegate.mm")
+PREFIX_HEADER = pathlib.Path("desmume/src/frontend/cocoa/DeSmuME_Prefix.pch")
+GDB_MARKER = "RE_MCP_ARM9_GDB_PORT"
+OPENGL_MARKER = "RE_MCP_FORCE_OPENGL"
 INCLUDE_ANCHOR = '#import "cocoa_util.h"\n'
 INCLUDE_INSERTION = '#import "cocoa_util.h"\n\n#include <stdlib.h>\n'
 STARTUP_ANCHOR = "\t[emuControl appInit];\n\t[prefWindowDelegate markUnsupportedOpenGLMSAAMenuItems];"
@@ -26,30 +28,46 @@ STARTUP_INSERTION = r'''	[emuControl appInit];
 #endif
 
 	[prefWindowDelegate markUnsupportedOpenGLMSAAMenuItems];'''
+OPENGL_ANCHOR = "#define GL_SILENCE_DEPRECATION\n"
+OPENGL_INSERTION = """#define GL_SILENCE_DEPRECATION
+
+// RE_MCP_FORCE_OPENGL: The Catalina debugger bundle intentionally disables
+// DeSmuME's Metal frontend so all existing #ifdef ENABLE_APPLE_METAL call
+// sites compile their built-in OpenGL fallback paths.
+#ifdef ENABLE_APPLE_METAL
+#undef ENABLE_APPLE_METAL
+#endif
+"""
 
 
 def replace_exactly_once(source: str, anchor: str, replacement: str, label: str) -> str:
     if source.count(anchor) != 1:
-        raise ValueError(f"expected exactly one DeSmuME 0.9.13 {label} anchor; source layout changed")
+        raise ValueError(
+            f"expected exactly one DeSmuME 0.9.13 {label} anchor; source layout changed"
+        )
     return source.replace(anchor, replacement, 1)
 
 
-def apply_patch(source: str) -> str:
-    if MARKER in source:
+def patch_app_delegate(source: str) -> str:
+    if GDB_MARKER in source:
         return source
+    patched = replace_exactly_once(source, INCLUDE_ANCHOR, INCLUDE_INSERTION, "include")
+    return replace_exactly_once(patched, STARTUP_ANCHOR, STARTUP_INSERTION, "appInit")
 
-    patched = replace_exactly_once(
-        source,
-        INCLUDE_ANCHOR,
-        INCLUDE_INSERTION,
-        "include",
-    )
-    return replace_exactly_once(
-        patched,
-        STARTUP_ANCHOR,
-        STARTUP_INSERTION,
-        "appInit",
-    )
+
+def patch_prefix_header(source: str) -> str:
+    if OPENGL_MARKER in source:
+        return source
+    return replace_exactly_once(source, OPENGL_ANCHOR, OPENGL_INSERTION, "OpenGL")
+
+
+def patch_file(path: pathlib.Path, transform) -> None:
+    if not path.is_file():
+        raise ValueError(f"missing expected DeSmuME source file: {path}")
+    source = path.read_text(encoding="utf-8")
+    patched = transform(source)
+    path.write_text(patched, encoding="utf-8")
+    print(f"Patched: {path}")
 
 
 def main() -> int:
@@ -58,24 +76,13 @@ def main() -> int:
         return 64
 
     root = pathlib.Path(sys.argv[1]).resolve()
-    target = root / TARGET
-    if not target.is_file():
-        print(f"missing expected DeSmuME source file: {target}", file=sys.stderr)
-        return 1
-
-    source = target.read_text(encoding="utf-8")
-    if MARKER in source:
-        print(f"Catalina ARM9 GDB patch already present: {target}")
-        return 0
-
     try:
-        patched = apply_patch(source)
+        patch_file(root / APP_DELEGATE, patch_app_delegate)
+        patch_file(root / PREFIX_HEADER, patch_prefix_header)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1
 
-    target.write_text(patched, encoding="utf-8")
-    print(f"Patched Catalina ARM9 GDB startup: {target}")
     return 0
 
 
