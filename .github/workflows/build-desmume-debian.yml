@@ -1,0 +1,187 @@
+name: Build Debian DeSmuME Debug Bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build DeSmuME in Debian 13
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/out"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            debian:13-slim \
+            bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                autoconf \
+                automake \
+                build-essential \
+                ca-certificates \
+                file \
+                gettext \
+                git \
+                intltool \
+                libasound2-dev \
+                libgl1-mesa-dev \
+                libglu1-mesa-dev \
+                libpcap-dev \
+                libsdl2-dev \
+                libsoundtouch-dev \
+                libtool \
+                libtool-bin \
+                libzzip-dev \
+                pkg-config \
+                python3 \
+                zlib1g-dev
+
+              source_root=/tmp/desmume
+              source_commit=84e445159ccf2fd7900748094518eb1e88bdc7d0
+              git clone https://github.com/TASEmulators/desmume.git "$source_root"
+              git -C "$source_root" checkout --detach "$source_commit"
+              git -C "$source_root" rev-parse HEAD | tee /workspace/out/desmume-source-commit.txt
+
+              cd "$source_root/desmume/src/frontend/posix"
+              ./autogen.sh
+              ./configure \
+                --enable-gdb-stub \
+                --enable-debug \
+                CFLAGS="-O2 -g" \
+                CXXFLAGS="-O2 -g"
+              make -j"$(nproc)"
+
+              binary="$source_root/desmume/src/frontend/posix/cli/desmume-cli"
+              test -x "$binary"
+
+              bundle=/workspace/out/desmume-debian13-debug
+              mkdir -p "$bundle/bin"
+              cp "$binary" "$bundle/bin/desmume-cli"
+              chmod +x "$bundle/bin/desmume-cli"
+
+              cat > "$bundle/run-desmume-debug.sh" <<'"'"'LAUNCHER'"'"'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 --arm9gdb=PORT /absolute/path/to/game.nds" >&2
+  exit 64
+fi
+
+gdb_argument="$1"
+rom_path="$2"
+
+if [[ ! "$gdb_argument" =~ ^--arm9gdb=([0-9]+)$ ]]; then
+  echo "First argument must be --arm9gdb=PORT" >&2
+  exit 64
+fi
+
+port="${BASH_REMATCH[1]}"
+if (( port < 1024 || port > 65535 )); then
+  echo "GDB port must be from 1024 through 65535" >&2
+  exit 64
+fi
+
+if [[ ! -r "$rom_path" ]]; then
+  echo "ROM is missing or unreadable: $rom_path" >&2
+  exit 66
+fi
+
+bundle_root="$(cd "$(dirname "$0")" && pwd)"
+binary="$bundle_root/bin/desmume-cli"
+if [[ ! -x "$binary" ]]; then
+  echo "Bundled DeSmuME executable is missing: $binary" >&2
+  exit 69
+fi
+
+exec "$binary" "$gdb_argument" "$rom_path"
+LAUNCHER
+              chmod +x "$bundle/run-desmume-debug.sh"
+
+              cat > "$bundle/install-dependencies.sh" <<'"'"'INSTALL'"'"'
+#!/usr/bin/env bash
+set -euo pipefail
+sudo apt update
+sudo apt install -y \
+  libasound2t64 \
+  libgl1 \
+  libglu1-mesa \
+  libpcap0.8t64 \
+  libsdl2-2.0-0 \
+  libsoundtouch1 \
+  libzzip-0-13t64 \
+  zlib1g
+INSTALL
+              chmod +x "$bundle/install-dependencies.sh"
+
+              "$bundle/bin/desmume-cli" --help > "$bundle/desmume-help.txt" 2>&1 || true
+              grep -qi "arm9gdb" "$bundle/desmume-help.txt"
+              file "$bundle/bin/desmume-cli" | tee "$bundle/binary-info.txt"
+              ldd "$bundle/bin/desmume-cli" | tee "$bundle/runtime-libraries.txt"
+
+              if ldd "$bundle/bin/desmume-cli" | grep -q "not found"; then
+                echo "Unresolved runtime library detected" >&2
+                exit 1
+              fi
+
+              cat > "$bundle/README.txt" <<'"'"'README'"'"'
+DeSmuME 0.9.13 ARM9 GDB debug bundle for Debian 13 amd64.
+
+1. Install runtime libraries:
+     ./install-dependencies.sh
+
+2. Launch a ROM with the ARM9 GDB stub:
+     ./run-desmume-debug.sh --arm9gdb=20000 /absolute/path/to/game.nds
+
+3. In another terminal, verify the listener:
+     lsof -nP -iTCP:20000 -sTCP:LISTEN
+
+The ROM is not included. Keep ROM files outside this bundle.
+README
+
+              (
+                cd "$bundle"
+                sha256sum \
+                  bin/desmume-cli \
+                  run-desmume-debug.sh \
+                  install-dependencies.sh \
+                  README.txt \
+                  > SHA256SUMS.txt
+              )
+
+              tar -C /workspace/out \
+                -czf /workspace/out/desmume-debian13-debug.tar.gz \
+                desmume-debian13-debug
+              sha256sum /workspace/out/desmume-debian13-debug.tar.gz \
+                > /workspace/out/desmume-debian13-debug.tar.gz.sha256
+            '
+
+      - name: Upload Debian bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: desmume-debian13-debug-bundle
+          path: |
+            out/desmume-debian13-debug.tar.gz
+            out/desmume-debian13-debug.tar.gz.sha256
+            out/desmume-source-commit.txt
+            out/desmume-debian13-debug/binary-info.txt
+            out/desmume-debian13-debug/runtime-libraries.txt
+            out/desmume-debian13-debug/desmume-help.txt
+          if-no-files-found: error
+          retention-days: 30
