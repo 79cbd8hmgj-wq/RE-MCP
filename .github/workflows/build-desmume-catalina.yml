@@ -1,0 +1,96 @@
+name: Build DeSmuME Catalina Debug Bundle
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-13
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone pinned DeSmuME source
+        run: |
+          git clone --depth 1 --branch release_0_9_13 \
+            https://github.com/TASEmulators/desmume.git /tmp/desmume
+      - name: Discover Xcode projects and schemes
+        shell: bash
+        run: |
+          set -euo pipefail
+          find /tmp/desmume -name '*.xcodeproj' -print | tee /tmp/xcode-projects.txt
+          while IFS= read -r project; do
+            echo "===== $project ====="
+            xcodebuild -project "$project" -list
+          done < /tmp/xcode-projects.txt | tee /tmp/xcode-discovery.txt
+      - name: Build Intel dev+ application for Catalina
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="$(grep -E 'DeSmuME.*\.xcodeproj$' /tmp/xcode-projects.txt | head -n1)"
+          if [[ -z "$project" ]]; then
+            echo 'No DeSmuME Xcode project discovered' >&2
+            exit 1
+          fi
+          schemes="$(xcodebuild -project "$project" -list 2>/dev/null | sed -n '/Schemes:/,$p')"
+          scheme="$(printf '%s\n' "$schemes" | grep -E 'dev\+|Dev\+' | sed 's/^[[:space:]]*//' | head -n1)"
+          if [[ -z "$scheme" ]]; then
+            echo 'No dev+ scheme discovered' >&2
+            printf '%s\n' "$schemes" >&2
+            exit 1
+          fi
+          echo "Project: $project"
+          echo "Scheme: $scheme"
+          xcodebuild \
+            -project "$project" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -derivedDataPath /tmp/desmume-derived \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=YES \
+            MACOSX_DEPLOYMENT_TARGET=10.15 \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee /tmp/desmume-build.log
+      - name: Assemble Catalina bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find /tmp/desmume-derived -type d -name 'DeSmuME*.app' | head -n1)"
+          if [[ -z "$app" ]]; then
+            echo 'Built DeSmuME application not found' >&2
+            exit 1
+          fi
+          root=/tmp/desmume-catalina-debug
+          mkdir -p "$root"
+          cp -R "$app" "$root/DeSmuME Debug.app"
+          cat > "$root/run-desmume-debug.command" <<'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          if [[ $# -ne 1 ]]; then
+            echo "usage: $0 /absolute/path/to/game.nds" >&2
+            exit 64
+          fi
+          app_dir="$(cd "$(dirname "$0")" && pwd)"
+          open -n -a "$app_dir/DeSmuME Debug.app" --args "$1"
+          SCRIPT
+          chmod +x "$root/run-desmume-debug.command"
+          printf '%s\n' \
+            'This is an Intel x86_64 DeSmuME dev+ build targeting macOS 10.15.' \
+            'Open Tools > Show GDB Stub Control and start ARM9 on port 20000.' \
+            'The next RE-MCP patch will automate that control path.' \
+            > "$root/README.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$root" /tmp/desmume-catalina-debug.zip
+          shasum -a 256 /tmp/desmume-catalina-debug.zip > /tmp/desmume-catalina-debug.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desmume-catalina-debug-bundle
+          path: |
+            /tmp/desmume-catalina-debug.zip
+            /tmp/desmume-catalina-debug.zip.sha256
+            /tmp/xcode-discovery.txt
+            /tmp/desmume-build.log
+          if-no-files-found: error
+          retention-days: 30
