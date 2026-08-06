@@ -8,9 +8,10 @@ import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./services/process-runner.js";
 import { assertSimpleProjectName, resolveInside } from "./security/paths.js";
+import { registerBakuganTools } from "./tools/bakugan.js";
 
 const config = loadConfig();
-const server = new McpServer({ name: "re-mcp", version: "0.1.0" });
+const server = new McpServer({ name: "re-mcp", version: "0.2.0" });
 
 function projectDirectory(project: string): string {
   return resolveInside(config.workspaceRoot, assertSimpleProjectName(project));
@@ -72,17 +73,29 @@ server.tool(
   },
 );
 
+registerBakuganTools(server, config);
+
 server.tool(
   "server_capabilities",
   "Describe the current RE-MCP safety boundary and available operations.",
   {},
   async () =>
     textResult({
-      version: "0.1.0",
+      version: "0.2.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
-      tools: ["get_project_status", "run_project_verification", "server_capabilities"],
+      mutationPolicy: "Milestone 6E install is dry-run only",
+      tools: [
+        "get_project_status",
+        "run_project_verification",
+        "bakugan_run_quality_suite",
+        "bakugan_regenerate_m6e_contracts",
+        "bakugan_install_m6e_dry_run",
+        "bakugan_analyze_m6e_roster",
+        "verify_file_sha256",
+        "server_capabilities",
+      ],
     }),
 );
 
