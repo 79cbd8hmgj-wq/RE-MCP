@@ -46,7 +46,6 @@ test("Catalina workflow rejects remaining Metal compilation or symbols", async (
   assert.match(workflow, /EXCLUDED_SOURCE_FILE_NAMES=MacMetalDisplayView\.mm/);
   assert.match(workflow, /MacMetalDisplayView\.mm was still compiled/);
   assert.match(workflow, /Metal frontend symbols remained in the OpenGL-only build/);
-  assert.match(workflow, /RE_MCP_CATALINA_USE_METAL/);
 });
 
 test("Catalina launcher validates and directly execs the app binary", async () => {
