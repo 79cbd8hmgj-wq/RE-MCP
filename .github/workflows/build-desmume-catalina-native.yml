@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone pinned DeSmuME source and apply patch
+      - name: Clone pinned DeSmuME source and apply patches
         shell: bash
         run: |
           set -euo pipefail
@@ -22,32 +22,34 @@ jobs:
             https://github.com/TASEmulators/desmume.git /tmp/desmume
           git -C /tmp/desmume rev-parse HEAD | tee /tmp/desmume-source-commit.txt
           python3 scripts/patch-desmume-catalina-native.py /tmp/desmume
+          grep -q 'RE_MCP_ARM9_GDB_PORT' \
+            /tmp/desmume/desmume/src/frontend/cocoa/userinterface/appDelegate.mm
+          grep -q 'RE_MCP_FORCE_OPENGL' \
+            /tmp/desmume/desmume/src/frontend/cocoa/DeSmuME_Prefix.pch
 
-      - name: Discover Xcode project and dev+ scheme
+      - name: Select Intel64 Xcode project and dev+ scheme
         shell: bash
         run: |
           set -euo pipefail
-          find /tmp/desmume -name '*.xcodeproj' -print > /tmp/xcode-projects.txt
-          : > /tmp/xcode-discovery.txt
-          : > /tmp/desmume-selection.env
+          project="/tmp/desmume/desmume/src/frontend/cocoa/DeSmuME (Latest).xcodeproj"
+          scheme="DeSmuME (macOS App; Intel64 dev+ -- Latest Xcode)"
 
-          while IFS= read -r project; do
-            echo "===== $project =====" | tee -a /tmp/xcode-discovery.txt
-            listing="$(xcodebuild -project "$project" -list 2>&1)"
-            printf '%s\n' "$listing" | tee -a /tmp/xcode-discovery.txt
-            scheme="$(printf '%s\n' "$listing" | sed -n '/Schemes:/,$p' | grep -E 'dev\+|Dev\+' | sed 's/^[[:space:]]*//' | head -n1 || true)"
-            if [[ -n "$scheme" && ! -s /tmp/desmume-selection.env ]]; then
-              printf 'PROJECT=%q\nSCHEME=%q\n' "$project" "$scheme" > /tmp/desmume-selection.env
-            fi
-          done < /tmp/xcode-projects.txt
-
-          if [[ ! -s /tmp/desmume-selection.env ]]; then
-            echo 'No DeSmuME dev+ scheme discovered' >&2
+          if [[ ! -d "$project" ]]; then
+            echo "Expected DeSmuME Xcode project was not found: $project" >&2
             exit 1
           fi
-          cat /tmp/desmume-selection.env
 
-      - name: Build Intel Cocoa application for Catalina
+          listing="$(xcodebuild -project "$project" -list 2>&1)"
+          printf '%s\n' "$listing" | tee /tmp/xcode-discovery.txt
+          if ! printf '%s\n' "$listing" | grep -Fq "        $scheme"; then
+            echo "Expected Intel64 dev+ scheme was not found: $scheme" >&2
+            exit 1
+          fi
+
+          printf 'PROJECT=%q\nSCHEME=%q\n' "$project" "$scheme" \
+            | tee /tmp/desmume-selection.env
+
+      - name: Build Intel Cocoa application for Catalina with OpenGL
         shell: bash
         run: |
           set -uo pipefail
@@ -62,13 +64,27 @@ jobs:
             ONLY_ACTIVE_ARCH=YES \
             MACOSX_DEPLOYMENT_TARGET=10.15 \
             CODE_SIGNING_ALLOWED=NO \
+            EXCLUDED_SOURCE_FILE_NAMES=MacMetalDisplayView.mm \
             build 2>&1 | tee /tmp/desmume-build.log
           status=${PIPESTATUS[0]}
           set -e
+
           if [[ $status -ne 0 ]]; then
-            grep -nE '(^|[[:space:]])(error:|fatal error:)|BUILD FAILED|CompileC|Ld ' \
-              /tmp/desmume-build.log | tail -n 250 | tee /tmp/desmume-build-errors.txt || true
+            grep -nE '(^|[[:space:]])(error:|fatal error:)|Undefined symbols|symbol\(s\) not found|BUILD FAILED|CompileC|Ld ' \
+              /tmp/desmume-build.log | tail -n 300 | tee /tmp/desmume-build-errors.txt || true
             exit "$status"
+          fi
+
+          if grep -Eq 'CompileC .*MacMetalDisplayView\.mm|CompileC.*MacMetalDisplayView' \
+            /tmp/desmume-build.log; then
+            echo 'MacMetalDisplayView.mm was still compiled despite exclusion' >&2
+            exit 1
+          fi
+
+          if grep -Eq 'MacMetalDisplayView::|MacMetalDisplayPresenter::|MacMetalFetchObject::' \
+            /tmp/desmume-build.log; then
+            echo 'Metal frontend symbols remained in the OpenGL-only build' >&2
+            exit 1
           fi
 
       - name: Assemble and validate Catalina-native bundle
@@ -84,7 +100,6 @@ jobs:
           cp -R "$app" "$root/DeSmuME Debug.app"
 
           plist="$root/DeSmuME Debug.app/Contents/Info.plist"
-          test -f "$plist"
           executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
           binary="$root/DeSmuME Debug.app/Contents/MacOS/$executable"
           test -x "$binary"
@@ -92,7 +107,6 @@ jobs:
           cat > "$root/run-desmume-debug.command" <<'SCRIPT'
           #!/bin/bash
           set -euo pipefail
-
           if [[ $# -ne 2 ]]; then
             echo "usage: $0 /absolute/path/to/game.nds ARM9_GDB_PORT" >&2
             exit 64
@@ -105,16 +119,11 @@ jobs:
             echo "ARM9_GDB_PORT must be an integer from 1024 through 65535" >&2
             exit 64
           fi
-
           bundle_root="$(cd "$(dirname "$0")" && pwd)"
           plist="$bundle_root/DeSmuME Debug.app/Contents/Info.plist"
           executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
           binary="$bundle_root/DeSmuME Debug.app/Contents/MacOS/$executable"
-          if [[ ! -x "$binary" ]]; then
-            echo "DeSmuME executable is missing or not executable: $binary" >&2
-            exit 69
-          fi
-
+          test -x "$binary"
           exec env RE_MCP_ARM9_GDB_PORT="$2" "$binary" "$1"
           SCRIPT
           chmod +x "$root/run-desmume-debug.command"
@@ -122,18 +131,14 @@ jobs:
           file "$binary" | tee /tmp/desmume-binary.txt
           architectures="$(lipo -archs "$binary")"
           printf '%s\n' "$architectures" | tee /tmp/desmume-architectures.txt
-          if [[ "$architectures" != "x86_64" ]]; then
-            echo "Expected x86_64-only binary, found: $architectures" >&2
-            exit 1
-          fi
-
+          [[ "$architectures" == "x86_64" ]]
           otool -L "$binary" | tee /tmp/desmume-dependencies.txt
           otool -l "$binary" > /tmp/desmume-load-commands.txt
+
           python3 - "$binary" <<'PY' | tee /tmp/desmume-minos.txt
           import re
           import subprocess
           import sys
-
           output = subprocess.check_output(["otool", "-l", sys.argv[1]], text=True)
           modern = re.search(r"cmd LC_BUILD_VERSION.*?minos ([0-9.]+).*?sdk ([0-9.]+)", output, re.DOTALL)
           legacy = re.search(r"cmd LC_VERSION_MIN_MACOSX.*?version ([0-9.]+).*?sdk ([0-9.]+)", output, re.DOTALL)
@@ -143,34 +148,25 @@ jobs:
           minimum, sdk = match.groups()
           print(f"minimum_macos={minimum}")
           print(f"sdk={sdk}")
-          version = tuple(int(part) for part in minimum.split("."))
-          if version > (10, 15):
+          if tuple(int(part) for part in minimum.split(".")) > (10, 15):
               raise SystemExit(f"Binary requires macOS {minimum}, later than Catalina 10.15")
           PY
 
-          grep -q 'RE_MCP_ARM9_GDB_PORT' \
-            /tmp/desmume/desmume/src/frontend/cocoa/userinterface/appDelegate.mm
-          grep -q 'RE_MCP_ARM9_GDB_PORT' "$root/run-desmume-debug.command"
-
           cat > "$root/README.txt" <<'TXT'
           Intel x86_64 DeSmuME Cocoa dev+ build targeting macOS Catalina 10.15.
+          The Metal frontend is disabled and DeSmuME's built-in OpenGL paths are used.
 
           Launch:
             ./run-desmume-debug.command /absolute/path/to/game.nds 20000
-
-          The launcher starts the ARM9 GDB stub through RE_MCP_ARM9_GDB_PORT.
           TXT
 
           {
             echo "DeSmuME source commit: $(cat /tmp/desmume-source-commit.txt)"
-            echo "Selected build configuration:"
+            echo "Backend: OpenGL (ENABLE_APPLE_METAL undefined)"
             cat /tmp/desmume-selection.env
-            echo
             cat /tmp/desmume-binary.txt
             echo "architectures=$(cat /tmp/desmume-architectures.txt)"
             cat /tmp/desmume-minos.txt
-            echo
-            echo "Dynamic dependencies:"
             cat /tmp/desmume-dependencies.txt
           } > "$root/compatibility-report.txt"
 
@@ -195,7 +191,6 @@ jobs:
             /tmp/desmume-catalina-native-debug.zip
             /tmp/desmume-catalina-native-debug.zip.sha256
             /tmp/desmume-source-commit.txt
-            /tmp/xcode-projects.txt
             /tmp/xcode-discovery.txt
             /tmp/desmume-selection.env
             /tmp/desmume-build.log
