@@ -11,9 +11,10 @@ import { OwnedProcessManager } from "./services/owned-process.js";
 import { runProcess } from "./services/process-runner.js";
 import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
+import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
-const server = new McpServer({ name: "re-mcp", version: "0.5.0" });
+const server = new McpServer({ name: "re-mcp", version: "0.6.0" });
 const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
@@ -78,6 +79,7 @@ server.tool(
 
 registerBakuganTools(server, config);
 registerDesmumeTools(server, config, desmumeManager);
+registerRuntimeEvidenceTools(server, config, desmumeManager);
 
 server.tool(
   "server_capabilities",
@@ -85,13 +87,14 @@ server.tool(
   {},
   async () =>
     textResult({
-      version: "0.5.0",
+      version: "0.6.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
       mutationPolicy: "Milestone 6E install is dry-run only",
       processPolicy: "One DeSmuME process owned by this server instance",
       debuggerPolicy: "Read-only ARM9 registers and bounded memory reads",
+      evidencePolicy: "Atomic raw evidence under project analysis/generated only",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -106,6 +109,7 @@ server.tool(
         "desmume_wait_for_gdb",
         "desmume_read_register_packet",
         "desmume_read_memory",
+        "desmume_capture_runtime_evidence",
         "desmume_stop",
         "server_capabilities",
       ],
