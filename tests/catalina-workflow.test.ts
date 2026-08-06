@@ -48,6 +48,15 @@ test("Catalina workflow rejects remaining Metal compilation or symbols", async (
   assert.match(workflow, /Metal frontend symbols remained in the OpenGL-only build/);
 });
 
+test("Catalina workflow inspects a simple-path copy of the executable", async () => {
+  const workflow = await read(workflowPath);
+  assert.match(workflow, /inspection_binary=\/tmp\/desmume-catalina-inspection-binary/);
+  assert.match(workflow, /cp \"\$binary\" \"\$inspection_binary\"/);
+  assert.match(workflow, /otool -L \"\$inspection_binary\"/);
+  assert.match(workflow, /otool -l \"\$inspection_binary\"/);
+  assert.doesNotMatch(workflow, /otool -L \"\$binary\"/);
+});
+
 test("Catalina launcher validates and directly execs the app binary", async () => {
   const workflow = await read(workflowPath);
   assert.match(workflow, /\$# -ne 2/);
