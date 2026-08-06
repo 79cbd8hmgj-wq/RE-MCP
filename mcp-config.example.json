@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "re-mcp": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/re-mcp/dist/index.js"],
+      "env": {
+        "RE_MCP_WORKSPACE_ROOT": "/ABSOLUTE/PATH/TO/rom-modding"
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+name: Package
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install and verify source
+        run: |
+          npm install
+          npm run check
+          npm run build
+      - name: Assemble self-contained bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          root="/tmp/re-mcp-${version}"
+          mkdir -p "$root/dist"
+          cp package.json README.md mcp-config.example.json "$root/"
+          cp -R scripts "$root/"
+          cp -R dist/src/. "$root/dist/"
+          (
+            cd "$root"
+            npm install --omit=dev --ignore-scripts
+            node scripts/check-install.mjs .
+          )
+          tar -C /tmp -czf "/tmp/re-mcp-${version}.tar.gz" "re-mcp-${version}"
+          sha256sum "/tmp/re-mcp-${version}.tar.gz" > "/tmp/re-mcp-${version}.tar.gz.sha256"
+          printf '%s\n' "$version" > /tmp/re-mcp-version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re-mcp-downloadable-bundle
+          path: |
+            /tmp/re-mcp-*.tar.gz
+            /tmp/re-mcp-*.tar.gz.sha256
+            /tmp/re-mcp-version.txt
+          if-no-files-found: error
+          retention-days: 30
