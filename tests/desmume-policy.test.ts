@@ -10,9 +10,10 @@ test("Linux DeSmuME arguments match the verified GDB launcher contract", () => {
   ]);
 });
 
-test("Catalina Cocoa launcher receives only the ROM path", () => {
+test("Catalina Cocoa launcher receives ROM path and ARM9 port", () => {
   assert.deepEqual(buildDesmumeArguments("macos-cocoa", 20000, "/workspace/game.nds"), [
     "/workspace/game.nds",
+    "20000",
   ]);
 });
 
