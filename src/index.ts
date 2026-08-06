@@ -6,12 +6,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { loadConfig } from "./config.js";
-import { runProcess } from "./services/process-runner.js";
 import { assertSimpleProjectName, resolveInside } from "./security/paths.js";
+import { OwnedProcessManager } from "./services/owned-process.js";
+import { runProcess } from "./services/process-runner.js";
 import { registerBakuganTools } from "./tools/bakugan.js";
+import { registerDesmumeTools } from "./tools/desmume.js";
 
 const config = loadConfig();
-const server = new McpServer({ name: "re-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "re-mcp", version: "0.3.0" });
+const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
   return resolveInside(config.workspaceRoot, assertSimpleProjectName(project));
@@ -74,6 +77,7 @@ server.tool(
 );
 
 registerBakuganTools(server, config);
+registerDesmumeTools(server, config, desmumeManager);
 
 server.tool(
   "server_capabilities",
@@ -81,11 +85,12 @@ server.tool(
   {},
   async () =>
     textResult({
-      version: "0.2.0",
+      version: "0.3.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
       mutationPolicy: "Milestone 6E install is dry-run only",
+      processPolicy: "One DeSmuME process owned by this server instance",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -94,10 +99,27 @@ server.tool(
         "bakugan_install_m6e_dry_run",
         "bakugan_analyze_m6e_roster",
         "verify_file_sha256",
+        "desmume_status",
+        "desmume_start",
+        "desmume_stop",
         "server_capabilities",
       ],
     }),
 );
+
+let shuttingDown = false;
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  await desmumeManager.stop();
+  process.exit(signal === "SIGINT" ? 130 : 143);
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("beforeExit", () => void desmumeManager.stop());
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
