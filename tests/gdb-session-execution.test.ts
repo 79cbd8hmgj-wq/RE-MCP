@@ -229,3 +229,155 @@ test("execution rejects connection loss and marks the session unavailable", asyn
     await close(server);
   }
 });
+
+test("single stepping completes one instruction and supports the 100-step limit", async () => {
+  const received: string[] = [];
+  const server = breakpointServer(Array.from({ length: 101 }, () => "S05"), received);
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.stepInstructions(1, 1000), {
+      requested: 1,
+      completed: 1,
+      completedAll: true,
+      result: {
+        kind: "stop",
+        stop: { kind: "signal", signal: 5, fields: {}, raw: "S05" },
+        state: "stopped",
+      },
+    });
+    assert.deepEqual(await session.stepInstructions(100, 1000), {
+      requested: 100,
+      completed: 100,
+      completedAll: true,
+      result: {
+        kind: "stop",
+        stop: { kind: "signal", signal: 5, fields: {}, raw: "S05" },
+        state: "stopped",
+      },
+    });
+    assert.equal(received.length, 101);
+    assert.equal(received.every((payload) => payload === "s"), true);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("single stepping rejects counts outside 1 through 100", async () => {
+  const session = createSession(1);
+  await assert.rejects(session.stepInstructions(0, 1000), /count must be from 1 through 100/);
+  await assert.rejects(session.stepInstructions(101, 1000), /count must be from 1 through 100/);
+});
+
+test("single stepping stops early on a non-trap signal", async () => {
+  const received: string[] = [];
+  const server = breakpointServer(["S05", "S0b", "S05"], received);
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.stepInstructions(3, 1000), {
+      requested: 3,
+      completed: 2,
+      completedAll: false,
+      result: {
+        kind: "stop",
+        stop: { kind: "signal", signal: 11, fields: {}, raw: "S0b" },
+        state: "stopped",
+      },
+    });
+    assert.deepEqual(received, ["s", "s"]);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("single stepping stops early on an explicit breakpoint stop", async () => {
+  const received: string[] = [];
+  const server = breakpointServer(["S05", "T05reason:breakpoint;", "S05"], received);
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.stepInstructions(3, 1000), {
+      requested: 3,
+      completed: 2,
+      completedAll: false,
+      result: {
+        kind: "stop",
+        stop: {
+          kind: "signal",
+          signal: 5,
+          fields: { reason: "breakpoint" },
+          raw: "T05reason:breakpoint;",
+        },
+        state: "stopped",
+      },
+    });
+    assert.deepEqual(received, ["s", "s"]);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("single stepping stops early on target exit", async () => {
+  const received: string[] = [];
+  const server = breakpointServer(["S05", "W00", "S05"], received);
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.stepInstructions(3, 1000), {
+      requested: 3,
+      completed: 2,
+      completedAll: false,
+      result: {
+        kind: "stop",
+        stop: { kind: "exited", status: 0, raw: "W00" },
+        state: "unavailable",
+      },
+    });
+    assert.deepEqual(received, ["s", "s"]);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("single stepping stops early on timeout and leaves execution running", async () => {
+  let commands = 0;
+  const server = net.createServer((socket) => {
+    socket.on("data", (chunk) => {
+      const parsed = parseRspPacket(chunk.toString("ascii"));
+      if (parsed?.payload !== "s") return;
+      commands += 1;
+      socket.write("+", "ascii");
+      if (commands === 1) socket.write(encodeRspPacket("S05"), "ascii");
+    });
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.stepInstructions(3, 20), {
+      requested: 3,
+      completed: 1,
+      completedAll: false,
+      result: { kind: "timeout", state: "running" },
+    });
+    assert.equal(session.state(), "running");
+    assert.equal(commands, 2);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
