@@ -122,6 +122,15 @@ async function buildDisassemblyRom() {
   return { fixture, rom: path.basename(fixture.romPath) };
 }
 
+async function buildReferenceRom() {
+  const fixture = await createNdsFixture({ arm9Size: 0x20 });
+  fixture.buffer.set([0x00, 0x00, 0x00, 0xeb], 0x200);
+  fixture.buffer.set([0x1e, 0xff, 0x2f, 0xe1], 0x204);
+  fixture.buffer.set([0x1e, 0xff, 0x2f, 0xe1], 0x208);
+  await fixture.write();
+  return { fixture, rom: path.basename(fixture.romPath) };
+}
+
 const EXPECTED_TOOLS = [
   "nds_inspect_rom",
   "nds_list_files",
@@ -132,9 +141,11 @@ const EXPECTED_TOOLS = [
   "nds_extract_analysis_bundle",
   "nds_disassemble_range",
   "nds_analyze_control_flow",
+  "nds_list_references",
+  "nds_find_xrefs",
 ] as const;
 
-test("registers exactly the nine approved NDS static-analysis tools", () => {
+test("registers exactly the eleven approved NDS static-analysis tools", () => {
   const server = register("/workspace");
   assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
 });
@@ -254,6 +265,112 @@ test("disassembly schemas expose exact defaults, caps, and no generic binary sur
   }
 });
 
+test("reference schemas expose exact defaults, caps, scopes, seeds, and no generic binary surface", () => {
+  const server = register("/workspace");
+  assert.deepEqual(server.parse("nds_list_references", {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+  }), {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "auto",
+    maxInstructions: 32,
+    maxBytes: 128,
+  });
+  assert.deepEqual(server.parse("nds_find_xrefs", {
+    rom: "game.nds",
+    processor: "arm9",
+    targetRuntimeAddress: 0x02000008,
+    scope: { kind: "main" },
+  }), {
+    rom: "game.nds",
+    processor: "arm9",
+    targetRuntimeAddress: 0x02000008,
+    scope: { kind: "main" },
+    seeds: [],
+    maxComponents: 32,
+    maxBlocks: 128,
+    maxInstructions: 2048,
+    maxBytes: 8192,
+    maxEdges: 512,
+    maxXrefs: 256,
+  });
+  assert.deepEqual(server.parse("nds_find_xrefs", {
+    rom: "game.nds",
+    processor: "arm9",
+    targetRomOffset: 0x208,
+    scope: { kind: "main-and-overlays", overlayIds: [7] },
+    seeds: [{ runtimeAddress: 0x02200000, mode: "thumb", overlayId: 7 }],
+  }).scope, { kind: "main-and-overlays", overlayIds: [7] });
+
+  for (const [field, value] of [
+    ["maxComponents", 129],
+    ["maxBlocks", 513],
+    ["maxInstructions", 16385],
+    ["maxBytes", 65537],
+    ["maxEdges", 4097],
+    ["maxXrefs", 2049],
+  ] as const) {
+    assert.throws(
+      () => server.parse("nds_find_xrefs", {
+        rom: "game.nds",
+        processor: "arm9",
+        targetRuntimeAddress: 0x02000008,
+        scope: { kind: "main" },
+        [field]: value,
+      }),
+      /less than or equal to/,
+    );
+  }
+  assert.throws(
+    () => server.parse("nds_find_xrefs", {
+      rom: "game.nds",
+      processor: "arm9",
+      targetRuntimeAddress: 0x02000008,
+      scope: { kind: "overlay", overlayIds: [] },
+    }),
+  );
+  assert.throws(
+    () => server.parse("nds_find_xrefs", {
+      rom: "game.nds",
+      processor: "arm9",
+      targetRuntimeAddress: 0x02000008,
+      scope: { kind: "main-and-overlays", overlayIds: [] },
+    }),
+  );
+  assert.throws(
+    () => server.parse("nds_find_xrefs", {
+      rom: "game.nds",
+      processor: "arm9",
+      targetRuntimeAddress: 0x02000008,
+      scope: { kind: "overlay", overlayIds: Array.from({ length: 129 }, (_, index) => index) },
+    }),
+  );
+  assert.throws(
+    () => server.parse("nds_find_xrefs", {
+      rom: "game.nds",
+      processor: "arm9",
+      targetRuntimeAddress: 0x02000008,
+      scope: { kind: "main" },
+      seeds: Array.from({ length: 513 }, () => ({ runtimeAddress: 0x02000000, mode: "arm" })),
+    }),
+  );
+
+  for (const forbidden of [
+    "binary",
+    "bytes",
+    "baseAddress",
+    "output",
+    "path",
+    "length",
+  ]) {
+    assert.equal(Object.hasOwn(server.schema("nds_list_references"), forbidden), false);
+    assert.equal(Object.hasOwn(server.schema("nds_find_xrefs"), forbidden), false);
+  }
+});
+
 test("component schema exposes no caller-controlled output path", () => {
   const server = register("/workspace");
   assert.equal(Object.hasOwn(server.schema("nds_extract_component"), "output"), false);
@@ -347,6 +464,64 @@ test("disassembly handlers decode canonical ARM instructions and CFG returns", a
   const blocks = cfg.blocks as Array<Record<string, unknown>>;
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0]?.stopReason, "return");
+});
+
+test("reference handlers classify direct ARM references and find xrefs", async () => {
+  const { fixture, rom } = await buildReferenceRom();
+  const server = register(fixture.directory);
+
+  const listedResult = await server.invoke("nds_list_references", {
+    rom,
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "arm",
+    maxInstructions: 1,
+    maxBytes: 4,
+  });
+  assert.equal(resultIsError(listedResult), false);
+  const listed = resultBody(listedResult);
+  const references = listed.references as Array<Record<string, unknown>>;
+  assert.equal(references[0]?.kind, "direct-call");
+
+  const xrefResult = await server.invoke("nds_find_xrefs", {
+    rom,
+    processor: "arm9",
+    targetRuntimeAddress: 0x02000008,
+    scope: { kind: "main" },
+    maxComponents: 1,
+    maxBlocks: 8,
+    maxInstructions: 16,
+    maxBytes: 64,
+    maxEdges: 16,
+    maxXrefs: 8,
+  });
+  assert.equal(resultIsError(xrefResult), false);
+  const xrefs = resultBody(xrefResult);
+  assert.equal(xrefs.status, "complete");
+  assert.equal((xrefs.xrefs as Array<Record<string, unknown>>).length, 1);
+});
+
+test("xref handler rejects missing or duplicate target selectors before scanning", async () => {
+  const { fixture, rom } = await buildReferenceRom();
+  const server = register(fixture.directory);
+
+  const missing = await server.invoke("nds_find_xrefs", {
+    rom,
+    processor: "arm9",
+    scope: { kind: "main" },
+  });
+  assert.equal(resultIsError(missing), true);
+  assert.equal(resultBody(missing).category, "range-out-of-bounds");
+
+  const duplicate = await server.invoke("nds_find_xrefs", {
+    rom,
+    processor: "arm9",
+    targetRuntimeAddress: 0x02000008,
+    targetRomOffset: 0x208,
+    scope: { kind: "main" },
+  });
+  assert.equal(resultIsError(duplicate), true);
+  assert.equal(resultBody(duplicate).category, "range-out-of-bounds");
 });
 
 test("disassembly handlers preserve compressed-overlay status as a successful result", async () => {
@@ -444,7 +619,7 @@ test("analysis bundle tool returns controlled deterministic paths", async () => 
   await readFile(String(body.manifestPath));
 });
 
-test("index capability declaration includes all nine NDS tool names", async () => {
+test("index capability declaration includes all eleven NDS tool names", async () => {
   const source = await readFile(path.resolve("src/index.ts"), "utf8");
   for (const name of EXPECTED_TOOLS) {
     assert.equal(source.includes(`\"${name}\"`), true, name);
