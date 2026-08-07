@@ -93,3 +93,139 @@ test("rejects GDB breakpoint errors and unsupported acknowledgements", async () 
     await close(server);
   }
 });
+
+test("continue waits for an asynchronous stop reply", async () => {
+  const received: string[] = [];
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("ascii");
+      const parsed = parseRspPacket(buffer);
+      if (parsed === null) return;
+      buffer = buffer.slice(parsed.consumed);
+      received.push(parsed.payload);
+      socket.write("+", "ascii");
+      setTimeout(() => socket.write(encodeRspPacket("S05"), "ascii"), 10);
+    });
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.continueExecution(1000), {
+      kind: "stop",
+      stop: { kind: "signal", signal: 5, fields: {}, raw: "S05" },
+      state: "stopped",
+    });
+    assert.equal(session.state(), "stopped");
+    assert.deepEqual(received, ["c"]);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("continue timeout leaves execution running and wait observes a later stop", async () => {
+  const server = net.createServer((socket) => {
+    let scheduled = false;
+    socket.on("data", (chunk) => {
+      const parsed = parseRspPacket(chunk.toString("ascii"));
+      if (parsed?.payload !== "c" || scheduled) return;
+      scheduled = true;
+      socket.write("+", "ascii");
+      setTimeout(() => socket.write(encodeRspPacket("S05"), "ascii"), 60);
+    });
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.continueExecution(20), {
+      kind: "timeout",
+      state: "running",
+    });
+    assert.equal(session.state(), "running");
+    assert.deepEqual(await session.waitForStop(1000), {
+      kind: "stop",
+      stop: { kind: "signal", signal: 5, fields: {}, raw: "S05" },
+      state: "stopped",
+    });
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("pause sends the raw GDB interrupt byte and waits for stop", async () => {
+  let sawInterrupt = false;
+  const server = net.createServer((socket) => {
+    socket.on("data", (chunk) => {
+      const text = chunk.toString("ascii");
+      const parsed = parseRspPacket(text);
+      if (parsed?.payload === "c") {
+        socket.write("+", "ascii");
+        return;
+      }
+      if (chunk.includes(0x03)) {
+        sawInterrupt = true;
+        socket.write(encodeRspPacket("S02"), "ascii");
+      }
+    });
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.equal((await session.continueExecution(20)).kind, "timeout");
+    assert.deepEqual(await session.interruptAndWait(1000), {
+      kind: "stop",
+      stop: { kind: "signal", signal: 2, fields: {}, raw: "S02" },
+      state: "stopped",
+    });
+    assert.equal(sawInterrupt, true);
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("execution reports target exit and invalidates the session", async () => {
+  const server = net.createServer((socket) => {
+    socket.once("data", () => socket.write(`+${encodeRspPacket("W00")}`, "ascii"));
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    assert.deepEqual(await session.continueExecution(1000), {
+      kind: "stop",
+      stop: { kind: "exited", status: 0, raw: "W00" },
+      state: "unavailable",
+    });
+    assert.equal(session.state(), "unavailable");
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
+
+test("execution rejects connection loss and marks the session unavailable", async () => {
+  const server = net.createServer((socket) => {
+    socket.once("data", () => socket.destroy());
+  });
+  const port = await listen(server);
+  const session = createSession(port);
+
+  try {
+    await session.connect();
+    await assert.rejects(session.continueExecution(1000), /connection closed/);
+    assert.equal(session.state(), "unavailable");
+  } finally {
+    await session.close();
+    await close(server);
+  }
+});
