@@ -156,25 +156,35 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import ghidra.app.script.GhidraScript;
-import ghidra.framework.options.Options;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.lang.Register;
-import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.ProgramContext;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.symbol.Symbol;
+import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.util.PropertyMapManager;
 import ghidra.program.model.util.StringPropertyMap;
 
 public class ReMcpAcceptanceInspect extends GhidraScript {
+    private static final String ANALYST_MARKER = "REMCP_ACCEPTANCE_ANALYST_MARKER";
+    private static final long ANALYST_MARKER_ADDRESS = 0x02000004L;
+
     @Override
     protected void run() throws Exception {
         String[] args = getScriptArgs();
         if (args.length != 2) throw new IllegalArgumentException("expected output path and action");
         Path output = Paths.get(args[0]).toAbsolutePath().normalize();
         String action = args[1];
-        Options info = currentProgram.getOptions(Program.PROGRAM_INFO);
+        Address markerAddress = currentProgram.getAddressFactory()
+            .getDefaultAddressSpace()
+            .getAddress(ANALYST_MARKER_ADDRESS);
+        SymbolTable symbols = currentProgram.getSymbolTable();
+        Symbol marker = symbols.getGlobalSymbol(ANALYST_MARKER, markerAddress);
         if ("mark".equals(action)) {
-            info.setString("re-mcp-acceptance.analyst-marker", "preserve-me");
+            if (marker == null) {
+                marker = symbols.createLabel(markerAddress, ANALYST_MARKER, SourceType.USER_DEFINED);
+            }
         }
         else if (!"inspect".equals(action)) {
             throw new IllegalArgumentException("action must be mark or inspect");
@@ -183,7 +193,7 @@ public class ReMcpAcceptanceInspect extends GhidraScript {
         StringBuilder text = new StringBuilder();
         text.append("program\\t").append(currentProgram.getName()).append("\\n");
         text.append("language\\t").append(currentProgram.getLanguageID().getIdAsString()).append("\\n");
-        text.append("marker\\t").append(info.getString("re-mcp-acceptance.analyst-marker", "")).append("\\n");
+        text.append("marker\\t").append(marker == null ? "" : marker.getName()).append("\\n");
         for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
             text.append("block\\t")
                 .append(block.getName()).append("\\t")
@@ -312,7 +322,7 @@ try {
   assert.equal(arm9Before.language, "ARM:LE:32:v5t");
   assert.equal(arm7Before.program, "RE-MCP_ARM7");
   assert.equal(arm7Before.language, "ARM:LE:32:v4t");
-  assert.equal(arm9Before.marker, "preserve-me");
+  assert.equal(arm9Before.marker, "REMCP_ACCEPTANCE_ANALYST_MARKER");
 
   const overlay1 = arm9Before.blocks.find((entry) => entry.name === "RE_MCP_ARM9_OVL_1");
   const overlay2 = arm9Before.blocks.find((entry) => entry.name === "RE_MCP_ARM9_OVL_2");
@@ -332,7 +342,7 @@ try {
   const second = await bootstrapNdsGhidraProject(romPath, config);
   assert.equal(second.runKind, "already-current");
   const arm9After = await inspect(map, "RE-MCP_ARM9", "inspect", scriptDirectory);
-  assert.equal(arm9After.marker, "preserve-me");
+  assert.equal(arm9After.marker, "REMCP_ACCEPTANCE_ANALYST_MARKER");
   assert.deepEqual(
     arm9After.blocks.filter((entry) => entry.name === "RE_MCP_ARM9_OVL_1" || entry.name === "RE_MCP_ARM9_OVL_2"),
     arm9Before.blocks.filter((entry) => entry.name === "RE_MCP_ARM9_OVL_1" || entry.name === "RE_MCP_ARM9_OVL_2"),
@@ -347,7 +357,7 @@ try {
     overlappingOverlaySpaces: [overlay1?.space, overlay2?.space],
     compressedOverlayIds: arm9Status?.compressedOverlayIds,
     provenModes: Object.fromEntries(arm9Before.modes),
-    analystMarkerPreserved: arm9After.marker === "preserve-me",
+    analystMarkerPreserved: arm9After.marker === "REMCP_ACCEPTANCE_ANALYST_MARKER",
   }, null, 2)}\n`);
 } finally {
   await rm(scriptDirectory, { recursive: true, force: true });
