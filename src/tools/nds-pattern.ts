@@ -11,6 +11,8 @@ import {
   type NdsPatternSearchErrorCategory,
 } from "../services/nds/errors.js";
 import { searchNdsPattern } from "../services/nds/pattern-search.js";
+import type { NdsPatternSearchScope } from "../services/nds/pattern-scope.js";
+import type { NdsSearchPattern } from "../services/nds/patterns.js";
 import { readNdsRomMap } from "../services/nds/rom-map.js";
 
 const romSchema = z.string().min(1);
@@ -61,9 +63,55 @@ const maxScanBytesSchema = z.number()
   .default(64 * 1024 * 1024);
 const contextBytesSchema = z.number().int().min(0).max(64).default(0);
 
+type PatternInput = z.infer<typeof patternSchema>;
+type PatternScopeInput = z.infer<typeof patternScopeSchema>;
+
 type NdsPatternToolErrorCategory =
   | NdsErrorCategory
   | NdsPatternSearchErrorCategory;
+
+function normalizePattern(input: PatternInput): NdsSearchPattern {
+  switch (input.kind) {
+    case "byte-signature":
+      return { kind: "byte-signature", signature: input.signature };
+    case "integer":
+      return {
+        kind: "integer",
+        value: input.value,
+        width: input.width,
+        endian: input.endian,
+        signed: input.signed,
+        ...(input.alignment === undefined ? {} : { alignment: input.alignment }),
+      };
+    case "ascii":
+      return { kind: "ascii", text: input.text };
+    case "utf16le":
+      return { kind: "utf16le", text: input.text };
+  }
+}
+
+function normalizeScope(input: PatternScopeInput): NdsPatternSearchScope {
+  if (input.kind === "whole-rom") {
+    return { kind: "whole-rom" };
+  }
+  return {
+    kind: "components",
+    ...(input.arm9Main === undefined ? {} : { arm9Main: input.arm9Main }),
+    ...(input.arm7Main === undefined ? {} : { arm7Main: input.arm7Main }),
+    ...(input.arm9OverlayIds === undefined
+      ? {}
+      : { arm9OverlayIds: input.arm9OverlayIds }),
+    ...(input.arm7OverlayIds === undefined
+      ? {}
+      : { arm7OverlayIds: input.arm7OverlayIds }),
+    ...(input.nitroFsFileIds === undefined
+      ? {}
+      : { nitroFsFileIds: input.nitroFsFileIds }),
+    ...(input.nitroFsPaths === undefined
+      ? {}
+      : { nitroFsPaths: input.nitroFsPaths }),
+  };
+}
 
 function textResultFromText(text: string, isError = false) {
   return {
@@ -205,12 +253,17 @@ export function registerNdsPatternTools(
       const operation = "nds_search_pattern";
       try {
         const map = await readNdsRomMap(resolveRom(config, rom));
-        const result = await searchNdsPattern(map, pattern, scope, {
-          offset,
-          limit,
-          maxScanBytes,
-          contextBytes,
-        });
+        const result = await searchNdsPattern(
+          map,
+          normalizePattern(pattern),
+          normalizeScope(scope),
+          {
+            offset,
+            limit,
+            maxScanBytes,
+            contextBytes,
+          },
+        );
         return boundedTextResult(config, operation, {
           rom: relativeWorkspacePath(config, map.romPath),
           sha256: map.sha256,
