@@ -10,7 +10,7 @@ Build a native-independent Nintendo DS static-analysis foundation for RE-MCP wit
 
 The milestone establishes one canonical, validated NDS ROM model that future disassembly, Ghidra, pattern-search, table-inference, and runtime-correlation tooling can reuse.
 
-The original `.nds` file remains immutable. The only writes allowed by this milestone are deterministic derived artifacts under a controlled `analysis/generated/nds/...` tree.
+The source `.nds` file remains immutable. The only writes allowed are deterministic derived artifacts under a controlled `analysis/generated/nds/...` tree.
 
 ## 2. Goals
 
@@ -21,16 +21,16 @@ The milestone must provide:
 - FAT parsing;
 - FNT/NitroFS hierarchy reconstruction;
 - ARM9 and ARM7 overlay-table parsing;
-- file-backed overlay metadata joined through FAT;
+- overlay file metadata joined through FAT;
 - canonical executable-range discovery;
-- runtime-address to ROM-offset resolution;
-- ROM-offset to structural/runtime classification;
+- runtime-address resolution;
+- ROM-offset structural/runtime classification;
 - controlled extraction of ARM9, ARM7, overlays, and selected NitroFS files;
 - deterministic full static-analysis bundle generation;
-- ROM SHA-256 identity attached to all parsed/extracted results;
-- compatibility preservation for the existing `readArm9ExecutableRange()` debugger-facing behavior;
-- seven bounded MCP tools for user-facing access;
-- fixture-driven automated tests independent of DeSmuME.
+- ROM SHA-256 identity attached to parsed and extracted results;
+- compatibility preservation for existing `readArm9ExecutableRange()` behavior;
+- seven bounded MCP tools;
+- fixture-driven tests independent of DeSmuME.
 
 ## 3. Non-goals
 
@@ -38,23 +38,23 @@ This milestone does not add or change:
 
 - disassembly or instruction decoding;
 - function discovery or branch analysis;
-- Capstone, radare2, or Ghidra integration;
+- Capstone, radare2, Ghidra, or Kaitai integration;
 - pattern scanning or table inference;
-- compression or decompression;
+- compression/decompression support;
 - graphics decoding;
 - runtime overlay-loaded-state detection;
 - watchpoints;
-- conditional or advanced breakpoints;
-- stepping/continue/pause behavior;
+- conditional/advanced breakpoints;
+- stepping, continue, pause, or stop-context behavior;
 - ROM mutation;
-- NitroFS replacement/rebuild;
+- NitroFS replacement or rebuild;
 - patch generation;
 - arbitrary byte-range dumping;
 - arbitrary output paths.
 
-Dynamic Debugging Patch 1 remains functionally frozen pending the physical Catalina/DeSmuME acceptance test.
+Dynamic Debugging Patch 1 remains functionally frozen pending the physical Catalina/DeSmuME acceptance run.
 
-## 4. Chosen architecture
+## 4. Architecture
 
 Use one canonical `NdsRomMap` service as the authoritative parsed representation of a ROM.
 
@@ -71,11 +71,9 @@ src/services/nds/
 └── extraction.ts
 ```
 
-The exact file split may change during implementation if a cleaner separation emerges, but the architectural boundary must remain: parsing, resolution, and extraction are internal services; MCP registration lives separately in `src/tools/nds.ts`.
+Exact file boundaries may change during implementation, but the architectural boundary is fixed: parsing, resolution, and extraction are internal services; MCP registration lives in `src/tools/nds.ts`.
 
-### 4.1 Canonical model
-
-Conceptually, the model contains:
+Conceptually:
 
 ```text
 NdsRomMap
@@ -92,28 +90,24 @@ NdsRomMap
 └── executableRanges[]
 ```
 
-It also exposes narrow resolver operations for runtime addresses and ROM offsets.
-
-All consumers use this model rather than independently re-parsing NDS offsets or duplicating address arithmetic.
+All consumers use this model rather than independently parsing offsets or duplicating address arithmetic.
 
 ## 5. ROM identity and input safety
 
-Every parse begins by validating the requested ROM path through RE-MCP's existing workspace-containment rules.
+Every parse must:
 
-The parser must verify:
+- resolve the requested ROM inside `RE_MCP_WORKSPACE_ROOT` using existing containment helpers;
+- require a readable regular file;
+- require enough bytes for all NDS header fields consumed by this milestone;
+- validate every referenced region against actual ROM length;
+- reject unsafe integer/range arithmetic;
+- calculate a full SHA-256 identity.
 
-- the path resolves inside `RE_MCP_WORKSPACE_ROOT`;
-- the file exists and is readable;
-- the file is large enough for the required NDS header fields;
-- every referenced offset/size region fits inside the actual file;
-- every arithmetic operation used for ranges is safe and does not overflow;
-- the ROM SHA-256 is calculated and attached to the canonical model.
-
-The full SHA-256 is the canonical ROM identity. A 16-hex-character prefix may be used only for deterministic generated-directory naming; manifests always store the full hash.
+The full SHA-256 is canonical. A first-16-hex-character prefix may be used only for generated-directory naming; manifests store the full hash.
 
 ## 6. Header parsing
 
-The header parser must expose at least:
+Expose at least:
 
 - game title;
 - game code;
@@ -121,21 +115,15 @@ The header parser must expose at least:
 - unit code;
 - device capacity;
 - ROM version;
-- ARM9 ROM offset;
-- ARM9 entry address;
-- ARM9 RAM/load address;
-- ARM9 size;
-- ARM7 ROM offset;
-- ARM7 entry address;
-- ARM7 RAM/load address;
-- ARM7 size;
-- FNT offset and size;
-- FAT offset and size;
-- ARM9 overlay-table offset and size;
-- ARM7 overlay-table offset and size;
+- ARM9 ROM offset, entry address, RAM/load address, and size;
+- ARM7 ROM offset, entry address, RAM/load address, and size;
+- FNT offset/size;
+- FAT offset/size;
+- ARM9 overlay-table offset/size;
+- ARM7 overlay-table offset/size;
 - banner offset.
 
-For each offset/size region:
+For every offset/size region:
 
 ```text
 offset >= 0
@@ -143,15 +131,13 @@ size >= 0
 offset + size <= actual ROM size
 ```
 
-Overflow, truncated regions, or impossible ranges fail explicitly.
-
-ARM9 behavior already expected by `readArm9ExecutableRange()` remains compatible.
+Overflow, truncation, or impossible ranges fail explicitly.
 
 ## 7. FAT parsing
 
-FAT is authoritative for physical file byte ranges.
+FAT is authoritative for physical file ranges.
 
-Each FAT record provides:
+Each record exposes:
 
 ```text
 fileId
@@ -160,46 +146,46 @@ endOffset
 size
 ```
 
-Validation rules:
+Validation:
 
-- FAT byte length must be divisible by 8;
+- FAT length divisible by 8;
 - `startOffset <= endOffset`;
-- both endpoints must be valid relative to ROM length;
-- size arithmetic must be safe;
-- zero-length files may exist but must never cause invalid reads.
+- both offsets within ROM bounds;
+- safe size arithmetic;
+- zero-length files may exist but never cause invalid reads.
 
-FNT names or overlay metadata must not override FAT's physical file range.
+FNT or overlay metadata never override FAT's physical range.
 
 ## 8. FNT / NitroFS reconstruction
 
-FNT is authoritative for directory/name hierarchy.
+FNT is authoritative for names and hierarchy.
 
-The parser reconstructs:
+Reconstruct:
 
 - directory IDs;
 - parent relations;
-- directory subtable offsets;
+- subtable offsets;
 - first file IDs;
 - file names;
 - subdirectory relations;
 - full NitroFS paths.
 
-Validation rules:
+Validation:
 
-- referenced directories must exist;
+- directory references must resolve;
 - malformed subtable offsets fail;
 - directory cycles fail;
-- named file IDs must resolve to FAT entries;
-- malformed traversal must never escape the FNT region;
-- FAT entries that have no FNT name remain addressable by `fileId`.
+- named file IDs must resolve through FAT;
+- traversal may not leave the FNT region;
+- unnamed FAT entries remain addressable by `fileId`.
 
-Filename handling must preserve original byte-derived identity sufficiently to avoid corrupting traversal. Display normalization must not alter file-ID mapping.
+Display normalization must never alter file-ID mapping or traversal semantics.
 
 ## 9. Overlay parsing
 
-ARM9 and ARM7 overlay tables remain processor-specific.
+ARM9 and ARM7 overlay tables remain processor-specific. Each table record is 32 bytes / eight little-endian `u32` values.
 
-Each overlay record preserves at least:
+Preserve:
 
 ```text
 processor
@@ -210,38 +196,51 @@ bssSize
 staticInitStart
 staticInitEnd
 fileId
-flags / packed metadata
+compressedSize
+flags
+compressed
 ```
 
-The parser joins `fileId` through FAT to add:
+The final packed field at record offset `0x1C` is interpreted as:
 
 ```text
-romOffset
-romSize
+compressedSize = packed & 0x00FFFFFF
+flags          = packed >>> 24
+compressed     = (flags & 1) != 0
 ```
 
-The implementation must preserve the distinction between:
+The parser joins `fileId` through FAT to add physical `romOffset` and `romSize`.
 
-- file-backed bytes;
-- runtime allocation size;
-- BSS/runtime-only bytes.
+Important distinctions:
 
-It must never assume `romSize == ramSize`.
+- `ramSize` describes the initialized overlay image size in RAM;
+- `bssSize` is additional zero-initialized runtime memory following the initialized image;
+- `compressedSize` and FAT-backed `romSize` describe stored representation metadata;
+- a compressed overlay does not have a byte-for-byte mapping between decompressed runtime bytes and compressed ROM bytes.
 
-Overlay-table byte length must be valid for the DS overlay-record size. Invalid file IDs or table truncation fail explicitly.
+The parser must never assume `romSize == ramSize`, and must never fabricate a direct runtime-to-ROM byte mapping for compressed overlays.
 
-## 10. Canonical executable ranges
+Overlay-table length must be divisible by 32. Invalid file IDs, truncated records, unsafe ranges, or inconsistent packed metadata fail explicitly where correctness cannot be established.
 
-The canonical map exposes validated executable ranges for:
+## 10. Canonical executable/runtime ranges
+
+Expose static candidate ranges for:
 
 - ARM9 main;
 - ARM7 main;
 - ARM9 overlays;
 - ARM7 overlays.
 
-The range model is static. It does not claim an overlay is currently loaded.
+For an overlay, distinguish:
 
-Overlapping overlay runtime ranges are permitted because different overlays may occupy the same RAM region at different times.
+```text
+initialized range: [ramAddress, ramAddress + ramSize)
+BSS range:         [ramAddress + ramSize, ramAddress + ramSize + bssSize)
+```
+
+All additions must be overflow-checked.
+
+The map does not claim an overlay is currently loaded. Overlapping overlay ranges are valid static candidates.
 
 ## 11. Runtime-address resolution
 
@@ -257,56 +256,71 @@ romOffset = romOffsetBase + relativeOffset
 
 ARM7 follows the same rule.
 
-### 11.2 Overlay addresses
+### 11.2 Uncompressed overlay initialized bytes
 
-An overlay is a static candidate when:
-
-```text
-ramAddress <= address < ramAddress + ramSize
-```
-
-Then:
+If exactly one uncompressed overlay candidate contains the address within its initialized range:
 
 ```text
 relativeOffset = address - ramAddress
 ```
 
-If `relativeOffset` falls inside the file-backed range, return the corresponding ROM offset.
+A direct ROM mapping is returned only when that relative offset is also inside the validated FAT-backed file range.
 
-If it falls in runtime-only/BSS space, return an explicit runtime-only result with `romOffset: null`.
+### 11.3 Compressed overlay initialized bytes
 
-### 11.3 Ambiguous overlays
+If a compressed overlay candidate contains the address, identify the overlay and relative runtime offset, but return no exact ROM byte offset:
 
-If more than one static overlay candidate contains the address, the resolver returns all candidates and marks the result ambiguous.
+```text
+romOffset: null
+romMapping: "compressed"
+```
 
-It must not choose a candidate by overlay ID, table order, size, or any other heuristic.
+The result may include the overlay backing file's `romOffset`, `romSize`, and `fileId` as container metadata, but must clearly distinguish those from an exact runtime-byte mapping.
 
-Static analysis cannot determine which mutually exclusive overlay is loaded. Runtime loaded-state correlation is deferred until after native debugger acceptance.
+Exact decompressed-runtime ↔ compressed-ROM byte correlation is deferred to the future compression/decompression milestone.
+
+### 11.4 Overlay BSS
+
+If the address falls in:
+
+```text
+ramAddress + ramSize <= address < ramAddress + ramSize + bssSize
+```
+
+return an explicit runtime-only/BSS candidate with `romOffset: null`.
+
+### 11.5 Ambiguous overlays
+
+If multiple static overlay candidates contain the address, return all candidates and mark the result ambiguous.
+
+Never choose by overlay ID, table order, size, compression state, or heuristic.
+
+Static analysis cannot determine loaded state.
 
 ## 12. ROM-offset resolution
 
-`nds_resolve_rom_offset` returns a classification set rather than forcing a single category.
+`nds_resolve_rom_offset` returns a classification set rather than forcing one category.
 
-A ROM byte may simultaneously belong to:
+A ROM byte may belong to multiple structures simultaneously, including:
 
-- a NitroFS/FAT file;
-- an ARM9 or ARM7 overlay backing file;
+- FAT/NitroFS file;
+- ARM9/ARM7 overlay backing file;
 - ARM9 main;
 - ARM7 main;
-- a structural region such as header/FNT/FAT/overlay table;
-- another unmapped ROM region.
+- header/FNT/FAT/overlay-table structural regions;
+- an otherwise unmapped region.
 
-Where deterministic runtime mapping exists, the match includes that runtime address.
+For uncompressed main/overlay bytes with deterministic mapping, include runtime address.
 
-If the same byte has multiple valid classifications, all are returned.
+For bytes belonging to a compressed overlay file, report the overlay/file classification but do not invent a runtime address for that compressed byte position.
 
 ## 13. Extraction model
 
-Extraction may read only byte ranges already validated by `NdsRomMap`.
+Extraction reads only ranges validated by `NdsRomMap`.
 
-The public extraction tool does not accept arbitrary `offset`, `length`, or output path values.
+Public extraction does not accept arbitrary `offset`, `length`, or output path values.
 
-Allowed selectors are recognized components:
+Allowed selectors:
 
 - `arm9`;
 - `arm7`;
@@ -314,20 +328,14 @@ Allowed selectors are recognized components:
 - `arm7-overlay` plus overlay ID;
 - `nitrofs-file` plus file ID or resolved NitroFS path.
 
-The original ROM is never modified.
+Overlay extraction in this milestone extracts the exact stored FAT-backed bytes. If the overlay is compressed, the extracted artifact remains compressed; decompression is explicitly deferred.
+
+The source ROM is never modified.
 
 ### 13.1 Generated layout
 
-Deterministic output root:
-
 ```text
 analysis/generated/nds/<first-16-sha256-hex>/
-```
-
-Full analysis bundle layout:
-
-```text
-analysis/generated/nds/<sha-prefix>/
 ├── manifest.json
 ├── address-map.json
 ├── filesystem.json
@@ -339,99 +347,67 @@ analysis/generated/nds/<sha-prefix>/
     └── arm7/
 ```
 
-The full bundle does not automatically extract every NitroFS file. Individual NitroFS files remain opt-in through `nds_extract_component`.
+The analysis bundle does not dump every NitroFS file. Individual assets remain opt-in.
 
 ### 13.2 Artifact metadata
 
-Each extracted artifact records at least:
+Record at least:
 
-- source ROM path or workspace-relative identity;
+- source ROM workspace-relative identity;
 - source ROM SHA-256;
 - component kind;
 - processor where applicable;
 - overlay/file ID where applicable;
-- ROM offset;
+- physical ROM offset;
 - source byte length;
 - RAM/load address where applicable;
-- extracted file path;
-- extracted artifact SHA-256.
+- compression state and compressed-size metadata where applicable;
+- output path;
+- artifact SHA-256.
 
 ### 13.3 Atomic writes
 
-Individual generated files use temporary siblings followed by close/sync and rename into their final path.
+Individual files use temporary siblings, close/sync, then rename.
 
-Full analysis bundles are assembled in a temporary generated directory and promoted to the final deterministic directory only after all required files succeed.
+Full bundles are assembled in a temporary generated directory and promoted only after all required artifacts succeed.
 
-A failed operation must not leave a partial directory that appears to be a completed bundle.
+Failure must not leave a partial directory that appears complete.
 
 ## 14. MCP tool surface
 
-The milestone exposes exactly seven primary public tools.
+Expose exactly seven primary tools.
 
-### 14.1 `nds_inspect_rom`
+### `nds_inspect_rom`
 
-Input:
+Returns bounded ROM identity, game metadata, ARM9/ARM7 metadata, filesystem/table regions, overlay counts, and validated ranges.
 
-```json
-{ "rom": "relative/path/game.nds" }
-```
+### `nds_list_files`
 
-Returns bounded canonical summary including:
+Supports ROM, prefix, bounded `limit`, and pagination offset/cursor. Results include file ID, optional path, ROM range, and size.
 
-- ROM identity and size;
-- game metadata;
-- ARM9/ARM7 metadata;
-- FNT/FAT regions;
-- overlay-table metadata;
-- banner offset;
-- NitroFS file count;
-- ARM9/ARM7 overlay counts;
-- validated executable ranges.
+### `nds_list_overlays`
 
-### 14.2 `nds_list_files`
+Supports processor `arm9`, `arm7`, or `all`. Returns bounded overlay metadata including initialized range, BSS range, file ID, physical backing range, `compressedSize`, flags, and compression state without claiming loaded state.
 
-Supports bounded listing/filtering such as:
+### `nds_resolve_runtime_address`
 
-- ROM path;
-- prefix;
-- limit;
-- offset/cursor.
+Input: ROM, 32-bit address, processor.
 
-Each result contains file ID, optional path, ROM start/end offsets, and size.
+Returns main resolution, one overlay candidate, compressed/no-direct-ROM mapping, BSS/runtime-only result, explicit ambiguity, or unmapped result.
 
-### 14.3 `nds_list_overlays`
+### `nds_resolve_rom_offset`
 
-Supports processor selection: `arm9`, `arm7`, or `all`.
+Returns all structural/file/runtime classifications for one validated ROM offset.
 
-Returns bounded overlay metadata including RAM range, BSS, file ID, FAT-backed ROM range, and packed/compression-related flags without claiming loaded state.
+### `nds_extract_component`
 
-### 14.4 `nds_resolve_runtime_address`
+Extracts exactly one recognized component to a server-selected deterministic generated path. No arbitrary output path.
 
-Input includes ROM path, address, and processor.
+### `nds_extract_analysis_bundle`
 
-Returns:
+Produces executable binaries, stored overlay binaries, and structural/address metadata without blanket NitroFS extraction.
 
-- main-executable resolution;
-- one overlay resolution;
-- runtime-only/BSS resolution;
-- explicit ambiguity with all candidates;
-- or unmapped result.
-
-### 14.5 `nds_resolve_rom_offset`
-
-Returns all structural/file/runtime classifications matching one ROM offset.
-
-### 14.6 `nds_extract_component`
-
-Extracts exactly one recognized component to the server-selected deterministic generated path.
-
-It never accepts an arbitrary output path.
-
-### 14.7 `nds_extract_analysis_bundle`
-
-Produces the deterministic static-analysis package containing executable binaries and structural/address metadata, but not a blanket extraction of every NitroFS asset.
-
-## 15. Tool registration and capabilities
+## 15. Tool registration
 
 Public NDS tools live in `src/tools/nds.ts` and register through:
 
@@ -439,25 +415,21 @@ Public NDS tools live in `src/tools/nds.ts` and register through:
 registerNdsTools(server, config)
 ```
 
-`src/index.ts` adds these tools to `server_capabilities`.
+`src/index.ts` adds all seven names to `server_capabilities`.
 
-They have no `OwnedProcessManager`, GDB, or DeSmuME dependency.
+These tools have no `OwnedProcessManager`, GDB, or DeSmuME dependency.
 
-## 16. Output bounding and pagination
+## 16. Output bounds and pagination
 
 All MCP responses respect `config.maxOutputBytes`.
 
-Potentially large list operations provide bounded pagination/filtering rather than dumping an entire ROM structure.
+Potentially large operations use bounded pagination/filtering. Applicable list tools support a bounded caller `limit` plus offset/cursor; prefix and processor filters apply where relevant.
 
-At minimum, applicable list tools support a caller-supplied bounded `limit` and offset/cursor model. Prefix and processor filters are used where appropriate.
+If serialization would exceed the configured bound, return `output-bound-exceeded` with a corrective action to narrow the request.
 
-If a serialized response would exceed the configured output bound, return a structured `output-bound-exceeded` failure with a corrective action instructing the caller to narrow the request.
+## 17. Error/result model
 
-## 17. Error model
-
-Static-analysis errors use stable categories suitable for MCP callers.
-
-Required categories include:
+Parser/operation error categories include:
 
 ```text
 invalid-rom
@@ -468,15 +440,20 @@ malformed-fnt
 malformed-overlay-table
 unknown-file-id
 unknown-overlay-id
-ambiguous-runtime-address
-runtime-only-bss
 output-bound-exceeded
 generated-path-failure
 ```
 
-Where ambiguity or runtime-only/BSS is a normal resolution outcome rather than an exceptional parser failure, the MCP tool may return a successful structured result carrying that status rather than `isError: true`. The implementation plan must make this distinction explicit and test it.
+Resolution statuses such as these are normal structured outcomes rather than parser failures:
 
-Error responses include:
+```text
+unmapped
+ambiguous-runtime-address
+runtime-only-bss
+compressed-no-direct-rom-mapping
+```
+
+True error responses include:
 
 ```text
 error
@@ -485,28 +462,27 @@ category
 correctiveAction
 ```
 
-No raw parser stack trace is exposed through MCP output.
+No raw parser stack traces are exposed through MCP output.
 
 ## 18. Dependency policy
 
-No new runtime dependencies are introduced for this milestone.
+No new runtime dependencies.
 
-Implementation should rely on built-in Node.js facilities such as:
+Use built-in Node.js facilities such as `Buffer`, `node:fs/promises`, `node:crypto`, and `node:path`.
 
-- `Buffer`;
-- `node:fs/promises`;
-- `node:crypto`;
-- `node:path`.
-
-Capstone, radare2, Ghidra, Kaitai, and other external analysis dependencies are deferred to later milestones where their functionality is directly needed.
+External analysis/decompression dependencies remain deferred.
 
 ## 19. Compatibility migration for `nds-arm9.ts`
 
-The existing public `readArm9ExecutableRange(romPath)` function remains available.
+Keep public:
 
-Its implementation should become a narrow compatibility adapter over the canonical NDS parser/model while preserving its existing result shape and validation behavior expected by debugger code and tests.
+```text
+readArm9ExecutableRange(romPath)
+```
 
-This milestone must not require changes to the externally observable behavior of:
+Its implementation becomes a narrow adapter over the canonical parser/model while preserving existing result shape and debugger-facing validation behavior.
+
+This milestone must not alter externally observable behavior of:
 
 - `desmume_start`;
 - breakpoint validation;
@@ -515,13 +491,13 @@ This milestone must not require changes to the externally observable behavior of
 - pause;
 - stop-context capture.
 
-Any refactor touching shared parsing code must keep the existing debugger test suite green.
+Existing debugger tests must remain green.
 
 ## 20. Testing strategy
 
 Testing is fixture-driven and independent of DeSmuME.
 
-Recommended test groups:
+Recommended groups:
 
 ```text
 tests/nds-header.test.ts
@@ -534,31 +510,30 @@ tests/nds-extraction.test.ts
 tests/nds-tools.test.ts
 ```
 
-Synthetic NDS fixtures should be generated in tests so offsets and malformed cases are deterministic.
+Synthetic fixtures control all offsets and malformed cases.
 
-Required coverage includes:
+Required coverage:
 
-### Header and core ranges
+### Header/core
 
 - valid ARM9/ARM7 metadata;
-- short/truncated ROM;
-- zero or invalid executable size where prohibited;
+- truncated ROM/header;
+- invalid sizes;
 - overflow;
 - region past EOF;
-- compatibility behavior for `readArm9ExecutableRange()`.
+- `readArm9ExecutableRange()` compatibility.
 
 ### FAT
 
 - valid records;
-- FAT length not divisible by 8;
+- non-multiple-of-8 size;
 - `start > end`;
-- record past EOF;
+- range past EOF;
 - zero-length file.
 
 ### FNT
 
-- root files;
-- nested directories;
+- root and nested files;
 - unnamed FAT entries;
 - invalid directory reference;
 - cycle;
@@ -568,104 +543,107 @@ Required coverage includes:
 
 ### Overlays
 
-- ARM9 overlays;
-- ARM7 overlays;
+- ARM9 and ARM7 records;
+- exact 32-byte record validation;
+- packed `compressedSize`/flags decode;
+- compression flag decode;
 - valid FAT join;
 - invalid file ID;
-- malformed/truncated table;
+- truncated table;
 - overlapping runtime ranges;
-- file-backed size differing from runtime size/BSS;
-- packed/compression metadata preserved without unsafe assumptions.
+- initialized range plus BSS range;
+- compressed overlay whose physical size differs from runtime size;
+- flags preserved without unsupported interpretation.
 
 ### Resolver
 
-- ARM9 main runtime to ROM;
-- ARM7 main runtime to ROM;
-- single overlay resolution;
-- overlay BSS/runtime-only resolution;
-- overlapping overlay ambiguity;
+- ARM9/ARM7 main mapping;
+- uncompressed overlay direct mapping;
+- compressed overlay returns no exact ROM byte mapping;
+- overlay BSS/runtime-only result;
+- overlapping-overlay ambiguity;
 - unmapped runtime address;
 - ROM offset with one classification;
 - ROM offset with multiple classifications;
+- compressed overlay ROM bytes do not receive fabricated runtime addresses;
 - structural-region classification.
 
 ### Extraction
 
-- ARM9 extraction;
-- ARM7 extraction;
-- overlay extraction;
-- NitroFS file extraction by ID;
-- NitroFS file extraction by valid resolved path;
+- ARM9/ARM7 extraction;
+- uncompressed overlay extraction;
+- compressed overlay extraction remains stored/compressed bytes;
+- NitroFS extraction by ID and path;
 - unknown IDs rejected;
-- arbitrary output path impossible at MCP schema level;
+- arbitrary output path impossible through schema;
 - deterministic generated location;
-- source/artifact SHA-256 recorded;
-- atomic output behavior;
-- bundle failure does not leave a completed-looking partial bundle;
-- original ROM remains byte-for-byte unchanged after extraction.
+- source/artifact hashes recorded;
+- atomic file/bundle behavior;
+- failed bundle does not appear complete;
+- source ROM byte-for-byte unchanged.
 
 ### MCP surface
 
-- exactly the seven planned NDS tools registered;
-- schema bounds for addresses, limits, processor selectors, overlay IDs, and file selectors;
-- workspace containment enforced;
-- structured errors;
-- output-bound handling;
+- exactly seven NDS tools registered;
+- schema bounds;
+- workspace containment;
+- structured errors/statuses;
+- output bound handling;
 - pagination/filter behavior;
-- `server_capabilities` includes the seven tools.
+- `server_capabilities` updated.
 
 ## 21. Security guarantees
 
-This milestone preserves RE-MCP's safety-first boundary:
+Preserve:
 
 - no arbitrary shell;
-- no arbitrary read path outside workspace;
+- no read outside workspace;
 - no arbitrary output path;
 - no raw offset/length extraction primitive;
-- no writes to the source ROM;
-- no ROM replacement or rebuild;
+- no source-ROM writes;
+- no ROM replacement/rebuild;
 - no debugger/GDB expansion;
-- no attachment to external processes;
-- all generated files remain under controlled `analysis/generated/nds/...` paths;
-- all read ranges originate from validated canonical ROM structures;
-- responses remain bounded by server configuration.
+- no process attachment;
+- generated files only below controlled `analysis/generated/nds/...`;
+- all read ranges originate from validated ROM structures;
+- bounded MCP output.
 
-## 22. Implementation sequencing constraint
+## 22. Implementation sequence
 
-Implementation should proceed test-first in small units:
+Test-first sequence:
 
-1. canonical header/identity model;
+1. header/identity model;
 2. FAT;
 3. FNT;
-4. overlays;
+4. overlays, including packed compression metadata;
 5. `NdsRomMap` composition;
 6. runtime and ROM-offset resolvers;
 7. controlled extraction;
 8. `readArm9ExecutableRange()` compatibility migration;
-9. MCP tools and capability registration;
-10. documentation and final regression verification.
+9. MCP tools/capability registration;
+10. documentation and full regression verification.
 
-The detailed implementation plan may split this into multiple PRs if that reduces risk. The design does not require all work to land in one oversized PR.
+The implementation plan may split this across multiple PRs. One oversized PR is not required.
 
 ## 23. Acceptance criteria
 
-The milestone is complete when:
+Complete when:
 
-- all seven NDS tools are implemented and documented;
-- all required parser/resolver/extraction tests pass;
+- all seven tools are implemented/documented;
+- parser/resolver/extraction tests pass;
 - type-check, full tests, and build pass;
 - existing debugger tests remain green;
-- no new runtime dependency is required;
-- the source ROM is provably unchanged by extraction tests;
-- generated output is deterministic, bounded, and workspace-contained;
-- ambiguous overlay addresses are never guessed;
-- runtime-only BSS addresses never receive fabricated ROM offsets;
-- `readArm9ExecutableRange()` preserves debugger-facing compatibility;
-- Dynamic Debugging Patch 1 behavior has not been extended before native Catalina acceptance.
+- no new runtime dependency is introduced;
+- source ROM remains unchanged in extraction tests;
+- output is deterministic, bounded, and workspace-contained;
+- overlapping overlays are never guessed;
+- BSS addresses never receive ROM offsets;
+- compressed overlay runtime bytes never receive fabricated direct ROM offsets;
+- compressed overlay file bytes never receive fabricated runtime addresses;
+- `readArm9ExecutableRange()` remains compatible;
+- Dynamic Debugging Patch 1 behavior is not extended before native Catalina acceptance.
 
 ## 24. Follow-on milestones
-
-This foundation is intentionally designed to support the following order:
 
 ```text
 NDS Static Analysis Foundation
@@ -679,4 +657,4 @@ Ghidra Integration
 Static ↔ Runtime Correlation
 ```
 
-After the physical Catalina debugger acceptance passes, future runtime tools may consume this same canonical NDS mapping to correlate breakpoint PCs and loaded overlays with static ROM structures.
+After physical Catalina debugger acceptance, runtime tooling may consume this canonical map to correlate breakpoint PCs and loaded overlays with static ROM structures.
