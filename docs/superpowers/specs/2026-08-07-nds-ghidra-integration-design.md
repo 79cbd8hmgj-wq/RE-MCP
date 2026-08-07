@@ -1,7 +1,7 @@
 # NDS Ghidra Integration Design
 
 Date: 2026-08-07
-Status: approved design; factual compatibility correction applied after self-review
+Status: approved design; factual compatibility and call-flow semantic corrections applied after review/acceptance
 Base: `main` after Proven Function Discovery
 
 ## Goal
@@ -109,7 +109,7 @@ Before normal auto-analysis:
 - the NDS main header entry is imported as ARM proof;
 - each RE-MCP-proven entry is tagged with exact identity, proof, and mode;
 - processor context is established only where RE-MCP has exact mode evidence;
-- deterministic direct-call evidence may be imported as exact references when both caller and target identity are exact.
+- deterministic direct-call evidence is stored as RE-MCP-owned exact call metadata after validating both caller and target identity; because the canonical call edge does not retain conditional-vs-unconditional execution semantics, RE-MCP does not fabricate a Ghidra flow-reference type, and normal Ghidra auto-analysis may derive its own non-authoritative flow reference.
 
 RE-MCP does **not** fabricate a Ghidra function-body range. If Ghidra later creates/expands a function body, that body is Ghidra-derived and not RE-MCP proof.
 
@@ -243,7 +243,7 @@ Normal CI, without Ghidra installed, covers:
 - full-SHA separation/prefix-collision behavior;
 - bridge generation and artifact hashes;
 - compressed-overlay omission;
-- proven-entry/direct-call evidence without invented bodies;
+- proven-entry/direct-call evidence without invented bodies or invented Ghidra call-flow typing;
 - installation/version/language validation against fixtures;
 - exact command construction;
 - `shell: false`, timeout and output-limit behavior;
@@ -289,7 +289,7 @@ Complete when:
 2. ARM9/ARM7 use explicit v5t/v4t languages and canonical bases.
 3. Every importable uncompressed overlay uses a distinct Ghidra overlay space.
 4. Compressed overlays are never imported as executable runtime bytes.
-5. Proven entry/mode/proof/direct-call evidence exists before auto-analysis without fabricated bodies.
+5. Proven entry/mode/proof/direct-call evidence exists before auto-analysis without fabricated bodies or fabricated conditional/unconditional Ghidra flow typing.
 6. Ghidra auto-analysis remains non-authoritative to RE-MCP.
 7. Identical reruns preserve analyst work and avoid unnecessary destructive reconstruction.
 8. Ownership conflicts fail closed.
