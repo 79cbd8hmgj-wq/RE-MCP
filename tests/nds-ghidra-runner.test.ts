@@ -270,6 +270,21 @@ test("Ghidra runner maps nonzero import and process exits by stage", async () =>
   );
 });
 
+test("Ghidra runner preserves a bounded failure diagnostic", async () => {
+  const marker = "GHIDRA_DIAGNOSTIC_MARKER";
+  await assert.rejects(
+    runGhidraInvocation(
+      directInvocation(`console.error('${marker}'); process.exit(5)`, "arm9-import"),
+      config(),
+    ),
+    (error: unknown) =>
+      error instanceof NdsError &&
+      error.category === "ghidra-import-failed" &&
+      error.message.includes(marker) &&
+      error.message.length < 8_192,
+  );
+});
+
 test("Ghidra runner identifies a project lock without destructive recovery", async () => {
   await assert.rejects(
     runGhidraInvocation(
