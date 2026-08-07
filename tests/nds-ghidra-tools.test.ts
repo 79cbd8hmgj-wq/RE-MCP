@@ -75,7 +75,7 @@ function config(maxOutputBytes = 64 * 1024): ServerConfig {
 
 function successDependencies(diagnostic = ""): NdsGhidraToolDependencies {
   return {
-    bootstrap: async (romPath) => ({
+    bootstrap: async (romPath: string) => ({
       sourceRomSha256: "a".repeat(64),
       projectPath: "analysis/ghidra/nds/" + "a".repeat(64) + "/project",
       ghidraVersion: "12.1.2",
@@ -85,7 +85,7 @@ function successDependencies(diagnostic = ""): NdsGhidraToolDependencies {
       diagnostic,
       resolvedRomForTest: romPath,
     }),
-    status: async (romPath) => ({
+    status: async (romPath: string) => ({
       sourceRomSha256: "a".repeat(64),
       projectPath: "analysis/ghidra/nds/" + "a".repeat(64) + "/project",
       projectExists: true,
