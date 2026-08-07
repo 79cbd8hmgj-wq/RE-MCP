@@ -45,6 +45,7 @@ test("normalizes ARM and Thumb PC-relative operands from structured detail", asy
       "arm",
     );
     assert.ok(armLiteral);
+    console.log("ARM_LITERAL_DIAGNOSTIC", JSON.stringify(armLiteral));
     assert.deepEqual(armLiteral.pcRelative, {
       kind: "literal-load",
       displacement: 0,
