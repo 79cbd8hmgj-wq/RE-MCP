@@ -49,6 +49,7 @@ test("install verifier smoke-searches packaged NDS patterns", async () => {
     "dist/services/nds/rom-map.js",
     "Packaged NDS pattern overlap smoke failed",
     "Packaged NDS pattern ownership smoke failed",
+    "fixture.set([0xaa, 0xaa, 0xbb], 0x200)",
   ]) {
     assert.equal(source.includes(required), true, required);
   }
