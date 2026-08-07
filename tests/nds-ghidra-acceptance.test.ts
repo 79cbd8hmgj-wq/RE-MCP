@@ -17,24 +17,30 @@ test("manual Ghidra acceptance workflow is dispatch-only and pins the verified 1
   assert.equal(workflow.includes(GHIDRA_URL), true);
   assert.equal(workflow.includes(GHIDRA_SHA256), true);
   assert.match(workflow, /java-version:\s*['"]?21['"]?/);
-  assert.match(workflow, /sha256sum\s+-c/);
+  assert.match(workflow, /sha256sum\s+(?:-c|--check)/);
+  assert.match(workflow, /--strict/);
   assert.match(workflow, /scripts\/ghidra-acceptance\.mjs/);
+  assert.match(workflow, /fixture\.nds/);
 });
 
 test("manual Ghidra acceptance uses only a synthetic NDS and checks project/evidence preservation", async () => {
   const source = await readFile(acceptancePath, "utf8");
-  assert.match(source, /dist\/tests\/helpers\/nds-fixture\.js/);
-  assert.match(source, /dist\/src\/services\/nds\/ghidra-project\.js/);
+  assert.match(source, /Buffer\.alloc\s*\(/);
+  assert.match(source, /writeSyntheticRom\s*\(/);
+  assert.match(source, /dist["'],\s*["']src/);
+  assert.match(source, /services["'],\s*["']nds["'],\s*["']ghidra-project\.js/);
   assert.match(source, /writeOverlayRecord/);
   assert.match(source, /RE_MCP_ARM9_OVL_1/);
   assert.match(source, /RE_MCP_ARM9_OVL_2/);
   assert.match(source, /not-imported-compressed|compressedOverlayIds/);
   assert.match(source, /ARM:LE:32:v5t/);
   assert.match(source, /ARM:LE:32:v4t/);
-  assert.match(source, /arm9:main:02000008:thumb/);
+  assert.match(source, /0x02000008[\s\S]{0,80}["']thumb["']/);
   assert.match(source, /re-mcp\.function-mode/);
   assert.match(source, /REMCP_ACCEPTANCE_ANALYST_MARKER/);
+  assert.match(source, /SourceType\.USER_DEFINED/);
+  assert.match(source, /createLabel\s*\(/);
   assert.match(source, /already-current/);
-  assert.match(source, /bodyEnd|functionEnd/);
+  assert.match(source, /bodyEnd|functionEnd|bodySize/);
   assert.doesNotMatch(source, /\.nds["']\s*\)\s*\.download|private ROM/i);
 });
