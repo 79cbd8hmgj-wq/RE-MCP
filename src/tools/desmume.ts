@@ -68,6 +68,18 @@ function ownedProcessIdentity(status: OwnedProcessStatus): string {
   return `desmume:${status.pid}:${status.startedAt}`;
 }
 
+function sameOwnedProcessGeneration(
+  expected: OwnedProcessStatus,
+  current: OwnedProcessStatus,
+): boolean {
+  return expected.running
+    && current.running
+    && expected.pid !== null
+    && expected.startedAt !== null
+    && current.pid === expected.pid
+    && current.startedAt === expected.startedAt;
+}
+
 function debuggerCorrectiveAction(
   processStatus: OwnedProcessStatus,
   controller: DebugController,
@@ -183,8 +195,19 @@ export function registerDesmumeTools(
         });
         const sessionIdentity = ownedProcessIdentity(status);
         debuggerController.initialize(sessionIdentity, arm9Range);
+
+        const currentStatus = manager.status();
+        if (!sameOwnedProcessGeneration(status, currentStatus)) {
+          await debuggerController.reset(
+            "Owned DeSmuME process exited during debugger initialization",
+          );
+          throw new Error(
+            "Owned DeSmuME process exited before debugger initialization completed",
+          );
+        }
+
         return textResult({
-          ...status,
+          ...currentStatus,
           debugger: {
             sessionIdentity,
             state: debuggerController.status().state,
