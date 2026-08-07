@@ -75,6 +75,7 @@ export class GdbSession {
         host: this.#options.host,
         port: this.#options.port,
       });
+      socket.setNoDelay(true);
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
