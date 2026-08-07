@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 const root = path.resolve(process.argv[2] ?? process.cwd());
 const required = [
   "dist/index.js",
+  "dist/services/nds/disassembly.js",
+  "dist/services/nds/references.js",
   "package.json",
   "node_modules/@modelcontextprotocol/sdk/package.json",
   "node_modules/zod/package.json",
@@ -27,7 +29,51 @@ if (nodeMajor < 20) {
 const adapterUrl = pathToFileURL(
   path.join(root, "dist/services/disassembly/capstone.js"),
 ).href;
+const disassemblyUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/disassembly.js"),
+).href;
+const referencesUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/references.js"),
+).href;
 const { createCapstoneArmBackend } = await import(adapterUrl);
+const { decodeNdsInstructionDetailed } = await import(disassemblyUrl);
+const { classifyNdsInstructionReferences } = await import(referencesUrl);
+
+const arm9 = {
+  ramAddress: 0x02000000,
+  ramEnd: 0x02000100,
+  romOffset: 0x200,
+  romEnd: 0x300,
+  size: 0x100,
+  entryAddress: 0x02000000,
+};
+const arm7 = {
+  ramAddress: 0x03800000,
+  ramEnd: 0x03800100,
+  romOffset: 0x600,
+  romEnd: 0x700,
+  size: 0x100,
+  entryAddress: 0x03800000,
+};
+const map = {
+  header: { arm9, arm7 },
+  overlays: { arm9: [], arm7: [] },
+};
+function sourceAt(runtimeAddress, mode) {
+  return {
+    processor: "arm9",
+    component: "main",
+    overlayId: null,
+    runtimeAddress,
+    romOffset: 0x200 + (runtimeAddress - 0x02000000),
+    runtimeStart: 0x02000000,
+    runtimeEnd: 0x02000100,
+    romStart: 0x200,
+    romEnd: 0x300,
+    mode,
+  };
+}
+
 const backend = await createCapstoneArmBackend();
 try {
   const arm = backend.decodeOne(
@@ -45,6 +91,40 @@ try {
   }
   if (thumb?.mnemonic !== "bx" || thumb.size !== 2) {
     throw new Error("Packaged Capstone Thumb smoke decode failed");
+  }
+
+  const armDetailed = decodeNdsInstructionDetailed(
+    map,
+    sourceAt(0x02000000, "arm"),
+    Uint8Array.from([0x00, 0x00, 0x00, 0xeb]),
+    backend,
+  );
+  const armRefs = armDetailed === null
+    ? []
+    : classifyNdsInstructionReferences(map, armDetailed);
+  if (
+    armRefs.length !== 1
+    || armRefs[0]?.kind !== "direct-call"
+    || armRefs[0]?.target.runtimeAddress !== 0x02000008
+  ) {
+    throw new Error("Packaged ARM direct reference smoke failed");
+  }
+
+  const thumbDetailed = decodeNdsInstructionDetailed(
+    map,
+    sourceAt(0x02000002, "thumb"),
+    Uint8Array.from([0x00, 0x48]),
+    backend,
+  );
+  const thumbRefs = thumbDetailed === null
+    ? []
+    : classifyNdsInstructionReferences(map, thumbDetailed);
+  if (
+    thumbRefs.length !== 1
+    || thumbRefs[0]?.kind !== "literal-pool"
+    || thumbRefs[0]?.target.runtimeAddress !== 0x02000004
+  ) {
+    throw new Error("Packaged Thumb PC-relative reference smoke failed");
   }
 } finally {
   backend.close();
