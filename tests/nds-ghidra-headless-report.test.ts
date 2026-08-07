@@ -18,12 +18,15 @@ function config(): ServerConfig {
   };
 }
 
-function invocation(source: string): GhidraInvocation {
+function invocation(
+  source: string,
+  stage: GhidraInvocation["stage"] = "arm9-import",
+): GhidraInvocation {
   return {
     executable: process.execPath,
     args: ["-e", source],
     cwd: process.cwd(),
-    stage: "arm9-import",
+    stage,
   };
 }
 
@@ -37,6 +40,31 @@ test("Ghidra runner rejects a reported project save failure even when analyzeHea
     (error: unknown) =>
       error instanceof NdsError
       && error.category === "ghidra-import-failed"
+      && error.message.includes(marker),
+  );
+});
+
+test("Ghidra runner rejects RE-MCP script errors even when analyzeHeadless exits zero", async () => {
+  const marker = "REPORT SCRIPT ERROR: ReMcpImportEvidence.java : IllegalArgumentException: Invalid opIndex specified: -2";
+  await assert.rejects(
+    runGhidraInvocation(
+      invocation(`console.error(${JSON.stringify(marker)})`),
+      config(),
+    ),
+    (error: unknown) =>
+      error instanceof NdsError
+      && error.category === "ghidra-import-failed"
+      && error.message.includes(marker),
+  );
+
+  await assert.rejects(
+    runGhidraInvocation(
+      invocation(`console.error(${JSON.stringify(marker)})`, "arm9-process"),
+      config(),
+    ),
+    (error: unknown) =>
+      error instanceof NdsError
+      && error.category === "ghidra-analysis-failed"
       && error.message.includes(marker),
   );
 });
