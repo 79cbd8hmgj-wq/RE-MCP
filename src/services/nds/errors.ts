@@ -22,13 +22,12 @@ export type NdsPatternSearchErrorCategory =
   | "invalid-pattern-scope"
   | "pattern-search-limit-exceeded";
 
-export type AnyNdsErrorCategory =
-  | NdsErrorCategory
-  | NdsReferenceErrorCategory
-  | NdsPatternSearchErrorCategory;
+export type AnyNdsErrorCategory = NdsErrorCategory | NdsReferenceErrorCategory;
+
+type AllNdsErrorCategory = AnyNdsErrorCategory | NdsPatternSearchErrorCategory;
 
 export class NdsError<
-  Category extends AnyNdsErrorCategory = NdsErrorCategory,
+  Category extends AllNdsErrorCategory = NdsErrorCategory,
 > extends Error {
   constructor(
     readonly category: Category,
