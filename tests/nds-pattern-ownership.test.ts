@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ownersForNdsPatternHit } from "../src/services/nds/pattern-ownership.js";
+import {
+  ownersForNdsPatternHit,
+  type NdsPatternOwner,
+} from "../src/services/nds/pattern-ownership.js";
 import { readNdsRomMap } from "../src/services/nds/rom-map.js";
 import {
   createNdsFixture,
@@ -50,6 +53,18 @@ async function createOwnershipFixture() {
   return fixture;
 }
 
+function isArm9Overlay(
+  owner: NdsPatternOwner,
+): owner is Extract<NdsPatternOwner, { readonly kind: "arm9-overlay" }> {
+  return owner.kind === "arm9-overlay";
+}
+
+function isNitroFile(
+  owner: NdsPatternOwner,
+): owner is Extract<NdsPatternOwner, { readonly kind: "nitrofs-file" }> {
+  return owner.kind === "nitrofs-file";
+}
+
 test("maps full-span main executable hits to runtime addresses", async () => {
   const fixture = await createOwnershipFixture();
   const map = await readNdsRomMap(fixture.romPath);
@@ -64,20 +79,17 @@ test("maps only the directly file-backed uncompressed overlay prefix", async () 
   const fixture = await createOwnershipFixture();
   const map = await readNdsRomMap(fixture.romPath);
 
-  const mapped = ownersForNdsPatternHit(map, 0x1304, 0x1308)
-    .find((owner) => owner.kind === "arm9-overlay");
+  const mapped = ownersForNdsPatternHit(map, 0x1304, 0x1308).find(isArm9Overlay);
   assert.equal(mapped?.runtimeAddress, 0x02200004);
 
-  const beyondPrefix = ownersForNdsPatternHit(map, 0x1324, 0x1328)
-    .find((owner) => owner.kind === "arm9-overlay");
+  const beyondPrefix = ownersForNdsPatternHit(map, 0x1324, 0x1328).find(isArm9Overlay);
   assert.equal(beyondPrefix?.runtimeAddress, null);
 });
 
 test("never fabricates runtime mapping for compressed overlay storage", async () => {
   const fixture = await createOwnershipFixture();
   const map = await readNdsRomMap(fixture.romPath);
-  const owner = ownersForNdsPatternHit(map, 0x1404, 0x1408)
-    .find((candidate) => candidate.kind === "arm9-overlay");
+  const owner = ownersForNdsPatternHit(map, 0x1404, 0x1408).find(isArm9Overlay);
   assert.equal(owner?.runtimeAddress, null);
   assert.equal(owner?.compressed, true);
 });
@@ -86,8 +98,8 @@ test("preserves multiple canonical owners for one physical hit", async () => {
   const fixture = await createOwnershipFixture();
   const map = await readNdsRomMap(fixture.romPath);
   const owners = ownersForNdsPatternHit(map, 0x1304, 0x1308);
-  assert.equal(owners.some((owner) => owner.kind === "arm9-overlay"), true);
-  const file = owners.find((owner) => owner.kind === "nitrofs-file");
+  assert.equal(owners.some(isArm9Overlay), true);
+  const file = owners.find(isNitroFile);
   assert.equal(file?.fileId, 1);
 });
 
