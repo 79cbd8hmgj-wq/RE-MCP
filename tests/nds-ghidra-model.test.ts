@@ -209,7 +209,7 @@ test("Ghidra bridge manifest preserves overlay backing semantics and compressed 
   assert.equal(arm9.overlays[0]!.fileBackedSize, 0x80);
   assert.equal(arm9.overlays[0]!.bssSize, 0x20);
   assert.equal(arm9.overlays[0]!.artifactPath, "../overlays/arm9/overlay_3.bin");
-  assert.equal(arm9.main.artifactPath, "../arm9.bin");
+  assert.equal(arm9.main.artifactPath, "imports/RE-MCP_ARM9");
   assert.deepEqual(manifest.generatedResultPaths, {
     arm9: "results/arm9.json",
     arm7: "results/arm7.json",
