@@ -223,6 +223,21 @@ test("stops at the 100000 discovered-match ceiling", async () => {
   assert.equal(result.nextOffset, null);
 });
 
+test("preserves both truncation reasons when scan and match ceilings coincide", async () => {
+  const bytes = Buffer.alloc(100001, 0xaa);
+  const result = await scanNdsPatternMatches(
+    wholeRomScope(bytes.length),
+    compileNdsPattern({ kind: "byte-signature", signature: "AA" }),
+    memoryReader(bytes),
+    { offset: 99999, limit: 1, maxScanBytes: 100000 },
+    4096,
+  );
+  assert.equal(result.scannedBytes, 100000);
+  assert.equal(result.discoveredMatches, 100000);
+  assert.equal(result.status, "truncated");
+  assert.deepEqual(result.truncationReasons, ["scan-byte-limit", "match-count-limit"]);
+});
+
 test("rejects matcher options outside hard bounds", async () => {
   const pattern = compileNdsPattern({ kind: "byte-signature", signature: "AA" });
   for (const options of [
