@@ -41,6 +41,14 @@ export type NdsGhidraErrorCategory =
   | "ghidra-output-limit"
   | "project-state-mismatch";
 
+export type NdsGhidraInspectionErrorCategory =
+  | "ghidra-project-not-current"
+  | "ghidra-version-mismatch"
+  | "ghidra-address-not-inspectable"
+  | "ghidra-inspection-failed"
+  | "ghidra-inspection-timeout"
+  | "ghidra-inspection-result-invalid";
+
 /** Error categories handled by the pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
@@ -51,7 +59,8 @@ export type AnyNdsErrorCategory =
 /** Complete service-layer category set, including optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
-  | NdsGhidraErrorCategory;
+  | NdsGhidraErrorCategory
+  | NdsGhidraInspectionErrorCategory;
 
 export class NdsError<
   Category extends NdsServiceErrorCategory = NdsErrorCategory,
