@@ -19,18 +19,14 @@ export type NdsReferenceErrorCategory =
 
 export type AnyNdsErrorCategory = NdsErrorCategory | NdsReferenceErrorCategory;
 
-export class NdsError extends Error {
-  readonly category: NdsErrorCategory;
-
+export class NdsError<
+  Category extends AnyNdsErrorCategory = NdsErrorCategory,
+> extends Error {
   constructor(
-    category: AnyNdsErrorCategory,
+    readonly category: Category,
     message: string,
   ) {
     super(message);
     this.name = "NdsError";
-    // Reference-specific categories become part of the public tool error union in
-    // the dedicated MCP-surface task. Until then, keep the existing tool switch
-    // source-compatible while preserving the exact runtime category string.
-    this.category = category as NdsErrorCategory;
   }
 }
