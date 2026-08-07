@@ -43,7 +43,13 @@ declare module "@alexaltea/capstone-js" {
     readonly ARM_OP_REG: number;
     readonly ARM_CC_INVALID: number;
     readonly ARM_CC_AL: number;
+    readonly ARM_INS_B: number;
+    readonly ARM_INS_BL: number;
     readonly ARM_INS_BLX: number;
+    readonly ARM_INS_BLXNS: number;
+    readonly ARM_INS_BX: number;
+    readonly ARM_INS_BXJ: number;
+    readonly ARM_INS_BXNS: number;
     readonly ARM_INS_CBZ: number;
     readonly ARM_INS_CBNZ: number;
     readonly Capstone: new (architecture: number, mode: number) => CapstoneHandle;
