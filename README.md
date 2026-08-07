@@ -20,6 +20,20 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Run the Milestone 6E installer in dry-run mode
 - Generate the Milestone 6E roster analysis
 
+### Nintendo DS static analysis
+
+- Parse one canonical ROM identity using SHA-256
+- Read ARM9 and ARM7 executable metadata
+- Parse FAT physical file ranges
+- Reconstruct FNT/NitroFS paths while retaining unnamed FAT entries
+- Parse ARM9 and ARM7 overlay tables, including initialized range, BSS, file backing, compression metadata, and flags
+- Resolve ARM9/ARM7 runtime addresses against main executables and static overlay candidates
+- Reverse-map ROM offsets to structural, NitroFS, executable, and overlay relationships
+- Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
+- Build a transactional static-analysis bundle without dumping every NitroFS asset
+
+The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept caller-selected output paths or arbitrary ROM offset/length extraction requests.
+
 ### DeSmuME and ARM9 GDB
 
 - Start, inspect, and stop one server-owned DeSmuME process
@@ -37,6 +51,90 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Reset debugger state automatically when the owned emulator exits or its process generation changes
 
 RE-MCP does **not** expose register writes, general memory writes, watchpoints, or an arbitrary GDB-command tool.
+
+## NDS Static Analysis
+
+The static-analysis surface consists of seven MCP tools:
+
+- `nds_inspect_rom`
+- `nds_list_files`
+- `nds_list_overlays`
+- `nds_resolve_runtime_address`
+- `nds_resolve_rom_offset`
+- `nds_extract_component`
+- `nds_extract_analysis_bundle`
+
+These tools are native-independent and have no DeSmuME or GDB dependency.
+
+### Canonical ROM model
+
+`nds_inspect_rom` parses the ROM into one validated model containing:
+
+- full source SHA-256 and file size
+- game title, game code, maker code, unit code, capacity, and ROM version
+- ARM9 and ARM7 ROM offsets, entry addresses, RAM/load addresses, sizes, and runtime ranges
+- FNT and FAT regions
+- ARM9 and ARM7 overlay-table regions
+- NitroFS file count
+- ARM9 and ARM7 overlay counts
+- validated static executable/runtime candidate ranges
+
+FAT remains authoritative for physical file byte ranges. FNT remains authoritative for names and directory hierarchy. Overlay records keep file-backed bytes, initialized runtime bytes, and BSS/runtime-only bytes distinct.
+
+### Address-resolution rules
+
+`nds_resolve_runtime_address` does not guess when static overlay ranges overlap. If more than one main/overlay candidate contains an address, every candidate is returned with an ambiguity status.
+
+BSS has no source ROM bytes, so BSS results return no ROM offset.
+
+Compressed overlay bytes also require special handling. The stored FAT-backed overlay file may be compressed, so a decompressed runtime byte does **not** receive a fabricated direct ROM-byte mapping. The resolver still reports the overlay ID, file ID, runtime-relative offset, and backing-file metadata. Exact compressed-ROM ↔ decompressed-runtime correlation is deferred until controlled decompression support exists.
+
+`nds_resolve_rom_offset` performs the reverse classification and may return multiple valid relationships for one ROM byte, such as a NitroFS file plus an ARM9 overlay backing file. Compressed overlay backing bytes do not receive fabricated runtime addresses.
+
+### Controlled extraction
+
+`nds_extract_component` accepts only canonical component selectors:
+
+- ARM9 main
+- ARM7 main
+- ARM9 overlay ID
+- ARM7 overlay ID
+- NitroFS file ID or exact parsed NitroFS path
+
+The caller cannot provide a raw ROM offset, byte length, or output destination. RE-MCP chooses the deterministic location below:
+
+```text
+analysis/generated/nds/<first-16-sha256-hex>/
+```
+
+Before extraction, RE-MCP verifies that the source ROM still matches the SHA-256 used to construct the canonical map. Extracted artifacts record both the source ROM SHA-256 and their own SHA-256. Compressed overlays are extracted exactly as their stored FAT-backed bytes and remain compressed.
+
+`nds_extract_analysis_bundle` builds the complete static-analysis package transactionally:
+
+```text
+analysis/generated/nds/<sha-prefix>/
+├── manifest.json
+├── address-map.json
+├── filesystem.json
+├── overlays.json
+├── arm9.bin
+├── arm7.bin
+└── overlays/
+    ├── arm9/
+    └── arm7/
+```
+
+The bundle is assembled in a temporary sibling directory and promoted only when complete. If replacement of an existing completed bundle fails, RE-MCP attempts to restore the previous complete bundle. The bundle intentionally does not extract every NitroFS asset; individual assets remain opt-in through `nds_extract_component`.
+
+### Example static-analysis workflow
+
+1. Call `nds_inspect_rom` to validate the ROM and obtain the canonical structural summary.
+2. Use `nds_list_files` and `nds_list_overlays` to identify relevant NitroFS files and overlay candidates.
+3. Use `nds_resolve_runtime_address` when you have a RAM address, or `nds_resolve_rom_offset` when you have a ROM offset.
+4. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`.
+5. Use the generated address maps and binaries as inputs to later static-analysis milestones.
+
+This milestone does **not** implement disassembly, instruction decoding, function discovery, Ghidra/radare2/Capstone integration, pattern or table inference, decompression, graphics decoding, runtime overlay-loaded-state detection, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Dynamic-debugging tools
 
@@ -188,6 +286,10 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - No arbitrary GDB packet tool
 - No register writes, general memory writes, or watchpoints
 - Runtime evidence restricted to project `analysis/generated`
+- NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
+- NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
+- Compressed overlay runtime bytes and BSS never receive fabricated direct ROM offsets
+- Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
 
