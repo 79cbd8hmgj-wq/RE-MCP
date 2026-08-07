@@ -164,7 +164,7 @@ try {
   const patternMap = await readNdsRomMap(patternRom);
   const patternResult = await searchNdsPattern(
     patternMap,
-    { kind: "byte-signature", signature: "AA ??" },
+    { kind: "byte-signature", signature: "AA AA" },
     { kind: "components", arm9Main: true },
     { offset: 0, limit: 10, maxScanBytes: 0x20, contextBytes: 0 },
   );
