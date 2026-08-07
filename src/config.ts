@@ -4,8 +4,8 @@ export interface ServerConfig {
   readonly workspaceRoot: string;
   readonly commandTimeoutMs: number;
   readonly maxOutputBytes: number;
-  readonly ghidraHome: string | null;
-  readonly ghidraTimeoutMs: number;
+  readonly ghidraHome?: string | null;
+  readonly ghidraTimeoutMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
