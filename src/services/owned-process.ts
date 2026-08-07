@@ -26,6 +26,18 @@ export interface OwnedProcessStatus {
   readonly lastSignal: NodeJS.Signals | null;
 }
 
+export interface OwnedProcessExitEvent {
+  readonly pid: number | null;
+  readonly startedAt: string;
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly metadata: Readonly<Record<string, string | number | boolean>>;
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
+export type OwnedProcessExitListener = (event: OwnedProcessExitEvent) => void;
+
 type OwnedChild = ChildProcessByStdio<null, Readable, Readable>;
 
 interface ActiveProcess {
@@ -44,6 +56,14 @@ export class OwnedProcessManager {
   private active: ActiveProcess | null = null;
   private lastExitCode: number | null = null;
   private lastSignal: NodeJS.Signals | null = null;
+  readonly #exitListeners = new Set<OwnedProcessExitListener>();
+
+  onExit(listener: OwnedProcessExitListener): () => void {
+    this.#exitListeners.add(listener);
+    return () => {
+      this.#exitListeners.delete(listener);
+    };
+  }
 
   async start(request: OwnedProcessStart): Promise<OwnedProcessStatus> {
     if (this.active !== null) {
@@ -100,10 +120,26 @@ export class OwnedProcessManager {
     });
 
     child.once("close", (code, signal) => {
-      if (this.active === active) {
-        this.lastExitCode = code;
-        this.lastSignal = signal;
-        this.active = null;
+      if (this.active !== active) return;
+
+      this.lastExitCode = code;
+      this.lastSignal = signal;
+      this.active = null;
+      const event: OwnedProcessExitEvent = {
+        pid: active.child.pid ?? null,
+        startedAt: active.startedAt,
+        executable: active.executable,
+        args: active.args,
+        metadata: active.metadata,
+        exitCode: code,
+        signal,
+      };
+      for (const listener of [...this.#exitListeners]) {
+        try {
+          listener(event);
+        } catch {
+          // Lifecycle observers must not destabilize owned-process bookkeeping.
+        }
       }
     });
 
