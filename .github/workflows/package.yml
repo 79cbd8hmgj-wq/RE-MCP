@@ -23,7 +23,7 @@ jobs:
           npm install
           npm run check
           npm run build
-      - name: Assemble self-contained bundle
+      - name: Assemble and smoke-test self-contained bundle
         shell: bash
         run: |
           set -euo pipefail
