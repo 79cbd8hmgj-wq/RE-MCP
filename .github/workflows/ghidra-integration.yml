@@ -2,9 +2,6 @@ name: Ghidra Integration Acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/ghidra-integration-design
 
 permissions:
   contents: read
