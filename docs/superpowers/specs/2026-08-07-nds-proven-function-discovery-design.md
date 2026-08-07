@@ -299,7 +299,30 @@ Conceptual input:
 }
 ```
 
-Exact numeric defaults/maxima are implementation-plan decisions, but all must be finite, positive, schema-bounded, and covered by tests. Aggregate defaults must remain small enough for interactive MCP use.
+### Discovery limits
+
+All discovery limits are global unless explicitly labeled per-function.
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Components considered | 32 | 128 |
+| Proven functions retained/analyzed | 128 | 1,024 |
+| Direct call sites retained | 512 | 8,192 |
+| Total basic blocks decoded | 512 | 4,096 |
+| Total instructions decoded | 4,096 | 32,768 |
+| Total decoded source bytes | 32 KiB | 256 KiB |
+| Total traversal edges | 2,048 | 16,384 |
+
+Per-function CFG limits reuse the existing public CFG defaults/maxima:
+
+| Per-function CFG limit | Default | Maximum |
+| --- | ---: | ---: |
+| Blocks | 64 | 256 |
+| Instructions | 512 | 4,096 |
+| Decoded bytes | 2 KiB | 16 KiB |
+| Traversal edges | 128 | 1,024 |
+
+Aggregate budgets always dominate. Reaching a per-function cap marks that function CFG truncated; reaching an aggregate cap marks the overall discovery truncated.
 
 ### Discovery algorithm
 
@@ -379,6 +402,8 @@ interface DiscoveredFunction {
 }
 ```
 
+`directCallerCount` counts unique non-null proven caller function IDs. `directCallSiteCount` counts distinct retained direct-call evidence sites, including evidence found from coverage-only seeds whose `caller.functionId` is null.
+
 The implementation may expose additional existing canonical metadata, but must not add heuristic function boundaries or inferred symbols.
 
 ### Discovery result
@@ -426,7 +451,6 @@ Conceptual input:
   proofScope: FunctionSearchScope;
   seeds?: FunctionSearchSeed[];
 
-  // bounded proof-search budgets
   maxProofComponents?: number;
   maxProofBlocks?: number;
   maxProofInstructions?: number;
@@ -434,13 +458,34 @@ Conceptual input:
   maxProofEdges?: number;
   maxProofCallSites?: number;
 
-  // bounded CFG budgets for the proven target
   maxCfgBlocks?: number;
   maxCfgInstructions?: number;
   maxCfgBytes?: number;
   maxCfgEdges?: number;
 }
 ```
+
+### Focused proof-search limits
+
+The proof search intentionally reuses the current reverse-xref scale:
+
+| Proof-search limit | Default | Maximum |
+| --- | ---: | ---: |
+| Components considered | 32 | 128 |
+| Blocks decoded | 128 | 512 |
+| Instructions decoded | 2,048 | 16,384 |
+| Decoded bytes | 8 KiB | 64 KiB |
+| Traversal edges | 512 | 4,096 |
+| Direct-call proof sites retained | 256 | 2,048 |
+
+The final proven target CFG reuses the existing CFG defaults/maxima:
+
+| Target CFG limit | Default | Maximum |
+| --- | ---: | ---: |
+| Blocks | 64 | 256 |
+| Instructions | 512 | 4,096 |
+| Decoded bytes | 2 KiB | 16 KiB |
+| Traversal edges | 128 | 1,024 |
 
 ### Requested-entry resolution
 
@@ -519,25 +564,7 @@ A selected compressed overlay is never decoded and reports `compressed-overlay-n
 
 Coverage metadata must prevent an empty function/xref result from being presented as exhaustive when selected code was not actually searched.
 
-## Global discovery limits
-
-`nds_discover_functions` requires aggregate limits across the complete operation:
-
-```text
-maxFunctions
-maxCallSites
-maxTotalBlocks
-maxTotalInstructions
-maxTotalBytes
-maxTotalEdges
-maxComponents
-```
-
-It also requires smaller per-function CFG caps so a single function cannot consume the full global budget unexpectedly.
-
-Global totals count actual retained/decoded work once according to canonical identities. Shared or duplicate scheduling must not artificially multiply counters.
-
-### Truncation reasons
+## Global discovery truncation
 
 Conceptual discovery truncation reasons:
 
@@ -564,7 +591,7 @@ Function ordering must be stable by:
 2. main before overlay;
 3. overlay ID;
 4. runtime address;
-5. ARM before Thumb (or another explicitly fixed mode order).
+5. ARM before Thumb.
 
 Proof evidence ordering must be stable with `program-entry` before `direct-call`, then caller component/overlay/address/mode.
 
@@ -596,7 +623,7 @@ Passing a selected overlay ID in scope does not retroactively make an otherwise 
 
 ## Error model
 
-Add narrow function-analysis error categories as needed, conceptually including:
+Add narrow function-analysis error categories as needed:
 
 ```text
 invalid-function-scope
@@ -627,7 +654,7 @@ This milestone is read-only:
 
 Both new tools must pass through the existing `RE_MCP_MAX_OUTPUT_BYTES` protection.
 
-Tool-level result limits must be chosen so normal defaults fit comfortably inside interactive output bounds. If a valid result still exceeds the configured serialized-output cap, return the standard `output-bound-exceeded` error and require narrower limits.
+Tool-level result limits are deliberately bounded for interactive use. If a valid result still exceeds the configured serialized-output cap, return the standard `output-bound-exceeded` error and require narrower limits.
 
 ## Testing requirements
 
@@ -694,7 +721,7 @@ Require explicit tests for each aggregate discovery cap:
 - total edge limit;
 - simultaneous exhaustion preserving multiple truncation reasons.
 
-Also test per-function CFG truncation separately from global discovery truncation.
+Also test per-function CFG truncation separately from global discovery truncation and all focused proof-search bounds.
 
 ### Integrity and MCP tests
 
@@ -753,7 +780,7 @@ The milestone is complete when:
 4. recursion terminates through canonical visited identities;
 5. selected component coverage and truncation are explicit;
 6. ambiguous/compressed/BSS/unmapped targets are never guessed into functions;
-7. aggregate and per-function bounds are enforced and tested;
+7. aggregate, per-function CFG, and proof-search bounds are enforced and tested;
 8. output and SHA integrity protections remain intact;
 9. package smoke proves the production packaged backend path;
 10. no dynamic-debugger behavior changes and no physical-Catalina acceptance claim is introduced.
