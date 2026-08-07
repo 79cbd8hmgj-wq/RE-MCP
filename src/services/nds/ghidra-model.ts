@@ -199,7 +199,7 @@ function processorManifest(
     language: languageFor(processor),
     programName: ghidraProgramName(processor),
     main: {
-      artifactPath: `../${processor}.bin`,
+      artifactPath: portable(path.join("imports", ghidraProgramName(processor))),
       romOffset: executable.romOffset,
       runtimeAddress: executable.ramAddress,
       entryAddress: executable.entryAddress,
