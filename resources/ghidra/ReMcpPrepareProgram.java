@@ -203,7 +203,7 @@ public class ReMcpPrepareProgram extends GhidraScript {
             if (bssSize > 0) {
                 AddressSpace overlaySpace = initialized.getStart().getAddressSpace();
                 long bssOffset = addUint32(runtimeAddress, ramSize, "overlay BSS start");
-                Address bssStart = overlaySpace.getAddress(bssOffset);
+                Address bssStart = overlaySpace.getAddressInThisSpaceOnly(bssOffset);
                 String bssName = spaceName + "_BSS";
                 MemoryBlock bss = memory.getBlock(bssName);
                 if (bss == null) {
