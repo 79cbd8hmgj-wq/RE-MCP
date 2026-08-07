@@ -26,7 +26,7 @@ function createSession(port: number): GdbSession {
 }
 
 function breakpointServer(
-  replies: readonly string[],
+  replies: readonly (string | null)[],
   received: string[],
 ): net.Server {
   const remaining = [...replies];
@@ -41,7 +41,8 @@ function breakpointServer(
         received.push(parsed.payload);
         const reply = remaining.shift();
         if (reply === undefined) throw new Error("Unexpected GDB command");
-        socket.write(`+${encodeRspPacket(reply)}`, "ascii");
+        socket.write("+", "ascii");
+        if (reply !== null) socket.write(encodeRspPacket(reply), "ascii");
       }
     });
   });
@@ -128,10 +129,14 @@ test("continue waits for an asynchronous stop reply", async () => {
 
 test("continue timeout leaves execution running and wait observes a later stop", async () => {
   const server = net.createServer((socket) => {
+    let buffer = "";
     let scheduled = false;
     socket.on("data", (chunk) => {
-      const parsed = parseRspPacket(chunk.toString("ascii"));
-      if (parsed?.payload !== "c" || scheduled) return;
+      buffer += chunk.toString("ascii");
+      const parsed = parseRspPacket(buffer);
+      if (parsed === null) return;
+      buffer = buffer.slice(parsed.consumed);
+      if (parsed.payload !== "c" || scheduled) return;
       scheduled = true;
       socket.write("+", "ascii");
       setTimeout(() => socket.write(encodeRspPacket("S05"), "ascii"), 60);
@@ -353,29 +358,21 @@ test("single stepping stops early on target exit", async () => {
 });
 
 test("single stepping stops early on timeout and leaves execution running", async () => {
-  let commands = 0;
-  const server = net.createServer((socket) => {
-    socket.on("data", (chunk) => {
-      const parsed = parseRspPacket(chunk.toString("ascii"));
-      if (parsed?.payload !== "s") return;
-      commands += 1;
-      socket.write("+", "ascii");
-      if (commands === 1) socket.write(encodeRspPacket("S05"), "ascii");
-    });
-  });
+  const received: string[] = [];
+  const server = breakpointServer(["S05", null], received);
   const port = await listen(server);
   const session = createSession(port);
 
   try {
     await session.connect();
-    assert.deepEqual(await session.stepInstructions(3, 20), {
+    assert.deepEqual(await session.stepInstructions(3, 100), {
       requested: 3,
       completed: 1,
       completedAll: false,
       result: { kind: "timeout", state: "running" },
     });
     assert.equal(session.state(), "running");
-    assert.equal(commands, 2);
+    assert.deepEqual(received, ["s", "s"]);
   } finally {
     await session.close();
     await close(server);
