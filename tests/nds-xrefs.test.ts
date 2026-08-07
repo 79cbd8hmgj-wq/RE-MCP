@@ -391,6 +391,6 @@ test("rejects non-positive internal scan limits with the reference limit categor
       backend,
     ),
     (error: unknown) => error instanceof NdsError
-      && error.category === "reference-scan-limit-exceeded",
+      && String(error.category) === "reference-scan-limit-exceeded",
   );
 });
