@@ -131,6 +131,13 @@ async function buildReferenceRom() {
   return { fixture, rom: path.basename(fixture.romPath) };
 }
 
+async function buildPatternRom() {
+  const fixture = await createNdsFixture({ arm9Size: 0x20 });
+  fixture.buffer.set([0xaa, 0xaa, 0xaa], 0x200);
+  await fixture.write();
+  return { fixture, rom: path.basename(fixture.romPath) };
+}
+
 const EXPECTED_TOOLS = [
   "nds_inspect_rom",
   "nds_list_files",
@@ -143,9 +150,10 @@ const EXPECTED_TOOLS = [
   "nds_analyze_control_flow",
   "nds_list_references",
   "nds_find_xrefs",
+  "nds_search_pattern",
 ] as const;
 
-test("registers exactly the eleven approved NDS static-analysis tools", () => {
+test("registers exactly the twelve approved NDS static-analysis tools", () => {
   const server = register("/workspace");
   assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
 });
@@ -371,6 +379,63 @@ test("reference schemas expose exact defaults, caps, scopes, seeds, and no gener
   }
 });
 
+test("pattern search schema exposes exact defaults, caps, typed patterns, and no generic binary surface", () => {
+  const server = register("/workspace");
+  assert.deepEqual(server.parse("nds_search_pattern", {
+    rom: "game.nds",
+    pattern: { kind: "byte-signature", signature: "AA ?? BB" },
+    scope: { kind: "whole-rom" },
+  }), {
+    rom: "game.nds",
+    pattern: { kind: "byte-signature", signature: "AA ?? BB" },
+    scope: { kind: "whole-rom" },
+    offset: 0,
+    limit: 100,
+    maxScanBytes: 64 * 1024 * 1024,
+    contextBytes: 0,
+  });
+
+  for (const [field, value] of [
+    ["limit", 1001],
+    ["offset", 100000],
+    ["maxScanBytes", 512 * 1024 * 1024 + 1],
+    ["contextBytes", 65],
+  ] as const) {
+    assert.throws(() => server.parse("nds_search_pattern", {
+      rom: "game.nds",
+      pattern: { kind: "byte-signature", signature: "AA" },
+      scope: { kind: "whole-rom" },
+      [field]: value,
+    }));
+  }
+  assert.throws(() => server.parse("nds_search_pattern", {
+    rom: "game.nds",
+    pattern: {
+      kind: "integer",
+      value: 1,
+      width: 32,
+      endian: "little",
+      signed: false,
+      alignment: 3,
+    },
+    scope: { kind: "whole-rom" },
+  }));
+
+  for (const forbidden of [
+    "binary",
+    "bytes",
+    "baseAddress",
+    "runtimeAddress",
+    "start",
+    "end",
+    "length",
+    "output",
+    "path",
+  ]) {
+    assert.equal(Object.hasOwn(server.schema("nds_search_pattern"), forbidden), false);
+  }
+});
+
 test("component schema exposes no caller-controlled output path", () => {
   const server = register("/workspace");
   assert.equal(Object.hasOwn(server.schema("nds_extract_component"), "output"), false);
@@ -501,6 +566,58 @@ test("reference handlers classify direct ARM references and find xrefs", async (
   assert.equal((xrefs.xrefs as Array<Record<string, unknown>>).length, 1);
 });
 
+test("pattern search handler returns overlapping canonical matches", async () => {
+  const { fixture, rom } = await buildPatternRom();
+  const server = register(fixture.directory);
+  const result = await server.invoke("nds_search_pattern", {
+    rom,
+    pattern: { kind: "byte-signature", signature: "AA AA" },
+    scope: { kind: "components", arm9Main: true },
+    limit: 10,
+  });
+  assert.equal(resultIsError(result), false);
+  const body = resultBody(result);
+  assert.equal(body.status, "complete");
+  assert.deepEqual(
+    (body.matches as Array<Record<string, unknown>>).map((hit) => hit.romOffset),
+    [0x200, 0x201],
+  );
+});
+
+test("pattern search handler returns actionable typed errors", async () => {
+  const { fixture, rom } = await buildPatternRom();
+  const server = register(fixture.directory);
+  const malformed = await server.invoke("nds_search_pattern", {
+    rom,
+    pattern: { kind: "byte-signature", signature: "GG" },
+    scope: { kind: "whole-rom" },
+  });
+  assert.equal(resultIsError(malformed), true);
+  assert.equal(resultBody(malformed).category, "invalid-pattern");
+  assert.equal(typeof resultBody(malformed).correctiveAction, "string");
+
+  const emptyScope = await server.invoke("nds_search_pattern", {
+    rom,
+    pattern: { kind: "byte-signature", signature: "AA" },
+    scope: { kind: "components" },
+  });
+  assert.equal(resultIsError(emptyScope), true);
+  assert.equal(resultBody(emptyScope).category, "invalid-pattern-scope");
+});
+
+test("pattern search respects the shared serialized output ceiling", async () => {
+  const { fixture, rom } = await buildPatternRom();
+  const server = register(fixture.directory, 200);
+  const result = await server.invoke("nds_search_pattern", {
+    rom,
+    pattern: { kind: "byte-signature", signature: "AA" },
+    scope: { kind: "components", arm9Main: true },
+    contextBytes: 8,
+  });
+  assert.equal(resultIsError(result), true);
+  assert.equal(resultBody(result).category, "output-bound-exceeded");
+});
+
 test("xref handler rejects missing or duplicate target selectors before scanning", async () => {
   const { fixture, rom } = await buildReferenceRom();
   const server = register(fixture.directory);
@@ -619,7 +736,7 @@ test("analysis bundle tool returns controlled deterministic paths", async () => 
   await readFile(String(body.manifestPath));
 });
 
-test("index capability declaration includes all eleven NDS tool names", async () => {
+test("index capability declaration includes all twelve NDS tool names", async () => {
   const source = await readFile(path.resolve("src/index.ts"), "utf8");
   for (const name of EXPECTED_TOOLS) {
     assert.equal(source.includes(`\"${name}\"`), true, name);
