@@ -38,6 +38,7 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Search validated NDS bytes for exact/wildcard signatures, typed integers, ASCII strings, and UTF-16LE strings using canonical component or explicit whole-ROM scope
 - Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
+- Optionally bootstrap and inspect a full-ROM-SHA-scoped Ghidra project through a configured local Ghidra 12.x installation
 
 The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
 
@@ -61,7 +62,7 @@ RE-MCP does **not** expose register writes, general memory writes, watchpoints, 
 
 ## NDS Static Analysis
 
-The static-analysis surface consists of fourteen MCP tools:
+The canonical static-analysis surface consists of fourteen MCP tools:
 
 - `nds_inspect_rom`
 - `nds_list_files`
@@ -78,7 +79,7 @@ The static-analysis surface consists of fourteen MCP tools:
 - `nds_discover_functions`
 - `nds_analyze_function`
 
-These tools are native-independent and have no DeSmuME or GDB dependency.
+These canonical static tools are native-independent and have no DeSmuME, GDB, or Ghidra dependency. The optional Ghidra bridge described below consumes their canonical evidence but does not change their proof rules.
 
 ### Canonical ROM model
 
@@ -334,7 +335,7 @@ Search limits are:
 | Encoded pattern bytes | — | 4,096 |
 | Discovered matches | — | 100,000 |
 
-`offset` is a **match index**, not a ROM-byte offset and not a scan-resume cursor. Increasing `offset` does not extend coverage after a scan-byte truncation. To inspect beyond a `maxScanBytes` boundary, raise the scan budget or narrow/change the selected scope.
+`offset` is a **match index**, not a ROM-byte offset and not a scan-resume cursor. Increasing `offset` does not extend coverage after a `maxScanBytes` boundary. To inspect beyond a `maxScanBytes` boundary, raise the scan budget or narrow/change the selected scope.
 
 A result is `complete` only when the selected physical scope was fully examined. Otherwise it is `truncated`, with explicit reasons chosen from:
 
@@ -394,7 +395,64 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 8. Call `nds_discover_functions` to turn program-entry/direct-call evidence into a bounded proven-function call graph, or `nds_analyze_function` to prove and inspect one exact entry.
 9. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-The static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+The canonical static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra-to-RE-MCP evidence promotion, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+
+## Controlled Ghidra Integration
+
+Ghidra support is optional and deliberately sits **on top of** the canonical static-analysis layer. It exposes exactly two MCP tools:
+
+- `nds_ghidra_bootstrap`
+- `nds_ghidra_status`
+
+Both accept only `{ "rom": "..." }`. There is no generic Ghidra command, arbitrary script runner, caller-selected project path, loader/language selector, raw Ghidra argument list, arbitrary environment map, or caller-selected output path.
+
+### Configuration
+
+`RE_MCP_GHIDRA_HOME` points to a supported local Ghidra 12.x installation. The reference acceptance release is Ghidra 12.1.2. `RE_MCP_GHIDRA_TIMEOUT_MS` defaults to 900000 ms (15 minutes) and is capped at 3600000 ms (60 minutes) per headless invocation.
+
+These settings are optional at server startup. All non-Ghidra tools continue to work without them. Calling `nds_ghidra_bootstrap` without `RE_MCP_GHIDRA_HOME` returns `ghidra-not-configured`; `nds_ghidra_status` only reads deterministic ROM/project state and does not invoke Ghidra.
+
+Example:
+
+```text
+RE_MCP_WORKSPACE_ROOT=/absolute/path/to/rom-modding
+RE_MCP_GHIDRA_HOME=/absolute/path/to/ghidra_12.1.2_PUBLIC
+RE_MCP_GHIDRA_TIMEOUT_MS=900000
+```
+
+RE-MCP derives `support/analyzeHeadless` beneath `RE_MCP_GHIDRA_HOME`, requires the installation to expose both `ARM:LE:32:v5t` and `ARM:LE:32:v4t`, invokes with an argument array and `shell: false`, and terminates a headless process if the timeout or `RE_MCP_MAX_OUTPUT_BYTES` bound is exceeded.
+
+### Project and bridge layout
+
+Every full ROM SHA-256 receives an isolated persistent project/state root:
+
+```text
+analysis/ghidra/nds/<full-sha256>/
+├── project/
+└── state/
+```
+
+Replaceable bridge inputs stay separate:
+
+```text
+analysis/generated/nds/<sha-prefix>/ghidra-bridge/
+├── manifest.json
+├── evidence/
+├── results/
+└── scripts/
+```
+
+The ARM9 program uses `ARM:LE:32:v5t`; ARM7 uses `ARM:LE:32:v4t`. Uncompressed NDS overlays are represented as true Ghidra overlay address spaces at their canonical runtime offsets, so overlapping overlay addresses remain distinct. Compressed overlays are reported as `not-imported-compressed` and are never decoded or imported as executable runtime bytes.
+
+### Evidence and analyst-work rules
+
+RE-MCP imports only facts it has already established: canonical mappings, exact ARM/Thumb proven entries, program-entry/direct-call proof, and deterministic direct-call evidence. It does **not** invent function-body or function-end boundaries for Ghidra. Normal Ghidra auto-analysis runs after RE-MCP evidence is installed; functions, labels, strings, types, references, switch recovery, decompiler output, and other analysis that Ghidra derives remain non-authoritative to RE-MCP.
+
+Reruns reconcile only RE-MCP-owned metadata and evidence. Analyst-created labels, comments, bookmarks, types, namespaces, function names/signatures, and Ghidra-only discoveries are preserved. If project ownership/state cannot be reconciled safely, RE-MCP returns `project-state-mismatch` instead of overwriting the project.
+
+`nds_ghidra_status` is non-mutating: it does not validate/install Ghidra, regenerate the bridge, run `analyzeHeadless`, or modify project state.
+
+The packaged RE-MCP bundle includes its three Ghidra Java scripts, but it does **not** bundle Ghidra itself. Normal CI/package smoke verifies the bridge, resources, runner, state model, and tool registration without downloading Ghidra. Real Ghidra 12.1.2 acceptance is a separate manual workflow and is also separate from the physical Intel Catalina/DeSmuME debugger acceptance gate. See [`docs/nds-ghidra-integration.md`](docs/nds-ghidra-integration.md) for the focused integration contract.
 
 ## Dynamic-debugging tools
 
@@ -444,6 +502,7 @@ The existing `desmume_read_register_packet`, `desmume_read_memory`, `desmume_pro
 - Node.js 20 or newer
 - An MCP host that can launch local stdio servers
 - A dedicated workspace containing the intended repositories and private ROM-development inputs
+- For Ghidra bootstrap, a supported local Ghidra 12.x installation; Ghidra 12.1.2 is the reference acceptance release
 - For emulator tools, a verified DeSmuME debug bundle
 
 ## Downloadable RE-MCP bundle
@@ -452,11 +511,12 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 
 - Compiled JavaScript
 - Production dependencies, including the pinned Capstone.js WebAssembly backend
+- RE-MCP-owned Ghidra Java bridge scripts
 - Configuration template
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The check requires no external disassembler or runtime asset download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra Java resources and controlled tool registration, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The package check does not require a Ghidra installation or external disassembler download.
 
 After downloading and extracting the archive:
 
@@ -465,9 +525,9 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, assembled function-tool registration, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
+The same self-check verifies the required package files, assembled function/Ghidra-tool registration, Ghidra bridge resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
 
-Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
+Copy `mcp-config.example.json`, replace the required workspace/server paths, and either set the optional Ghidra paths for Ghidra bootstrap or remove those optional environment entries when Ghidra tools are not needed.
 
 ## Build the Catalina-native DeSmuME debugger bundle
 
@@ -507,14 +567,23 @@ npm run check
 npm run build
 ```
 
-Run directly:
+Run directly without Ghidra integration:
 
 ```bash
 RE_MCP_WORKSPACE_ROOT=/absolute/path/to/rom-modding \
 node dist/index.js
 ```
 
-The server refuses to start without an explicit workspace root.
+Run with the optional controlled Ghidra integration enabled:
+
+```bash
+RE_MCP_WORKSPACE_ROOT=/absolute/path/to/rom-modding \
+RE_MCP_GHIDRA_HOME=/absolute/path/to/ghidra_12.1.2_PUBLIC \
+RE_MCP_GHIDRA_TIMEOUT_MS=900000 \
+node dist/index.js
+```
+
+The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra bootstrap is requested.
 
 ## DeSmuME launcher contract
 
@@ -577,6 +646,13 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
 - Static overlay selection/disassembly/reference/function search never claims that an overlay is loaded at runtime
 - Static operations revalidate the source ROM SHA-256 before and after decoding/searching
+- Ghidra bootstrap derives one `analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME`; callers cannot provide executable paths, project paths, loaders, languages, scripts, raw Ghidra arguments, environment maps, or output paths
+- Ghidra projects are isolated by full source ROM SHA-256; generated bridge inputs remain separate from persistent analyst state
+- Uncompressed NDS overlays use distinct Ghidra overlay address spaces; compressed overlays are never decoded/imported as executable runtime bytes
+- RE-MCP imports proven entries/modes/direct-call evidence only and does not promote Ghidra-derived functions, bodies, types, or other heuristics into canonical RE-MCP evidence
+- Ghidra reruns preserve analyst-created state and fail `project-state-mismatch` instead of destructively repairing unrecognized ownership
+- Ghidra headless execution is shell-free, timeout-bounded, output-bounded, and source-ROM identity is revalidated during bootstrap
+- `nds_ghidra_status` is non-mutating and does not invoke Ghidra
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
 

@@ -28,14 +28,33 @@ export type NdsFunctionErrorCategory =
   | "function-entry-not-uniquely-resolved"
   | "function-discovery-limit-exceeded";
 
+export type NdsGhidraErrorCategory =
+  | "ghidra-not-configured"
+  | "invalid-ghidra-installation"
+  | "unsupported-ghidra-version"
+  | "ghidra-language-unavailable"
+  | "ghidra-project-locked"
+  | "bridge-generation-failed"
+  | "ghidra-import-failed"
+  | "ghidra-analysis-failed"
+  | "ghidra-analysis-timeout"
+  | "ghidra-output-limit"
+  | "project-state-mismatch";
+
+/** Error categories handled by the pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
   | NdsFunctionErrorCategory;
 
+/** Complete service-layer category set, including optional Ghidra integration. */
+export type NdsServiceErrorCategory =
+  | AnyNdsErrorCategory
+  | NdsGhidraErrorCategory;
+
 export class NdsError<
-  Category extends AnyNdsErrorCategory = NdsErrorCategory,
+  Category extends NdsServiceErrorCategory = NdsErrorCategory,
 > extends Error {
   constructor(
     readonly category: Category,

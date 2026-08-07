@@ -32,6 +32,7 @@ jobs:
           mkdir -p "$root/dist"
           cp package.json README.md mcp-config.example.json "$root/"
           cp -R scripts "$root/"
+          cp -R resources "$root/"
           cp -R dist/src/. "$root/dist/"
           (
             cd "$root"

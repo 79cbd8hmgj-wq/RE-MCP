@@ -12,8 +12,17 @@ const required = [
   "dist/services/nds/pattern-search.js",
   "dist/services/nds/function-discovery.js",
   "dist/services/nds/function-analysis.js",
+  "dist/services/nds/ghidra-model.js",
+  "dist/services/nds/ghidra-bridge.js",
+  "dist/services/nds/ghidra-installation.js",
+  "dist/services/nds/ghidra-runner.js",
+  "dist/services/nds/ghidra-project.js",
   "dist/services/nds/rom-map.js",
   "dist/tools/nds-functions.js",
+  "dist/tools/nds-ghidra.js",
+  "resources/ghidra/ReMcpPrepareProgram.java",
+  "resources/ghidra/ReMcpImportEvidence.java",
+  "resources/ghidra/ReMcpRecordAnalysis.java",
   "package.json",
   "node_modules/@modelcontextprotocol/sdk/package.json",
   "node_modules/zod/package.json",
@@ -35,6 +44,20 @@ if (nodeMajor < 20) {
 const builtIndex = await readFile(path.join(root, "dist/index.js"), "utf8");
 if (!builtIndex.includes("registerNdsFunctionTools(server, config)")) {
   throw new Error("Packaged server does not register NDS function tools");
+}
+if (!builtIndex.includes("registerNdsGhidraTools(server, config)")) {
+  throw new Error("Packaged server does not register controlled NDS Ghidra tools");
+}
+
+for (const scriptName of [
+  "ReMcpPrepareProgram.java",
+  "ReMcpImportEvidence.java",
+  "ReMcpRecordAnalysis.java",
+]) {
+  const source = await readFile(path.join(root, "resources", "ghidra", scriptName), "utf8");
+  if (!source.includes("@category RE-MCP")) {
+    throw new Error(`Packaged Ghidra resource lacks RE-MCP script identity: ${scriptName}`);
+  }
 }
 
 const adapterUrl = pathToFileURL(
@@ -217,9 +240,9 @@ try {
   fixture.writeUInt32LE(0x700, 0x58);
   fixture.writeUInt32LE(0x800, 0x68);
 
-  fixture.set([0x00, 0x00, 0x00, 0xeb], 0x200); // BL 0x02000008
-  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x204); // BX LR
-  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x208); // BX LR
+  fixture.set([0x00, 0x00, 0x00, 0xeb], 0x200);
+  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x204);
+  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x208);
 
   const functionRom = path.join(functionTemp, "function-smoke.nds");
   await writeFile(functionRom, fixture);

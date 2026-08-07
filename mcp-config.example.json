@@ -4,7 +4,9 @@
       "command": "node",
       "args": ["/ABSOLUTE/PATH/TO/re-mcp/dist/index.js"],
       "env": {
-        "RE_MCP_WORKSPACE_ROOT": "/ABSOLUTE/PATH/TO/rom-modding"
+        "RE_MCP_WORKSPACE_ROOT": "/ABSOLUTE/PATH/TO/rom-modding",
+        "RE_MCP_GHIDRA_HOME": "/ABSOLUTE/PATH/TO/ghidra_12.1.2_PUBLIC",
+        "RE_MCP_GHIDRA_TIMEOUT_MS": "900000"
       }
     }
   }

@@ -129,6 +129,8 @@ function config(): ServerConfig {
     workspaceRoot: "/workspace",
     commandTimeoutMs: 30_000,
     maxOutputBytes: 64 * 1024,
+    ghidraHome: null,
+    ghidraTimeoutMs: 900_000,
   };
 }
 

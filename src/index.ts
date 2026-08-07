@@ -12,6 +12,7 @@ import { runProcess } from "./services/process-runner.js";
 import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
 import { registerNdsFunctionTools } from "./tools/nds-functions.js";
+import { registerNdsGhidraTools } from "./tools/nds-ghidra.js";
 import { registerNdsPatternTools } from "./tools/nds-pattern.js";
 import { registerNdsTools } from "./tools/nds.js";
 import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
@@ -85,6 +86,7 @@ registerDesmumeTools(server, config, desmumeManager);
 registerNdsTools(server, config);
 registerNdsPatternTools(server, config);
 registerNdsFunctionTools(server, config);
+registerNdsGhidraTools(server, config);
 registerRuntimeEvidenceTools(server, config, desmumeManager);
 
 server.tool(
@@ -103,7 +105,7 @@ server.tool(
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection; no register writes, general memory writes, watchpoints, or arbitrary GDB packets",
       evidencePolicy: "Atomic raw evidence under project analysis/generated only",
       ndsStaticAnalysisPolicy:
-        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, and bounded proven function-entry/call-graph analysis over canonical executable components; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, symbol recovery, ROM mutation/rebuild, arbitrary byte-range extraction, or caller-controlled output paths",
+        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, and bounded proven function-entry/call-graph analysis over canonical executable components; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, ROM mutation/rebuild, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled output/project paths",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -143,6 +145,8 @@ server.tool(
         "nds_search_pattern",
         "nds_discover_functions",
         "nds_analyze_function",
+        "nds_ghidra_bootstrap",
+        "nds_ghidra_status",
         "server_capabilities",
       ],
     }),

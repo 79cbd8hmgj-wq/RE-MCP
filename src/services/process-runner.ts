@@ -6,6 +6,7 @@ export interface RunRequest {
   readonly cwd: string;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly terminateOnOutputLimit?: boolean;
 }
 
 export interface RunResult {
@@ -15,6 +16,7 @@ export interface RunResult {
   readonly stderr: string;
   readonly timedOut: boolean;
   readonly outputTruncated: boolean;
+  readonly outputLimitExceeded: boolean;
 }
 
 type AnyBuffer = Buffer<ArrayBufferLike>;
@@ -36,16 +38,35 @@ export async function runProcess(request: RunRequest): Promise<RunResult> {
     let stdout: AnyBuffer = Buffer.alloc(0);
     let stderr: AnyBuffer = Buffer.alloc(0);
     let outputTruncated = false;
+    let outputLimitExceeded = false;
     let timedOut = false;
+    let terminationStarted = false;
+
+    const terminate = (): void => {
+      if (terminationStarted) {
+        return;
+      }
+      terminationStarted = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+    };
 
     const append = (current: AnyBuffer, chunk: AnyBuffer): AnyBuffer => {
       if (current.length >= request.maxOutputBytes) {
         outputTruncated = true;
+        outputLimitExceeded = true;
+        if (request.terminateOnOutputLimit === true) {
+          terminate();
+        }
         return current;
       }
       const remaining = request.maxOutputBytes - current.length;
       if (chunk.length > remaining) {
         outputTruncated = true;
+        outputLimitExceeded = true;
+        if (request.terminateOnOutputLimit === true) {
+          terminate();
+        }
       }
       return Buffer.concat([current, chunk.subarray(0, remaining)]);
     };
@@ -60,8 +81,7 @@ export async function runProcess(request: RunRequest): Promise<RunResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+      terminate();
     }, request.timeoutMs);
     timer.unref();
 
@@ -74,6 +94,7 @@ export async function runProcess(request: RunRequest): Promise<RunResult> {
         stderr: stderr.toString("utf8"),
         timedOut,
         outputTruncated,
+        outputLimitExceeded,
       });
     });
   });

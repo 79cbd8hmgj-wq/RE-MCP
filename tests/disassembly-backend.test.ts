@@ -36,6 +36,26 @@ test("decodes known ARM and Thumb instructions", async () => {
   }
 });
 
+test("decodes ARM BLX immediate with deterministic Thumb target", async () => {
+  const backend = await createCapstoneArmBackend();
+  try {
+    const blx = backend.decodeOne(
+      Uint8Array.from([0x00, 0x00, 0x00, 0xfa]),
+      0x02000000,
+      "arm",
+    );
+    assert.ok(blx);
+    assert.equal(blx.mnemonic, "blx");
+    assert.equal(blx.isCall, true);
+    assert.equal(blx.switchesMode, true);
+    assert.deepEqual(blx.operands, [
+      { kind: "immediate", value: 0x02000008 },
+    ]);
+  } finally {
+    backend.close();
+  }
+});
+
 test("normalizes PC-relative semantics when Capstone 5.0.9 omits operand detail", async () => {
   const backend = await createCapstoneArmBackend();
   try {
