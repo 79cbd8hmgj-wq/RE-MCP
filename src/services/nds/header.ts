@@ -3,7 +3,7 @@ import { open, stat } from "node:fs/promises";
 import { NdsError } from "./errors.js";
 import { hashFileSha256, readExact } from "./io.js";
 
-const FULL_HEADER_BYTES = 0x6c;
+export const NDS_PARSED_HEADER_BYTES = 0x6c;
 const ARM9_HEADER_BYTES = 0x30;
 const UINT32_END = 0x1_0000_0000;
 
@@ -176,11 +176,11 @@ export async function readArm9HeaderMetadata(romPath: string): Promise<NdsExecut
 }
 
 export async function parseNdsHeader(romPath: string): Promise<ParsedNdsHeader> {
-  const fileSize = await requireRegularFile(romPath, FULL_HEADER_BYTES);
+  const fileSize = await requireRegularFile(romPath, NDS_PARSED_HEADER_BYTES);
   const handle = await open(romPath, "r");
   let buffer: Buffer;
   try {
-    buffer = await readExact(handle, 0, FULL_HEADER_BYTES, "NDS header");
+    buffer = await readExact(handle, 0, NDS_PARSED_HEADER_BYTES, "NDS header");
   } finally {
     await handle.close();
   }
