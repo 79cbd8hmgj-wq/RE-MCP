@@ -145,3 +145,33 @@ export function writeFntSubtable(
   }
   return cursor - fntOffset;
 }
+
+export interface OverlayFixtureValues {
+  readonly overlayId: number;
+  readonly ramAddress: number;
+  readonly ramSize: number;
+  readonly bssSize: number;
+  readonly staticInitStart: number;
+  readonly staticInitEnd: number;
+  readonly fileId: number;
+  readonly compressedSize: number;
+  readonly flags: number;
+}
+
+export function writeOverlayRecord(
+  buffer: Buffer,
+  tableOffset: number,
+  index: number,
+  values: OverlayFixtureValues,
+): void {
+  const base = tableOffset + index * 32;
+  buffer.writeUInt32LE(values.overlayId, base);
+  buffer.writeUInt32LE(values.ramAddress, base + 0x04);
+  buffer.writeUInt32LE(values.ramSize, base + 0x08);
+  buffer.writeUInt32LE(values.bssSize, base + 0x0c);
+  buffer.writeUInt32LE(values.staticInitStart, base + 0x10);
+  buffer.writeUInt32LE(values.staticInitEnd, base + 0x14);
+  buffer.writeUInt32LE(values.fileId, base + 0x18);
+  const packed = (values.compressedSize & 0x00ffffff) | ((values.flags & 0xff) << 24);
+  buffer.writeUInt32LE(packed >>> 0, base + 0x1c);
+}
