@@ -31,8 +31,7 @@ export type NdsFunctionErrorCategory =
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
-  | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory;
+  | NdsPatternSearchErrorCategory;
 
 export class NdsError<
   Category extends AnyNdsErrorCategory = NdsErrorCategory,
