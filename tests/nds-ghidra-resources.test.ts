@@ -100,7 +100,16 @@ test("Ghidra evidence contract records exact entry, mode, overlay, and isolated 
   assert.match(source, /addMemoryReference\s*\(/);
   assert.match(source, /RefType\.UNCONDITIONAL_CALL/);
   assert.match(source, /SourceType\.IMPORTED/);
-  assert.match(source, /Reference\.OTHER/, "RE-MCP evidence must not occupy Ghidra's mnemonic/operand reference slot");
+  assert.match(
+    source,
+    /Reference\.MNEMONIC/,
+    "instruction-level imported call evidence must use Ghidra's valid mnemonic reference index",
+  );
+  assert.doesNotMatch(
+    source,
+    /Reference\.OTHER/,
+    "Reference.OTHER (-2) is rejected by Ghidra addMemoryReference",
+  );
   assert.doesNotMatch(source, /setBody\s*\(/);
 });
 
