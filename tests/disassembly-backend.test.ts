@@ -36,6 +36,65 @@ test("decodes known ARM and Thumb instructions", async () => {
   }
 });
 
+test("normalizes ARM and Thumb PC-relative operands from structured detail", async () => {
+  const backend = await createCapstoneArmBackend();
+  try {
+    const armLiteral = backend.decodeOne(
+      Uint8Array.from([0x00, 0x00, 0x9f, 0xe5]),
+      0x02000000,
+      "arm",
+    );
+    assert.ok(armLiteral);
+    assert.deepEqual(armLiteral.pcRelative, {
+      kind: "literal-load",
+      displacement: 0,
+    });
+    assert.equal(
+      armLiteral.operands.some(
+        (operand) => operand.kind === "memory"
+          && operand.value.baseRegister === "pc"
+          && operand.value.displacement === 0,
+      ),
+      true,
+    );
+
+    const thumbLiteral = backend.decodeOne(
+      Uint8Array.from([0x00, 0x48]),
+      0x02000002,
+      "thumb",
+    );
+    assert.ok(thumbLiteral);
+    assert.deepEqual(thumbLiteral.pcRelative, {
+      kind: "literal-load",
+      displacement: 0,
+    });
+
+    const armAdd = backend.decodeOne(
+      Uint8Array.from([0x10, 0x00, 0x8f, 0xe2]),
+      0x02000000,
+      "arm",
+    );
+    assert.ok(armAdd);
+    assert.deepEqual(armAdd.pcRelative, {
+      kind: "address-add",
+      immediate: 0x10,
+    });
+
+    const thumbAdr = backend.decodeOne(
+      Uint8Array.from([0x00, 0xa0]),
+      0x02000002,
+      "thumb",
+    );
+    assert.ok(thumbAdr);
+    assert.deepEqual(thumbAdr.pcRelative, {
+      kind: "address-add",
+      immediate: 0,
+    });
+  } finally {
+    backend.close();
+  }
+});
+
 test("returns null for an incomplete instruction", async () => {
   const backend = await createCapstoneArmBackend();
   try {
