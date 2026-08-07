@@ -94,3 +94,54 @@ export function writeFatEntry(
   buffer.writeUInt32LE(startOffset, base);
   buffer.writeUInt32LE(endOffset, base + 4);
 }
+
+export function writeFntMainRecord(
+  buffer: Buffer,
+  fntOffset: number,
+  index: number,
+  subtableOffset: number,
+  firstFileId: number,
+  parentOrDirectoryCount: number,
+): void {
+  const base = fntOffset + index * 8;
+  buffer.writeUInt32LE(subtableOffset, base);
+  buffer.writeUInt16LE(firstFileId, base + 4);
+  buffer.writeUInt16LE(parentOrDirectoryCount, base + 6);
+}
+
+export function encodeFntFileEntry(name: string): Buffer {
+  const bytes = Buffer.from(name, "latin1");
+  if (bytes.length < 1 || bytes.length > 0x7f) {
+    throw new Error("FNT file name must contain 1..127 bytes");
+  }
+  return Buffer.concat([Buffer.from([bytes.length]), bytes]);
+}
+
+export function encodeFntDirectoryEntry(name: string, childDirectoryId: number): Buffer {
+  const bytes = Buffer.from(name, "latin1");
+  if (bytes.length < 1 || bytes.length > 0x7f) {
+    throw new Error("FNT directory name must contain 1..127 bytes");
+  }
+  const suffix = Buffer.alloc(2);
+  suffix.writeUInt16LE(childDirectoryId, 0);
+  return Buffer.concat([Buffer.from([0x80 | bytes.length]), bytes, suffix]);
+}
+
+export function writeFntSubtable(
+  buffer: Buffer,
+  fntOffset: number,
+  subtableOffset: number,
+  entries: readonly Buffer[],
+  terminate = true,
+): number {
+  let cursor = fntOffset + subtableOffset;
+  for (const entry of entries) {
+    entry.copy(buffer, cursor);
+    cursor += entry.length;
+  }
+  if (terminate) {
+    buffer.writeUInt8(0, cursor);
+    cursor += 1;
+  }
+  return cursor - fntOffset;
+}
