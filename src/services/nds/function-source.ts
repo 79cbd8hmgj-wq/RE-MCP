@@ -3,7 +3,11 @@ import {
   resolveNdsCodeSource,
   type NdsCodeSource,
 } from "./disassembly-source.js";
-import { NdsError } from "./errors.js";
+import {
+  NdsError,
+  type AnyNdsErrorCategory,
+  type NdsFunctionErrorCategory,
+} from "./errors.js";
 import {
   type FunctionProof,
   type ProvenFunctionIdentity,
@@ -42,9 +46,24 @@ export interface PreparedFunctionSearch {
   } | null;
 }
 
-function requireUint32(value: number, label: string, category: "invalid-function-scope" | "invalid-function-seed"): void {
+function functionError(
+  category: NdsFunctionErrorCategory,
+  message: string,
+): NdsError {
+  return new NdsError(category as AnyNdsErrorCategory, message);
+}
+
+function errorCategory(error: unknown): string | null {
+  return error instanceof NdsError ? String(error.category) : null;
+}
+
+function requireUint32(
+  value: number,
+  label: string,
+  category: "invalid-function-scope" | "invalid-function-seed",
+): void {
   if (!Number.isInteger(value) || value < 0 || value > UINT32_MAX) {
-    throw new NdsError(category, `${label} must be a 32-bit unsigned integer`);
+    throw functionError(category, `${label} must be a 32-bit unsigned integer`);
   }
 }
 
@@ -70,7 +89,7 @@ function validateOverlayIds(
   overlayIds: readonly number[],
 ): readonly NdsOverlay[] {
   if (overlayIds.length === 0) {
-    throw new NdsError(
+    throw functionError(
       "invalid-function-scope",
       "Function overlay scope requires at least one overlay ID",
     );
@@ -80,7 +99,7 @@ function validateOverlayIds(
   for (const overlayId of overlayIds) {
     requireUint32(overlayId, "Function scope overlay ID", "invalid-function-scope");
     if (seen.has(overlayId)) {
-      throw new NdsError(
+      throw functionError(
         "invalid-function-scope",
         `Function scope contains duplicate overlay ID ${overlayId}`,
       );
@@ -95,7 +114,7 @@ function validateOverlayIds(
   for (const overlayId of seen) {
     const overlay = byId.get(overlayId);
     if (overlay === undefined) {
-      throw new NdsError(
+      throw functionError(
         "invalid-function-scope",
         `${processor.toUpperCase()} overlay ${overlayId} does not exist`,
       );
@@ -187,18 +206,18 @@ function resolveSeed(
       ...(seed.overlayId === undefined ? {} : { overlayId: seed.overlayId }),
     });
     if (resolution.status !== "resolved") {
-      throw new NdsError(
+      throw functionError(
         "invalid-function-seed",
         `Function seed at 0x${seed.runtimeAddress.toString(16)} did not resolve: ${resolution.status}`,
       );
     }
     return resolution.source;
   } catch (error) {
-    if (error instanceof NdsError && error.category === "invalid-function-seed") {
+    if (errorCategory(error) === "invalid-function-seed") {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
-    throw new NdsError(
+    throw functionError(
       "invalid-function-seed",
       `Function seed at 0x${seed.runtimeAddress.toString(16)} is invalid: ${message}`,
     );
@@ -218,7 +237,7 @@ function validateSeeds(
   for (const seed of seeds) {
     const source = resolveSeed(map, processor, seed);
     if (!selected.has(functionComponentKey(source))) {
-      throw new NdsError(
+      throw functionError(
         "invalid-function-seed",
         `Function seed at 0x${seed.runtimeAddress.toString(16)} lies outside the selected scope`,
       );
@@ -264,14 +283,14 @@ function programEntryFor(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new NdsError(
+    throw functionError(
       "function-entry-not-uniquely-resolved",
       `${processor.toUpperCase()} program entry could not be resolved: ${message}`,
     );
   }
 
   if (resolution.status !== "resolved" || resolution.source.component !== "main") {
-    throw new NdsError(
+    throw functionError(
       "function-entry-not-uniquely-resolved",
       `${processor.toUpperCase()} program entry did not resolve uniquely to main executable code`,
     );
