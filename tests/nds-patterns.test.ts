@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { NdsError } from "../src/services/nds/errors.js";
+import { NdsError, type AnyNdsErrorCategory } from "../src/services/nds/errors.js";
 import { compileNdsPattern } from "../src/services/nds/patterns.js";
 
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
 }
+
+test("AnyNdsErrorCategory includes pattern-search categories", () => {
+  const category: AnyNdsErrorCategory = "invalid-pattern";
+  assert.equal(category, "invalid-pattern");
+});
 
 test("compiles exact and wildcard byte signatures", () => {
   const compiled = compileNdsPattern({
