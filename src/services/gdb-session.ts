@@ -16,6 +16,13 @@ export type ExecutionResult =
       readonly state: "running";
     };
 
+export interface StepSequenceResult {
+  readonly requested: number;
+  readonly completed: number;
+  readonly completedAll: boolean;
+  readonly result: ExecutionResult;
+}
+
 export interface GdbSessionOptions {
   readonly host: "127.0.0.1";
   readonly port: number;
@@ -205,6 +212,64 @@ export class GdbSession {
     });
   }
 
+  async stepInstructions(
+    count: number,
+    perStepTimeoutMs: number,
+  ): Promise<StepSequenceResult> {
+    if (!Number.isInteger(count) || count < 1 || count > 100) {
+      throw new Error("GDB single-step count must be from 1 through 100");
+    }
+    this.#validateTimeout(perStepTimeoutMs, "GDB single-step timeout");
+
+    return await this.#runExclusive(async () => {
+      await this.connect();
+      if (this.#state !== "stopped") {
+        throw new Error(`GDB single-step requires stopped state; current state is ${this.#state}`);
+      }
+      this.#queuedStop = null;
+      const socket = this.#requireSocket();
+
+      let completed = 0;
+      let finalResult: ExecutionResult | null = null;
+      for (let index = 0; index < count; index += 1) {
+        this.#state = "waiting";
+        const reply = this.#waitForPacket(perStepTimeoutMs, true);
+        socket.write(encodeRspPacket("s"), "ascii");
+        const result = await this.#finishExecutionWait(reply);
+        finalResult = result;
+
+        if (result.kind === "timeout") {
+          return {
+            requested: count,
+            completed,
+            completedAll: false,
+            result,
+          };
+        }
+
+        completed += 1;
+        if (!this.#isNormalSingleStepStop(result.stop)) {
+          return {
+            requested: count,
+            completed,
+            completedAll: false,
+            result,
+          };
+        }
+      }
+
+      if (finalResult === null) {
+        throw new Error("GDB single-step sequence completed without a stop result");
+      }
+      return {
+        requested: count,
+        completed,
+        completedAll: true,
+        result: finalResult,
+      };
+    });
+  }
+
   async #softwareBreakpoint(
     operation: "insert" | "remove",
     command: "Z" | "z",
@@ -221,6 +286,14 @@ export class GdbSession {
       throw new Error(`GDB software breakpoint ${operation} failed: ${reply}`);
     }
     throw new Error(`Unsupported GDB software breakpoint ${operation} reply: ${reply}`);
+  }
+
+  #isNormalSingleStepStop(stop: GdbStopReply): boolean {
+    if (stop.kind !== "signal" || stop.signal !== 5) return false;
+    const reason = stop.fields.reason?.toLowerCase();
+    if (reason === "breakpoint" || reason === "swbreak") return false;
+    if ("swbreak" in stop.fields) return false;
+    return true;
   }
 
   async #runExclusive<T>(operation: () => Promise<T>): Promise<T> {
