@@ -157,14 +157,14 @@ try {
   fixture.writeUInt32LE(0x600, 0x50);
   fixture.writeUInt32LE(0x700, 0x58);
   fixture.writeUInt32LE(0x800, 0x68);
-  fixture.set([0xaa, 0xaa, 0xaa], 0x200);
+  fixture.set([0xaa, 0xaa, 0xbb], 0x200);
 
   const patternRom = path.join(patternTemp, "pattern-smoke.nds");
   await writeFile(patternRom, fixture);
   const patternMap = await readNdsRomMap(patternRom);
   const patternResult = await searchNdsPattern(
     patternMap,
-    { kind: "byte-signature", signature: "AA AA" },
+    { kind: "byte-signature", signature: "AA ??" },
     { kind: "components", arm9Main: true },
     { offset: 0, limit: 10, maxScanBytes: 0x20, contextBytes: 0 },
   );
