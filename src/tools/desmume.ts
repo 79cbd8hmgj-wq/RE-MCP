@@ -28,6 +28,9 @@ const stopContextRegionSchema = z.object({
   address: uint32Schema,
   length: z.number().int().min(1).max(4096),
 });
+const additionalRegionsSchema = z
+  .array(stopContextRegionSchema)
+  .max(8, "less than or equal to 8");
 const executableRangeSchema = z.object({
   id: safeIdentifierSchema,
   label: z.string().min(1).max(128),
@@ -66,20 +69,21 @@ function ownedProcessIdentity(status: OwnedProcessStatus): string {
 }
 
 function debuggerCorrectiveAction(
-  status: OwnedProcessStatus,
+  processStatus: OwnedProcessStatus,
   controller: DebugController,
   message: string,
 ): string {
-  if (!status.running) {
+  if (!processStatus.running) {
     return "Start DeSmuME with desmume_start before using debugger tools.";
   }
   if (/not initialized/i.test(message)) {
     return "Restart the owned DeSmuME session with desmume_start so debugger metadata is initialized.";
   }
-  if (controller.state() === "unavailable") {
+  const state = controller.status().state;
+  if (state === "unavailable") {
     return "Use desmume_wait_for_gdb to confirm the owned ARM9 GDB stub is reachable, then retry.";
   }
-  if (controller.state() === "running") {
+  if (state === "running") {
     return "Use desmume_wait_for_stop or desmume_pause before an operation that requires stopped state.";
   }
   return "Inspect the debugger state and retry only after the reported condition is corrected.";
@@ -92,16 +96,16 @@ function debuggerErrorResult(
   controller: DebugController,
 ) {
   const message = error instanceof Error ? error.message : String(error);
-  const status = manager.status();
-  const state = controller.state();
+  const processStatus = manager.status();
+  const debuggerStatus = controller.status();
   return textResult(
     {
       error: message,
       operation,
-      debuggerState: state,
-      emulatorRunning: status.running,
-      connectionUsable: status.running && state !== "unavailable",
-      correctiveAction: debuggerCorrectiveAction(status, controller, message),
+      debuggerState: debuggerStatus.state,
+      emulatorRunning: processStatus.running,
+      connectionUsable: processStatus.running && debuggerStatus.state !== "unavailable",
+      correctiveAction: debuggerCorrectiveAction(processStatus, controller, message),
     },
     true,
   );
@@ -179,7 +183,7 @@ export function registerDesmumeTools(
           ...status,
           debugger: {
             sessionIdentity,
-            state: debuggerController.state(),
+            state: debuggerController.status().state,
             arm9ExecutableRange: arm9Range,
           },
         });
@@ -192,7 +196,7 @@ export function registerDesmumeTools(
   server.tool("desmume_probe_gdb", "Probe the owned localhost ARM9 GDB port.", {}, async () => {
     try {
       const port = ownedGdbPort(manager);
-      if (debuggerController.state() !== "unavailable") {
+      if (debuggerController.status().state !== "unavailable") {
         return textResult({
           host: "127.0.0.1",
           port,
@@ -216,7 +220,7 @@ export function registerDesmumeTools(
     async ({ timeoutMs }) => {
       try {
         const port = ownedGdbPort(manager);
-        if (debuggerController.state() !== "unavailable") {
+        if (debuggerController.status().state !== "unavailable") {
           return textResult({
             host: "127.0.0.1",
             port,
@@ -310,11 +314,7 @@ export function registerDesmumeTools(
     async () => {
       try {
         ownedGdbPort(manager);
-        return textResult({
-          debuggerState: debuggerController.state(),
-          maximum: debuggerController.maximumBreakpoints(),
-          breakpoints: debuggerController.listBreakpoints(),
-        });
+        return textResult(debuggerController.status());
       } catch (error) {
         return debuggerErrorResult("desmume_breakpoint_list", error, manager, debuggerController);
       }
@@ -328,7 +328,7 @@ export function registerDesmumeTools(
       timeoutMs: z.number().int().min(100).max(30_000).default(10_000),
       captureContext: z.boolean().default(true),
       expectedBreakpointId: z.string().regex(/^bp-[1-9][0-9]*$/).optional(),
-      additionalRegions: z.array(stopContextRegionSchema).max(8).optional(),
+      additionalRegions: additionalRegionsSchema.optional(),
     },
     async ({ timeoutMs, captureContext, expectedBreakpointId, additionalRegions }) => {
       try {
@@ -353,7 +353,7 @@ export function registerDesmumeTools(
       count: z.number().int().min(1).max(100),
       perStepTimeoutMs: z.number().int().min(100).max(5_000).default(1_000),
       captureContext: z.boolean().default(true),
-      additionalRegions: z.array(stopContextRegionSchema).max(8).optional(),
+      additionalRegions: additionalRegionsSchema.optional(),
     },
     async ({ count, perStepTimeoutMs, captureContext, additionalRegions }) => {
       try {
@@ -377,7 +377,7 @@ export function registerDesmumeTools(
     {
       timeoutMs: z.number().int().min(100).max(5_000).default(1_000),
       captureContext: z.boolean().default(true),
-      additionalRegions: z.array(stopContextRegionSchema).max(8).optional(),
+      additionalRegions: additionalRegionsSchema.optional(),
     },
     async ({ timeoutMs, captureContext, additionalRegions }) => {
       try {
@@ -400,7 +400,7 @@ export function registerDesmumeTools(
     {
       timeoutMs: z.number().int().min(100).max(30_000),
       captureContext: z.boolean().default(true),
-      additionalRegions: z.array(stopContextRegionSchema).max(8).optional(),
+      additionalRegions: additionalRegionsSchema.optional(),
     },
     async ({ timeoutMs, captureContext, additionalRegions }) => {
       try {
@@ -421,8 +421,8 @@ export function registerDesmumeTools(
     "desmume_capture_stop_context",
     "Capture decoded ARM9 registers and bounded memory around the current stopped PC and SP.",
     {
-      timeoutMs: z.number().int().min(100).max(5_000).default(1_000),
-      additionalRegions: z.array(stopContextRegionSchema).max(8).optional(),
+      timeoutMs: z.number().int().min(100).max(5_000).default(3_000),
+      additionalRegions: additionalRegionsSchema.optional(),
     },
     async ({ timeoutMs, additionalRegions }) => {
       try {
@@ -441,12 +441,12 @@ export function registerDesmumeTools(
   server.tool(
     "desmume_executable_ranges_replace",
     "Replace the session-scoped additional ARM9 executable-range allowlist.",
-    { ranges: z.array(executableRangeSchema).max(64) },
+    { ranges: z.array(executableRangeSchema).max(64, "less than or equal to 64") },
     async ({ ranges }) => {
       try {
         ownedGdbPort(manager);
         debuggerController.replaceAdditionalRanges(normalizeExecutableRanges(ranges));
-        return textResult({ ranges: debuggerController.listExecutableRanges() });
+        return textResult({ ranges: debuggerController.status().executableRanges });
       } catch (error) {
         return debuggerErrorResult(
           "desmume_executable_ranges_replace",
