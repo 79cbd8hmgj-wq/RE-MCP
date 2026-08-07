@@ -29,10 +29,12 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Parse ARM9 and ARM7 overlay tables, including initialized range, BSS, file backing, compression metadata, and flags
 - Resolve ARM9/ARM7 runtime addresses against main executables and static overlay candidates
 - Reverse-map ROM offsets to structural, NitroFS, executable, and overlay relationships
+- Decode bounded ARM/Thumb instruction windows from deterministic file-backed NDS code sources
+- Build bounded direct-control-flow graphs across deterministic same-processor branch targets without recursively traversing calls
 - Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
 
-The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept caller-selected output paths or arbitrary ROM offset/length extraction requests.
+The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, or arbitrary ROM offset/length extraction requests.
 
 ### DeSmuME and ARM9 GDB
 
@@ -54,7 +56,7 @@ RE-MCP does **not** expose register writes, general memory writes, watchpoints, 
 
 ## NDS Static Analysis
 
-The static-analysis surface consists of seven MCP tools:
+The static-analysis surface consists of nine MCP tools:
 
 - `nds_inspect_rom`
 - `nds_list_files`
@@ -63,6 +65,8 @@ The static-analysis surface consists of seven MCP tools:
 - `nds_resolve_rom_offset`
 - `nds_extract_component`
 - `nds_extract_analysis_bundle`
+- `nds_disassemble_range`
+- `nds_analyze_control_flow`
 
 These tools are native-independent and have no DeSmuME or GDB dependency.
 
@@ -90,6 +94,63 @@ BSS has no source ROM bytes, so BSS results return no ROM offset.
 Compressed overlay bytes also require special handling. The stored FAT-backed overlay file may be compressed, so a decompressed runtime byte does **not** receive a fabricated direct ROM-byte mapping. The resolver still reports the overlay ID, file ID, runtime-relative offset, and backing-file metadata. Exact compressed-ROM ↔ decompressed-runtime correlation is deferred until controlled decompression support exists.
 
 `nds_resolve_rom_offset` performs the reverse classification and may return multiple valid relationships for one ROM byte, such as a NitroFS file plus an ARM9 overlay backing file. Compressed overlay backing bytes do not receive fabricated runtime addresses.
+
+### ARM/Thumb static disassembly
+
+`nds_disassemble_range` and `nds_analyze_control_flow` use `@alexaltea/capstone-js` 5.0.9 through a narrow RE-MCP-owned ARM decoder interface. The backend is JavaScript + WebAssembly and is bundled with RE-MCP; no external Capstone, Ghidra, or radare2 executable is required.
+
+Both tools accept only Nintendo DS sources resolved through the canonical ROM model. A request identifies `arm9` or `arm7`, exactly one runtime address or ROM offset, an optional overlay ID used only as a static disambiguator, and an ARM/Thumb mode.
+
+Supported modes are:
+
+- `arm`
+- `thumb`
+- conservative `auto`
+
+Initial `auto` mode succeeds only when the resolved source is the matching ARM9 or ARM7 main header entry point, which is an ARM seed. Merely being in an executable range or overlay is not sufficient evidence. During CFG traversal, a deterministic direct edge may propagate its statically proven target mode. RE-MCP never decodes both modes and chooses the more plausible stream, and it does not use address bit 0 as a general-purpose mode guess.
+
+ARM starts and deterministic ARM targets must be 4-byte aligned. Thumb starts and deterministic Thumb targets must be 2-byte aligned. Invalid alignment is rejected rather than rounded.
+
+Only exact file-backed code bytes are decodable:
+
+- ARM9 main
+- ARM7 main
+- uncompressed ARM9 overlays
+- uncompressed ARM7 overlays
+
+BSS returns `runtime-only-bss`. Compressed overlays return `compressed-overlay-not-decodable`; the stored compressed bytes are never decoded as if they were runtime instructions. If an uncompressed overlay's runtime initialized extent is larger than its physical backing file, only the exact file-backed prefix is eligible.
+
+If multiple static code mappings contain a requested address or branch target, RE-MCP returns or records `ambiguous-code-source` rather than guessing which overlay is loaded. Supplying `overlayId` can select one starting static source, but it never claims that overlay is loaded at runtime. A deterministic branch that stays within that already selected component preserves its static component identity; a cross-component branch is re-resolved and traversed only when the same processor, source bytes, and target mode are all deterministic.
+
+The ROM SHA-256 used to construct the canonical map is checked immediately before and after each top-level linear or CFG operation. A modified ROM invalidates the operation even if a decode callback also fails.
+
+#### Linear disassembly limits
+
+`nds_disassemble_range` decodes sequentially and classifies control flow without changing linear traversal based on branch instructions.
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Instructions | 32 | 256 |
+| Source bytes | 128 | 1,024 |
+
+Decoding stops at the first instruction limit, byte limit, component boundary, instruction that would cross a component boundary, or undecodable instruction. A local decode failure returns the successfully decoded prefix with `decode-stopped`; RE-MCP never skips bytes and silently resumes. `complete` means the requested bounded window completed, not that a whole function or component was discovered.
+
+#### Direct-control-flow limits and semantics
+
+`nds_analyze_control_flow` builds basic blocks using a deterministic FIFO worklist. Block identity includes processor, component, overlay ID, runtime address, and mode, preventing cycles from repeatedly decoding the same block identity.
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Basic blocks | 64 | 256 |
+| Total instructions | 512 | 4,096 |
+| Total decoded source bytes | 2 KiB | 16 KiB |
+| Traversal edges | 128 | 1,024 |
+
+All limits apply simultaneously. If any cap prevents further exploration, the graph returns `status: "truncated"` with explicit reasons chosen from `block-limit`, `instruction-limit`, `byte-limit`, and `edge-limit`. A truncated graph is a valid partial result and is never presented as complete.
+
+Deterministic non-call direct branches may be traversed. Conditional branches may create both taken and valid same-component fall-through edges. Direct calls are fully annotated but their callees are not queued as CFG blocks. Indirect call targets are recorded as unresolved rather than guessed; caller-side sequential decoding can continue at the valid fall-through. Indirect branches and returns terminate the current block. Register-indirect targets never receive invented addresses or modes.
+
+Static disassembly is independent of physical Catalina/DeSmuME Dynamic Debugging acceptance. Passing the Capstone.js tests or package smoke check does not constitute native emulator-debugger acceptance.
 
 ### Controlled extraction
 
@@ -129,12 +190,12 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 ### Example static-analysis workflow
 
 1. Call `nds_inspect_rom` to validate the ROM and obtain the canonical structural summary.
-2. Use `nds_list_files` and `nds_list_overlays` to identify relevant NitroFS files and overlay candidates.
-3. Use `nds_resolve_runtime_address` when you have a RAM address, or `nds_resolve_rom_offset` when you have a ROM offset.
-4. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`.
-5. Use the generated address maps and binaries as inputs to later static-analysis milestones.
+2. Use `nds_list_files`, `nds_list_overlays`, and the address resolvers to identify deterministic code/file relationships.
+3. Call `nds_disassemble_range` for a bounded ARM/Thumb instruction window at a validated runtime address or ROM offset.
+4. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
+5. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-This milestone does **not** implement disassembly, instruction decoding, function discovery, Ghidra/radare2/Capstone integration, pattern or table inference, decompression, graphics decoding, runtime overlay-loaded-state detection, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+This milestone still does **not** implement heuristic function discovery or function-boundary claims, recursive call-target traversal, symbol recovery, generic binary disassembly, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Dynamic-debugging tools
 
@@ -191,10 +252,12 @@ The existing `desmume_read_register_packet`, `desmume_read_memory`, `desmume_pro
 The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` artifact containing:
 
 - Compiled JavaScript
-- Production dependencies
+- Production dependencies, including the pinned Capstone.js WebAssembly backend
 - Configuration template
 - Installation self-check
 - SHA-256 checksum
+
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, and decodes known ARM and Thumb instructions. The check requires no external disassembler or runtime asset download.
 
 After downloading and extracting the archive:
 
@@ -202,6 +265,8 @@ After downloading and extracting the archive:
 cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
+
+The same self-check verifies the required package files and ARM/Thumb decoder smoke fixtures before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
 
@@ -288,8 +353,14 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Runtime evidence restricted to project `analysis/generated`
 - NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
 - NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
-- Compressed overlay runtime bytes and BSS never receive fabricated direct ROM offsets
+- NDS disassembly accepts canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
+- ARM/Thumb linear decoding is bounded to 256 instructions and 1,024 bytes per request
+- CFG traversal is bounded to 256 blocks, 4,096 instructions, 16 KiB decoded bytes, and 1,024 traversal edges
+- Direct calls are annotated but never recursively traversed; indirect targets are never guessed
+- Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
+- Static overlay selection/disassembly never claims that an overlay is loaded at runtime
+- Static operations revalidate the source ROM SHA-256 before and after decoding
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
 
