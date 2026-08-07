@@ -36,12 +36,12 @@ class FakeMcpServer {
   }
 
   parse(name: string, input: unknown): Record<string, unknown> {
-    const tool = this.require(name);
+    const tool = this.#require(name);
     return z.object(tool.schema).parse(input);
   }
 
   async invoke(name: string, input: unknown): Promise<unknown> {
-    const tool = this.require(name);
+    const tool = this.#require(name);
     return await tool.handler(this.parse(name, input));
   }
 
