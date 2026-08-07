@@ -110,6 +110,12 @@ function correctiveAction(category: NdsToolErrorCategory): string {
       return "Use an aligned ARM/Thumb seed that resolves uniquely to selected uncompressed file-backed code.";
     case "reference-scan-limit-exceeded":
       return "Use valid positive bounded scan limits; internal reference-scan limit invariants must not be bypassed.";
+    case "invalid-pattern":
+      return "Use an exact bounded NDS pattern; byte signatures may contain only exact bytes and ?? whole-byte wildcards.";
+    case "invalid-pattern-scope":
+      return "Use whole-rom or select at least one existing canonical NDS component; arbitrary raw byte ranges are not accepted.";
+    case "pattern-search-limit-exceeded":
+      return "Keep NDS pattern length, selector counts, pagination, scan bytes, and context within the documented bounds.";
     case "disassembly-backend-failure":
       return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
   }
