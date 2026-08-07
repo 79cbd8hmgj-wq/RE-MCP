@@ -2,45 +2,45 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a controlled Ghidra 12.x bootstrap/status integration that creates one analyst-safe local project per full NDS ROM SHA-256, imports canonical ARM9/ARM7 and uncompressed overlays, seeds RE-MCP-proven entry/call evidence before normal Ghidra auto-analysis, and never exposes arbitrary Ghidra or shell execution.
+**Goal:** Add controlled Ghidra 12.x bootstrap/status tools that create one analyst-safe local project per full NDS ROM SHA-256, import canonical ARM9/ARM7 and uncompressed overlays, seed RE-MCP-proven entry/direct-call evidence before normal auto-analysis, and never expose arbitrary Ghidra or shell execution.
 
-**Architecture:** RE-MCP generates a deterministic bridge manifest/evidence bundle from the canonical NDS map plus bounded proven-function discovery, then drives only a server-configured `support/analyzeHeadless` through a narrow runner. Persistent Ghidra state lives under `analysis/ghidra/nds/<full-sha256>/`, while replaceable bridge artifacts remain under `analysis/generated/nds/<sha-prefix>/ghidra-bridge/`. Java scripts reconcile RE-MCP-owned metadata/overlay spaces without treating Ghidra-derived bodies or symbols as proof.
+**Architecture:** Build a deterministic bridge from the canonical NDS map plus bounded ARM9/ARM7 proven-function discovery, then invoke only a validated `support/analyzeHeadless` with RE-MCP-owned Java scripts. Replaceable bridge inputs stay under `analysis/generated/nds/<sha-prefix>/ghidra-bridge/`; persistent Ghidra project/state stays under `analysis/ghidra/nds/<full-sha256>/`. Java emits a result into the generated bridge; Node validates it before updating persistent run-state sidecars.
 
-**Tech Stack:** Node.js 20+, TypeScript 5.7, MCP SDK, Zod, existing Capstone.js ARM backend, Node `child_process.spawn` through `runProcess`, Ghidra 12.x headless Java scripting, GitHub Actions.
+**Tech Stack:** Node.js 20+, TypeScript 5.7, MCP SDK, Zod, existing Capstone.js ARM backend, existing `runProcess()` wrapper, Ghidra 12.x headless Java scripting, GitHub Actions.
 
 ## Global Constraints
 
-- Initial compatibility target is official Ghidra 12.x; current reference acceptance version is Ghidra 12.1.
-- ARM9 language is exactly `ARM:LE:32:v5t`; ARM7 language is exactly `ARM:LE:32:v4t`.
-- Persistent project identity uses the full source ROM SHA-256, not only the existing 16-hex SHA prefix.
-- Generated bridge inputs live under `analysis/generated/nds/<sha-prefix>/ghidra-bridge/`; persistent Ghidra state lives under `analysis/ghidra/nds/<full-sha256>/`.
-- Compressed overlays are never imported as executable bytes in this milestone.
-- RE-MCP proves function entries only; it never invents Ghidra function-body/end boundaries.
-- Normal Ghidra auto-analysis runs after RE-MCP evidence import, but Ghidra-derived results do not become RE-MCP evidence.
-- Reruns preserve analyst labels, comments, bookmarks, types, namespaces, names, signatures, and Ghidra-only discoveries.
-- No caller-controlled executable, project path/name, processor language, loader, script path, shell string, raw Ghidra arguments, environment variables, or output path.
-- `RE_MCP_GHIDRA_HOME` is optional at server startup; Ghidra tools fail with `ghidra-not-configured` when absent.
-- `RE_MCP_GHIDRA_TIMEOUT_MS` defaults to 900,000 ms and is capped at 3,600,000 ms per headless subprocess invocation.
-- Ghidra stdout/stderr is bounded by `RE_MCP_MAX_OUTPUT_BYTES`; output overflow terminates the Ghidra subprocess.
-- Source ROM SHA-256 is checked before bridge generation, immediately before Ghidra execution, and after the top-level bootstrap.
-- Normal CI must not download or require Ghidra. Real-Ghidra acceptance is isolated to a manual workflow.
-- No native DeSmuME/GDB production behavior changes in this milestone.
+- Ghidra compatibility target: official 12.x; reference acceptance release is **12.1.2**.
+- Official acceptance asset: `ghidra_12.1.2_PUBLIC_20260605.zip` from tag `Ghidra_12.1.2_build`.
+- Official published SHA-256: `b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d`.
+- ARM9 language: exactly `ARM:LE:32:v5t`.
+- ARM7 language: exactly `ARM:LE:32:v4t`.
+- Persistent project identity uses the **full** ROM SHA-256.
+- Compressed overlays are never imported as executable runtime bytes.
+- RE-MCP proves entries only; it never fabricates function-body/end ranges.
+- Normal Ghidra auto-analysis runs after RE-MCP evidence import, but remains non-authoritative to RE-MCP.
+- Reruns preserve analyst labels, comments, bookmarks, types, namespaces, function names/signatures, and Ghidra-only discoveries.
+- `RE_MCP_GHIDRA_HOME` is optional at startup.
+- `RE_MCP_GHIDRA_TIMEOUT_MS` default: `900000`; maximum: `3600000` per headless invocation.
+- Ghidra stdout/stderr uses `RE_MCP_MAX_OUTPUT_BYTES`; overflow terminates the process.
+- Source ROM SHA is checked before bridge generation, immediately before Ghidra execution, and after bootstrap.
+- Normal CI must not download/require Ghidra; real-Ghidra acceptance is `workflow_dispatch` only.
+- No DeSmuME/GDB production behavior changes.
 
 ---
 
-## File structure
+## File map
 
 ### Create
-
-- `src/services/nds/ghidra-model.ts` — bridge manifest/evidence/status types, deterministic naming, and validation constants.
-- `src/services/nds/ghidra-bridge.ts` — build/validate/promote the deterministic bridge bundle and run bounded ARM9/ARM7 function discovery.
-- `src/services/nds/ghidra-installation.ts` — validate `RE_MCP_GHIDRA_HOME`, supported version, executable, and required languages.
-- `src/services/nds/ghidra-runner.ts` — construct and execute the allowlisted `analyzeHeadless` invocations.
-- `src/services/nds/ghidra-project.ts` — orchestrate bootstrap/reconciliation state and read non-mutating status sidecars.
-- `src/tools/nds-ghidra.ts` — register `nds_ghidra_bootstrap` and `nds_ghidra_status`.
-- `resources/ghidra/ReMcpPrepareProgram.java` — validate program ownership, create/reconcile uncompressed overlay spaces/BSS context, and establish proven ARM/Thumb entry context.
-- `resources/ghidra/ReMcpImportEvidence.java` — import entry/property/direct-call evidence without creating guessed function bodies.
-- `resources/ghidra/ReMcpRecordAnalysis.java` — record successful analysis metadata and structured state summary.
+- `src/services/nds/ghidra-model.ts` — manifest/status types, stable names, deterministic paths, sorting.
+- `src/services/nds/ghidra-bridge.ts` — transactional bridge generation/validation and fixed bounded discovery.
+- `src/services/nds/ghidra-installation.ts` — `GHIDRA_HOME`, version, executable, language validation.
+- `src/services/nds/ghidra-runner.ts` — RE-MCP script-path resolver, exact import/process argv builders, bounded execution.
+- `src/services/nds/ghidra-project.ts` — bootstrap/reconciliation orchestration and non-mutating status.
+- `src/tools/nds-ghidra.ts` — `nds_ghidra_bootstrap`, `nds_ghidra_status`.
+- `resources/ghidra/ReMcpPrepareProgram.java`
+- `resources/ghidra/ReMcpImportEvidence.java`
+- `resources/ghidra/ReMcpRecordAnalysis.java`
 - `tests/nds-ghidra-model.test.ts`
 - `tests/nds-ghidra-bridge.test.ts`
 - `tests/nds-ghidra-installation.test.ts`
@@ -48,22 +48,22 @@
 - `tests/nds-ghidra-project.test.ts`
 - `tests/nds-ghidra-tools.test.ts`
 - `tests/nds-ghidra-resources.test.ts`
-- `.github/workflows/ghidra-integration.yml` — manual real-Ghidra acceptance workflow only.
+- `scripts/ghidra-acceptance.mjs`
+- `.github/workflows/ghidra-integration.yml`
 
 ### Modify
-
-- `src/config.ts` — optional Ghidra home and bounded Ghidra timeout.
-- `src/services/process-runner.ts` — opt-in termination when output reaches the configured cap.
-- `src/services/nds/errors.ts` — Ghidra-specific NDS error categories.
-- `src/index.ts` — register the two Ghidra tools and update capabilities.
-- `scripts/check-install.mjs` — verify packaged Ghidra resources and compiled registration.
-- `.github/workflows/package.yml` — copy `resources/` into the downloadable bundle.
-- `mcp-config.example.json` — document optional Ghidra configuration.
-- `README.md` — document bootstrap/status behavior, safety boundary, paths, Ghidra requirements, and manual acceptance.
+- `src/config.ts`
+- `src/services/process-runner.ts`
+- `src/services/nds/errors.ts`
+- `src/index.ts`
+- `scripts/check-install.mjs`
+- `.github/workflows/package.yml`
+- `mcp-config.example.json`
+- `README.md`
 
 ---
 
-### Task 1: Add Ghidra configuration and output-limit termination support
+### Task 1: Add bounded Ghidra configuration and kill-on-output-limit process support
 
 **Files:**
 - Modify: `src/config.ts`
@@ -72,51 +72,49 @@
 - Test: `tests/process-runner.test.ts`
 
 **Interfaces:**
-- Consumes: existing `loadConfig()` and `runProcess()` call sites.
-- Produces:
-  ```ts
-  export interface ServerConfig {
-    readonly workspaceRoot: string;
-    readonly commandTimeoutMs: number;
-    readonly maxOutputBytes: number;
-    readonly ghidraHome: string | null;
-    readonly ghidraTimeoutMs: number;
-  }
-
-  export interface RunRequest {
-    readonly executable: string;
-    readonly args: readonly string[];
-    readonly cwd: string;
-    readonly timeoutMs: number;
-    readonly maxOutputBytes: number;
-    readonly terminateOnOutputLimit?: boolean;
-  }
-
-  export interface RunResult {
-    readonly exitCode: number | null;
-    readonly signal: NodeJS.Signals | null;
-    readonly stdout: string;
-    readonly stderr: string;
-    readonly timedOut: boolean;
-    readonly outputTruncated: boolean;
-    readonly outputLimitExceeded: boolean;
-  }
-  ```
-
-- [ ] **Step 1: Write failing config tests for absent/default/bounded Ghidra settings**
-
-Add assertions equivalent to:
 
 ```ts
-const config = loadConfig({ RE_MCP_WORKSPACE_ROOT: "/tmp/work" });
-assert.equal(config.ghidraHome, null);
-assert.equal(config.ghidraTimeoutMs, 900_000);
+export interface ServerConfig {
+  readonly workspaceRoot: string;
+  readonly commandTimeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly ghidraHome: string | null;
+  readonly ghidraTimeoutMs: number;
+}
 
-assert.equal(loadConfig({
+export interface RunRequest {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly terminateOnOutputLimit?: boolean;
+}
+
+export interface RunResult {
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+  readonly outputTruncated: boolean;
+  readonly outputLimitExceeded: boolean;
+}
+```
+
+- [ ] **Step 1: Write failing config tests**
+
+```ts
+const base = loadConfig({ RE_MCP_WORKSPACE_ROOT: "/tmp/work" });
+assert.equal(base.ghidraHome, null);
+assert.equal(base.ghidraTimeoutMs, 900_000);
+
+const max = loadConfig({
   RE_MCP_WORKSPACE_ROOT: "/tmp/work",
-  RE_MCP_GHIDRA_HOME: "/opt/ghidra_12.1_PUBLIC",
+  RE_MCP_GHIDRA_HOME: "/opt/ghidra_12.1.2_PUBLIC",
   RE_MCP_GHIDRA_TIMEOUT_MS: "3600000",
-}).ghidraTimeoutMs, 3_600_000);
+});
+assert.equal(max.ghidraTimeoutMs, 3_600_000);
 
 assert.throws(() => loadConfig({
   RE_MCP_WORKSPACE_ROOT: "/tmp/work",
@@ -124,55 +122,17 @@ assert.throws(() => loadConfig({
 }), /RE_MCP_GHIDRA_TIMEOUT_MS must be between 1 and 3600000/);
 ```
 
-- [ ] **Step 2: Run the config tests and confirm failure**
-
-Run:
+- [ ] **Step 2: Run focused config tests; verify FAIL**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra config"
 ```
 
-Expected: FAIL because `ServerConfig` does not yet expose Ghidra settings.
+- [ ] **Step 3: Implement config parsing**
 
-- [ ] **Step 3: Implement bounded Ghidra configuration**
+Add `DEFAULT_GHIDRA_TIMEOUT_MS = 900_000`, `MAX_GHIDRA_TIMEOUT_MS = 3_600_000`, a bounded-positive-int helper, optional resolved `ghidraHome`, and bounded `ghidraTimeoutMs`.
 
-Add a bounded helper and parse the optional home without making it required:
-
-```ts
-const DEFAULT_GHIDRA_TIMEOUT_MS = 900_000;
-const MAX_GHIDRA_TIMEOUT_MS = 3_600_000;
-
-function boundedPositiveInteger(
-  value: string | undefined,
-  fallback: number,
-  maximum: number,
-  name: string,
-): number {
-  const parsed = positiveInteger(value, fallback, name);
-  if (parsed > maximum) {
-    throw new Error(`${name} must be between 1 and ${maximum}`);
-  }
-  return parsed;
-}
-```
-
-Set:
-
-```ts
-ghidraHome: environment.RE_MCP_GHIDRA_HOME?.trim()
-  ? path.resolve(environment.RE_MCP_GHIDRA_HOME)
-  : null,
-ghidraTimeoutMs: boundedPositiveInteger(
-  environment.RE_MCP_GHIDRA_TIMEOUT_MS,
-  DEFAULT_GHIDRA_TIMEOUT_MS,
-  MAX_GHIDRA_TIMEOUT_MS,
-  "RE_MCP_GHIDRA_TIMEOUT_MS",
-),
-```
-
-- [ ] **Step 4: Write a failing process-runner test for kill-on-output-limit**
-
-Use `process.execPath` with `-e` to emit more than 64 bytes and keep the process alive. Assert:
+- [ ] **Step 4: Write failing process-runner overflow test**
 
 ```ts
 const result = await runProcess({
@@ -188,30 +148,22 @@ assert.equal(result.stdout.length, 64);
 assert.equal(result.timedOut, false);
 ```
 
-- [ ] **Step 5: Run the process-runner test and confirm failure**
-
-Run:
+- [ ] **Step 5: Run focused process test; verify FAIL**
 
 ```bash
-npm test -- --test-name-pattern="terminate.*output limit"
+npm test -- --test-name-pattern="output limit"
 ```
 
-Expected: FAIL because current `runProcess()` truncates but does not terminate.
+- [ ] **Step 6: Implement opt-in termination**
 
-- [ ] **Step 6: Implement opt-in output-limit termination without changing existing callers**
+On first overflow, set `outputLimitExceeded = true`; if `terminateOnOutputLimit === true`, send `SIGTERM` once and schedule the existing 2-second `SIGKILL` fallback. Existing callers retain prior truncate-only behavior by default.
 
-Track `outputLimitExceeded`; on the first overflow with `terminateOnOutputLimit === true`, send `SIGTERM` and schedule the existing `SIGKILL` fallback. Preserve current truncation behavior when the option is absent/false.
-
-- [ ] **Step 7: Run focused and full tests**
-
-Run:
+- [ ] **Step 7: Verify**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra config|output limit"
 npm run typecheck
 ```
-
-Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
@@ -222,15 +174,13 @@ git commit -m "feat: add bounded Ghidra process configuration"
 
 ---
 
-### Task 2: Define deterministic Ghidra bridge and project identities
+### Task 2: Define deterministic bridge/project model
 
 **Files:**
 - Create: `src/services/nds/ghidra-model.ts`
 - Create: `tests/nds-ghidra-model.test.ts`
 
-**Interfaces:**
-- Consumes: `NdsRomMap`, `DiscoverNdsFunctionsResult`, `ProvenFunctionIdentity`, `FunctionProof`, and `ProvenFunctionCallEdge`.
-- Produces:
+**Produces:**
 
 ```ts
 export const GHIDRA_BRIDGE_FORMAT = "re-mcp-nds-ghidra" as const;
@@ -238,75 +188,13 @@ export const GHIDRA_BRIDGE_FORMAT_VERSION = 1 as const;
 export const GHIDRA_ARM9_LANGUAGE = "ARM:LE:32:v5t" as const;
 export const GHIDRA_ARM7_LANGUAGE = "ARM:LE:32:v4t" as const;
 
-export interface GhidraBridgeManifest {
-  readonly format: typeof GHIDRA_BRIDGE_FORMAT;
-  readonly formatVersion: typeof GHIDRA_BRIDGE_FORMAT_VERSION;
-  readonly sourceRomSha256: string;
-  readonly sha256Prefix: string;
-  readonly processors: readonly GhidraProcessorManifest[];
-  readonly functionDiscovery: readonly GhidraFunctionDiscoveryManifest[];
-  readonly artifacts: readonly GhidraBridgeArtifact[];
-}
-
 export function ghidraGeneratedBridgeRoot(map: NdsRomMap, workspaceRoot: string): string;
 export function ghidraPersistentRoot(map: NdsRomMap, workspaceRoot: string): string;
+export function ghidraProjectRoot(map: NdsRomMap, workspaceRoot: string): string;
+export function ghidraStateRoot(map: NdsRomMap, workspaceRoot: string): string;
 export function ghidraProjectName(map: NdsRomMap): string;
 export function ghidraProgramName(processor: NdsProcessor): "RE-MCP_ARM9" | "RE-MCP_ARM7";
 export function ghidraOverlaySpaceName(processor: NdsProcessor, overlayId: number): string;
-export function stableJson(value: unknown): string;
-```
-
-`ghidraPersistentRoot()` must resolve exactly beneath `analysis/ghidra/nds/<full-sha256>/`. `ghidraGeneratedBridgeRoot()` must resolve beneath `analysis/generated/nds/<sha-prefix>/ghidra-bridge/`.
-
-- [ ] **Step 1: Write failing tests for full-SHA paths and deterministic names**
-
-Include:
-
-```ts
-assert.match(ghidraPersistentRoot(map, root), new RegExp(`${map.sha256}/?$`));
-assert.equal(ghidraProjectName(map), `RE-MCP-${map.sha256}`);
-assert.equal(ghidraProgramName("arm9"), "RE-MCP_ARM9");
-assert.equal(ghidraOverlaySpaceName("arm9", 7), "RE_MCP_ARM9_OVL_7");
-```
-
-Also construct two maps with the same first 16 SHA characters and verify persistent roots differ.
-
-- [ ] **Step 2: Run the model tests and confirm failure**
-
-```bash
-npm test -- --test-name-pattern="Ghidra bridge model"
-```
-
-Expected: FAIL because the module does not exist.
-
-- [ ] **Step 3: Implement the model constants, types, comparators, and path helpers**
-
-Use `resolveInside()` for both roots. Sort processors ARM9 then ARM7, overlays by numeric ID, functions using the existing canonical function comparator, proofs using `compareFunctionProof`, and call edges using `compareFunctionCallEdge`.
-
-`stableJson()` must serialize already-canonicalized structures with two-space indentation plus a trailing newline:
-
-```ts
-export function stableJson(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-```
-
-- [ ] **Step 4: Add failing tests for manifest validation and compressed-overlay representation**
-
-Assert that every overlay record contains one of:
-
-```ts
-{ importStatus: "importable", artifact: "../overlays/..." }
-{ importStatus: "not-imported-compressed", artifact: "../overlays/..." }
-```
-
-and that compressed records have no executable runtime artifact mapping claim.
-
-- [ ] **Step 5: Implement pure `buildGhidraBridgeManifest(...)` transformation**
-
-Use an explicit signature:
-
-```ts
 export function buildGhidraBridgeManifest(input: {
   readonly map: NdsRomMap;
   readonly arm9: DiscoverNdsFunctionsResult;
@@ -315,36 +203,53 @@ export function buildGhidraBridgeManifest(input: {
 }): GhidraBridgeManifest;
 ```
 
-This function performs no I/O and never infers function ends.
+- [ ] **Step 1: Write failing path/name tests**
 
-- [ ] **Step 6: Run model tests and typecheck**
+Assert persistent root contains the full SHA; two fake SHAs with the same first 16 chars produce different persistent roots; program/overlay names are exact and stable.
+
+- [ ] **Step 2: Run; verify FAIL**
+
+```bash
+npm test -- --test-name-pattern="Ghidra bridge model"
+```
+
+- [ ] **Step 3: Implement constants, types, paths, comparators**
+
+Use `resolveInside()` for all roots. Canonical sort: ARM9 before ARM7, overlays ascending ID, functions/proofs/calls via existing canonical comparators.
+
+- [ ] **Step 4: Write failing manifest tests**
+
+Require each overlay record to use exactly one status:
+
+```ts
+"importable" | "not-imported-compressed"
+```
+
+and preserve BSS/file-backed distinctions plus discovery `complete|partial-coverage|truncated` metadata.
+
+- [ ] **Step 5: Implement pure manifest transformation**
+
+Do not perform I/O or infer function ends.
+
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra bridge model"
 npm run typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add src/services/nds/ghidra-model.ts tests/nds-ghidra-model.test.ts
 git commit -m "feat: define deterministic Ghidra bridge model"
 ```
 
 ---
 
-### Task 3: Generate and validate the transactional bridge bundle
+### Task 3: Generate and validate bridge bundle transactionally
 
 **Files:**
 - Create: `src/services/nds/ghidra-bridge.ts`
 - Create: `tests/nds-ghidra-bridge.test.ts`
 - Modify: `src/services/nds/errors.ts`
 
-**Interfaces:**
-- Consumes: canonical `NdsRomMap`, existing `extractNdsAnalysisBundle()`, `discoverNdsFunctions()`, `createCapstoneArmBackend()`, and Task 2 model helpers.
-- Produces:
+**Produces:**
 
 ```ts
 export interface GeneratedGhidraBridge {
@@ -364,7 +269,7 @@ export async function validateGeneratedGhidraBridge(
 ): Promise<void>;
 ```
 
-Use fixed discovery limits equal to the current public defaults:
+Fixed discovery policy:
 
 ```ts
 const GHIDRA_DISCOVERY_LIMITS: FunctionDiscoveryLimits = {
@@ -384,31 +289,23 @@ const GHIDRA_DISCOVERY_LIMITS: FunctionDiscoveryLimits = {
 };
 ```
 
-Both processors use `{ scope: { kind: "all-executable-components" }, seeds: [] }` so caller input cannot change proof policy.
+ARM9/ARM7 request:
 
-- [ ] **Step 1: Write a failing bridge-generation test using the existing synthetic NDS fixture pattern**
-
-Assert the generator:
-
-- refreshes the static analysis bundle;
-- runs ARM9 and ARM7 discovery;
-- creates `ghidra-bridge/manifest.json`;
-- creates `evidence/functions.json` and `evidence/calls.json`;
-- copies the three packaged Ghidra scripts;
-- records hashes for every bridge-owned file;
-- reports compressed overlays as omitted from executable import.
-
-- [ ] **Step 2: Run and confirm failure**
-
-```bash
-npm test -- --test-name-pattern="generate.*Ghidra bridge"
+```ts
+{ scope: { kind: "all-executable-components" }, seeds: [] }
 ```
 
-Expected: FAIL because generation does not exist.
+- [ ] **Step 1: Write failing generator test**
 
-- [ ] **Step 3: Add Ghidra error categories**
+Using existing synthetic NDS fixture style, require static bundle refresh, ARM9/ARM7 discovery, `manifest.json`, `evidence/functions.json`, `evidence/calls.json`, `results/` directory, copied Java scripts, deterministic hashes, and compressed-overlay omission metadata.
 
-Extend the canonical NDS error union with:
+- [ ] **Step 2: Run; verify FAIL**
+
+```bash
+npm test -- --test-name-pattern="Ghidra bridge generation"
+```
+
+- [ ] **Step 3: Add error categories**
 
 ```ts
 export type NdsGhidraErrorCategory =
@@ -425,65 +322,32 @@ export type NdsGhidraErrorCategory =
   | "project-state-mismatch";
 ```
 
-Include it in `AnyNdsErrorCategory` without casts in new Ghidra services.
+Add to `AnyNdsErrorCategory`.
 
-- [ ] **Step 4: Implement transactional bridge generation**
+- [ ] **Step 4: Implement generation**
 
-Algorithm:
+Call `extractNdsAnalysisBundle()`, then one Capstone backend for bounded ARM9 and ARM7 discovery; close it in `finally`. Build the bridge in a temporary sibling and atomically promote only `ghidra-bridge/`. Reuse static-bundle binaries by relative reference rather than duplicating executable bytes.
 
-```ts
-await extractNdsAnalysisBundle(map, workspaceRoot);
-const backend = await createCapstoneArmBackend();
-try {
-  const arm9 = await discoverNdsFunctions(map, {
-    processor: "arm9",
-    scope: { kind: "all-executable-components" },
-    seeds: [],
-  }, GHIDRA_DISCOVERY_LIMITS, backend);
-  const arm7 = await discoverNdsFunctions(map, {
-    processor: "arm7",
-    scope: { kind: "all-executable-components" },
-    seeds: [],
-  }, GHIDRA_DISCOVERY_LIMITS, backend);
-  // Build manifest/evidence under a temporary ghidra-bridge sibling,
-  // fsync/hash files, then atomically promote only ghidra-bridge.
-} finally {
-  backend.close();
-}
-```
+- [ ] **Step 5: Write failing integrity tests**
 
-Reuse existing static bundle `arm9.bin`, `arm7.bin`, and overlay artifacts by relative path; do not duplicate executable bytes into the bridge subdirectory.
+ROM mutation during discovery → `invalid-rom`, no promoted bridge. Tampered evidence file after generation → `validateGeneratedGhidraBridge()` throws `bridge-generation-failed`.
 
-- [ ] **Step 5: Write failing integrity tests for source mutation and artifact tampering**
+- [ ] **Step 6: Implement SHA checks and artifact validation**
 
-Test two cases:
+`manifestSha256` is the hash of exact `manifest.json` bytes; do not embed that hash recursively inside the manifest itself.
 
-1. mutate the ROM during discovery and expect `invalid-rom` with no promoted bridge;
-2. tamper with `functions.json` after generation and expect `validateGeneratedGhidraBridge()` to fail `bridge-generation-failed`.
-
-- [ ] **Step 6: Implement pre/post SHA checks and artifact-hash validation**
-
-Use the existing `hashFileSha256()` helper. A generated manifest's `manifestSha256` is the hash of the exact `manifest.json` bytes and is not embedded recursively inside that same file.
-
-- [ ] **Step 7: Run bridge tests and full NDS static regression tests**
+- [ ] **Step 7: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra bridge|function discovery|analysis bundle"
 npm run typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
 git add src/services/nds/ghidra-bridge.ts src/services/nds/errors.ts tests/nds-ghidra-bridge.test.ts
 git commit -m "feat: generate validated NDS Ghidra bridge bundles"
 ```
 
 ---
 
-### Task 4: Validate Ghidra 12.x installations and construct headless commands
+### Task 4: Validate Ghidra installation and build exact headless invocations
 
 **Files:**
 - Create: `src/services/nds/ghidra-installation.ts`
@@ -491,17 +355,16 @@ git commit -m "feat: generate validated NDS Ghidra bridge bundles"
 - Create: `tests/nds-ghidra-installation.test.ts`
 - Create: `tests/nds-ghidra-runner.test.ts`
 
-**Interfaces:**
-- Consumes: Task 1 config/process runner and Task 2 manifest/path helpers.
-- Produces:
+**Produces:**
 
 ```ts
 export interface ValidatedGhidraInstallation {
   readonly home: string;
   readonly analyzeHeadless: string;
   readonly version: string;
-  readonly scriptPath: string;
 }
+
+export function resolveReMcpGhidraScriptPath(): string;
 
 export async function validateGhidraInstallation(
   config: ServerConfig,
@@ -514,101 +377,76 @@ export interface GhidraInvocation {
   readonly stage: "arm9-import" | "arm9-process" | "arm7-import" | "arm7-process";
 }
 
-export function buildGhidraImportInvocation(input: {
-  readonly installation: ValidatedGhidraInstallation;
-  readonly map: NdsRomMap;
-  readonly bridge: GeneratedGhidraBridge;
-  readonly processor: NdsProcessor;
-}): GhidraInvocation;
-
-export function buildGhidraProcessInvocation(input: {
-  readonly installation: ValidatedGhidraInstallation;
-  readonly map: NdsRomMap;
-  readonly bridge: GeneratedGhidraBridge;
-  readonly processor: NdsProcessor;
-}): GhidraInvocation;
-
+export function buildGhidraImportInvocation(...): GhidraInvocation;
+export function buildGhidraProcessInvocation(...): GhidraInvocation;
 export async function runGhidraInvocation(
   invocation: GhidraInvocation,
   config: ServerConfig,
 ): Promise<RunResult>;
 ```
 
-- [ ] **Step 1: Write failing installation tests against a temporary fake Ghidra tree**
+- [ ] **Step 1: Write failing installation tests with fake tree**
 
-Construct:
+Fixture:
 
 ```text
-<tmp>/ghidra_12.1_PUBLIC/
+<tmp>/ghidra_12.1.2_PUBLIC/
 ├── support/analyzeHeadless
 ├── Ghidra/application.properties
 └── Ghidra/Processors/ARM/data/languages/ARM.ldefs
 ```
 
-`application.properties` contains `application.version=12.1`; `ARM.ldefs` contains both required language IDs. Assert valid resolution and these failures:
+`application.properties`: `application.version=12.1.2`. Require both exact language IDs. Cover missing config/executable, version 11.x, missing language.
 
-- missing config → `ghidra-not-configured`;
-- missing executable → `invalid-ghidra-installation`;
-- version 11.4 → `unsupported-ghidra-version`;
-- missing v4t/v5t language → `ghidra-language-unavailable`.
-
-- [ ] **Step 2: Run installation tests and confirm failure**
+- [ ] **Step 2: Run; verify FAIL**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra installation"
 ```
 
-Expected: FAIL because validator does not exist.
-
 - [ ] **Step 3: Implement installation validation**
 
-Resolve `support/analyzeHeadless` and `Ghidra/.../ARM.ldefs` beneath the configured root with `resolveInside()`. Parse `application.version` and accept only `/^12\./`. Require exact `id="ARM:LE:32:v5t"` and `id="ARM:LE:32:v4t"` text in the language definitions.
+Derive all Ghidra paths beneath `ghidraHome` with `resolveInside()`. Accept `/^12\./`. Require exact v5t/v4t language IDs.
 
-- [ ] **Step 4: Write failing command-construction tests**
+- [ ] **Step 4: Implement RE-MCP script-path resolver with failing test first**
 
-For an initial ARM9 import, assert the exact semantic argument sequence contains:
-
-```text
-<project-root>
-RE-MCP-<full-sha>
--import <generated-root>/arm9.bin
--loader BinaryLoader
--processor ARM:LE:32:v5t
--loader-baseAddr 0x<arm9-ram-base>
--scriptPath <packaged-resource-script-path>
--preScript ReMcpPrepareProgram.java <manifest> arm9
--preScript ReMcpImportEvidence.java <manifest> arm9
--postScript ReMcpRecordAnalysis.java <manifest> arm9
-```
-
-For ARM7, require `ARM:LE:32:v4t`. For an existing program, require `-process RE-MCP_ARM9`/`RE-MCP_ARM7` and no `-import`, `-loader`, or caller-controlled args.
-
-- [ ] **Step 5: Implement import/process invocation builders**
-
-Use explicit hex base formatting:
+Use module-relative path, not cwd or `GHIDRA_HOME`:
 
 ```ts
-function addressHex(value: number): string {
-  return `0x${value.toString(16)}`;
+export function resolveReMcpGhidraScriptPath(): string {
+  return fileURLToPath(new URL("../../../resources/ghidra/", import.meta.url));
 }
 ```
 
-Never use `-overwrite` on an existing analyst project.
+This resolves correctly from both `src/services/nds/*.ts` under tsx and packaged `dist/services/nds/*.js` because `resources/` is at package root.
 
-- [ ] **Step 6: Write failing runner tests for timeout/output/nonzero exit mapping**
+- [ ] **Step 5: Write failing argv tests**
 
-Use a fake `analyzeHeadless` script and assert:
+Initial ARM9 semantic sequence must contain:
 
-- `runProcess` receives `terminateOnOutputLimit: true`;
-- timeout produces `ghidra-analysis-timeout`;
-- output overflow produces `ghidra-output-limit`;
-- import-stage nonzero exit produces `ghidra-import-failed`;
-- process-stage nonzero exit produces `ghidra-analysis-failed`;
-- stderr matching a project-lock fixture produces `ghidra-project-locked`.
+```text
+<project-root> RE-MCP-<full-sha>
+-import <generated-root>/arm9.bin
+-loader BinaryLoader
+-processor ARM:LE:32:v5t
+-loader-baseAddr 0x<ram-base>
+-scriptPath <RE-MCP resources/ghidra>
+-preScript ReMcpPrepareProgram.java <manifest> arm9
+-preScript ReMcpImportEvidence.java <manifest> arm9
+-postScript ReMcpRecordAnalysis.java <manifest> arm9 <generated-results-file>
+```
 
-- [ ] **Step 7: Implement `runGhidraInvocation()` stage-aware error mapping**
+ARM7 uses v4t. Existing programs use `-process RE-MCP_ARM9`/`RE-MCP_ARM7` and never `-overwrite`.
 
-Pass exactly:
+- [ ] **Step 6: Implement argv builders**
+
+No caller-provided executable, script path, loader, language, project name/path, raw args, or environment.
+
+- [ ] **Step 7: Write failing runner error tests**
+
+Fake executable fixtures cover timeout → `ghidra-analysis-timeout`, output overflow → `ghidra-output-limit`, import nonzero → `ghidra-import-failed`, process nonzero → `ghidra-analysis-failed`, known project-lock stderr → `ghidra-project-locked`.
+
+- [ ] **Step 8: Implement bounded execution**
 
 ```ts
 await runProcess({
@@ -621,27 +459,18 @@ await runProcess({
 });
 ```
 
-Throw typed `NdsError` categories for timed out, output limit, lock, and nonzero exit cases.
-
-- [ ] **Step 8: Run tests and typecheck**
+- [ ] **Step 9: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra installation|Ghidra invocation|Ghidra runner"
 npm run typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 9: Commit**
-
-```bash
 git add src/services/nds/ghidra-installation.ts src/services/nds/ghidra-runner.ts tests/nds-ghidra-installation.test.ts tests/nds-ghidra-runner.test.ts
 git commit -m "feat: add controlled Ghidra headless runner"
 ```
 
 ---
 
-### Task 5: Add RE-MCP-owned Ghidra reconciliation scripts
+### Task 5: Implement analyst-safe Ghidra scripts
 
 **Files:**
 - Create: `resources/ghidra/ReMcpPrepareProgram.java`
@@ -649,12 +478,9 @@ git commit -m "feat: add controlled Ghidra headless runner"
 - Create: `resources/ghidra/ReMcpRecordAnalysis.java`
 - Create: `tests/nds-ghidra-resources.test.ts`
 
-**Interfaces:**
-- Consumes: bridge `manifest.json`, `evidence/functions.json`, `evidence/calls.json`, processor arg `arm9|arm7`.
-- Produces Ghidra-owned state only under these keys/maps:
+**Owned Program Information keys:**
 
 ```text
-Program Information:
 re-mcp.bridge-format
 re-mcp.rom-sha256
 re-mcp.manifest-sha256
@@ -662,8 +488,11 @@ re-mcp.processor
 re-mcp.last-import
 re-mcp.last-analysis-status
 re-mcp.ghidra-version
+```
 
-Address property maps:
+**Owned address property maps:**
+
+```text
 re-mcp.function-id
 re-mcp.function-proof
 re-mcp.function-mode
@@ -671,107 +500,60 @@ re-mcp.overlay-id
 re-mcp.call-evidence
 ```
 
-The scripts must never delete or rename analyst symbols/comments/types/bookmarks/functions.
+- [ ] **Step 1: Write failing resource-contract tests**
 
-- [ ] **Step 1: Write failing resource contract tests**
+Load Java sources as text and require all owned keys; forbid destructive analyst operations such as `clearListing`, `removeFunction`, `removeSymbol`, and removal of non-RE-MCP memory. Require overlay creation and manifest/processor argument validation.
 
-Load all three Java sources as text and assert:
-
-- exact metadata/property-map names are present;
-- no `removeSymbol`, `removeFunction`, `clearListing`, or `removeMemoryBlock` call is present;
-- overlay creation explicitly requests overlay behavior;
-- scripts require manifest path and processor arguments;
-- no network/file path other than manifest-derived workspace bridge artifacts is accepted.
-
-- [ ] **Step 2: Run and confirm failure**
+- [ ] **Step 2: Run; verify FAIL**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra resource contract"
 ```
-
-Expected: FAIL because resources do not exist.
 
 - [ ] **Step 3: Implement `ReMcpPrepareProgram.java`**
 
-The script must:
+It must parse manifest + processor, validate program language/ROM SHA/processor metadata, confirm main-base identity, create/reconcile uncompressed overlay blocks with `overlay=true`, create only canonical uninitialized BSS where safe, tag overlay starts, skip compressed overlays, and establish ARM/Thumb context only at exact RE-MCP-proven entries.
 
-1. parse manifest and processor arg;
-2. verify current program language matches required v5t/v4t;
-3. verify/create Program Information ownership keys;
-4. reject ROM SHA or processor mismatch with a nonzero script failure;
-5. ensure main executable base corresponds to imported binary base;
-6. create each uncompressed overlay as an initialized overlay memory block at canonical runtime address using the overlay backing artifact;
-7. create canonical uninitialized BSS blocks only when nonzero and non-conflicting;
-8. tag overlay starting addresses with `re-mcp.overlay-id`;
-9. skip compressed overlays entirely as executable blocks;
-10. establish ARM/Thumb context at RE-MCP-proven entry addresses without defining a guessed function body.
+Deterministic overlay names:
 
-Use deterministic overlay block names `RE_MCP_ARM9_OVL_<id>` / `RE_MCP_ARM7_OVL_<id>`.
+```text
+RE_MCP_ARM9_OVL_<id>
+RE_MCP_ARM7_OVL_<id>
+```
+
+No function body is created by guessed range.
 
 - [ ] **Step 4: Implement `ReMcpImportEvidence.java`**
 
-For each proven entry of the selected processor:
-
-```java
-StringPropertyMap ids = currentProgram.getUsrPropertyManager()
-    .createStringPropertyMap("re-mcp.function-id");
-StringPropertyMap proofs = currentProgram.getUsrPropertyManager()
-    .createStringPropertyMap("re-mcp.function-proof");
-StringPropertyMap modes = currentProgram.getUsrPropertyManager()
-    .createStringPropertyMap("re-mcp.function-mode");
-```
-
-Resolve main addresses in the default space and overlay entries in their named overlay spaces. Add entry metadata and exact direct-call references only when the manifest names one exact caller and target space/address. Do not call a function creation API with a fabricated body range.
+Create/reuse RE-MCP property maps, resolve main addresses in default space and overlay entries in named overlay spaces, attach function ID/proof/mode, and add exact direct-call references only when manifest caller+target identities are exact. Do not delete/rename analyst objects.
 
 - [ ] **Step 5: Implement `ReMcpRecordAnalysis.java`**
 
-Write successful analysis metadata and a deterministic sidecar `latest-success.json` beneath the full-SHA persistent root containing:
+Accept only `<manifest> <processor> <result-json-path>`. Validate that result path matches the manifest-declared generated `results/<processor>.json` location. Write deterministic result JSON containing ROM SHA, manifest SHA, processor, program name, analysis status `complete`, Ghidra version, overlay/evidence counts.
 
-```json
-{
-  "format": "re-mcp-nds-ghidra-run-state",
-  "formatVersion": 1,
-  "sourceRomSha256": "<full sha>",
-  "manifestSha256": "<manifest sha>",
-  "processor": "arm9",
-  "programName": "RE-MCP_ARM9",
-  "analysisStatus": "complete",
-  "ghidraVersion": "<version>"
-}
-```
+Persistent `analysis/ghidra/.../state/` files are **not** written by Java; Node writes them only after validating this generated result.
 
-The sidecar path is supplied only through the manifest-derived project root, not arbitrary script input.
+- [ ] **Step 6: Strengthen resource tests**
 
-- [ ] **Step 6: Strengthen tests with exact forbidden mutation patterns and deterministic names**
+Require result-path validation, exact overlay-name templates, exact owned property names, and no forbidden destructive APIs.
 
-Add assertions for every owned key and both overlay name templates.
-
-- [ ] **Step 7: Run resource tests**
+- [ ] **Step 7: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra resource contract"
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
 git add resources/ghidra tests/nds-ghidra-resources.test.ts
 git commit -m "feat: add RE-MCP Ghidra reconciliation scripts"
 ```
 
 ---
 
-### Task 6: Orchestrate analyst-safe project bootstrap and non-mutating status
+### Task 6: Orchestrate project bootstrap, reconciliation, and status
 
 **Files:**
 - Create: `src/services/nds/ghidra-project.ts`
 - Create: `tests/nds-ghidra-project.test.ts`
 
-**Interfaces:**
-- Consumes: Tasks 2–5 services.
-- Produces:
+**Produces:**
 
 ```ts
 export interface NdsGhidraBootstrapResult {
@@ -780,21 +562,8 @@ export interface NdsGhidraBootstrapResult {
   readonly ghidraVersion: string;
   readonly manifestSha256: string;
   readonly runKind: "initial" | "reconciled" | "already-current";
-  readonly processors: readonly {
-    readonly processor: NdsProcessor;
-    readonly programName: string;
-    readonly status: "imported" | "reconciled" | "already-current";
-    readonly importedOverlays: number;
-    readonly compressedOverlayIds: readonly number[];
-    readonly provenEntries: number;
-    readonly directCalls: number;
-    readonly analysisStatus: "complete";
-  }[];
-  readonly evidenceCoverage: readonly {
-    readonly processor: NdsProcessor;
-    readonly status: "complete" | "partial-coverage" | "truncated";
-    readonly truncationReasons: readonly string[];
-  }[];
+  readonly processors: readonly GhidraProcessorBootstrapResult[];
+  readonly evidenceCoverage: readonly GhidraEvidenceCoverage[];
 }
 
 export interface NdsGhidraStatusResult {
@@ -819,9 +588,9 @@ export async function readNdsGhidraStatus(
 ): Promise<NdsGhidraStatusResult>;
 ```
 
-- [ ] **Step 1: Write failing initial-bootstrap orchestration test with injected fake runner**
+- [ ] **Step 1: Write failing initial-bootstrap test with injected deps**
 
-Factor internal dependencies through an optional test-only dependency object so tests can record calls without a real Ghidra process:
+Internal deps:
 
 ```ts
 interface GhidraProjectDeps {
@@ -831,157 +600,114 @@ interface GhidraProjectDeps {
 }
 ```
 
-Assert first run executes ARM9 import then ARM7 import and returns `runKind: "initial"`.
+Assert ARM9 import then ARM7 import, each generated result is validated, persistent state is written only after validation, and final run is `initial`.
 
-- [ ] **Step 2: Run and confirm failure**
+- [ ] **Step 2: Run; verify FAIL**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra project bootstrap"
 ```
 
-Expected: FAIL because orchestration does not exist.
+- [ ] **Step 3: Implement first-run state machine**
 
-- [ ] **Step 3: Implement first-run bootstrap and run-state sidecars**
+Before Ghidra, Node writes `state/latest-run.json` with stage `starting`. After each processor, validate generated result against full ROM SHA, manifest SHA, processor, program name, and expected counts. Only then update persistent success state.
 
-Before invocation, persist a non-success `latest-run.json` sidecar with stage `starting`. After each successful processor, read the Ghidra-produced `latest-success.json` and verify full ROM SHA, manifest SHA, processor, and program name. Only then advance to the next processor.
-
-After both succeed, write a deterministic summary sidecar with `analysisStatus: "complete"`.
-
-- [ ] **Step 4: Write failing rerun tests for current/reconciled/mismatch cases**
+- [ ] **Step 4: Write failing rerun/mismatch tests**
 
 Cover:
+1. matching prior identity → `-process`, not `-import`/`-overwrite`;
+2. newer manifest, same ROM → reconcile through `-process`;
+3. project exists without matching RE-MCP state → `project-state-mismatch`;
+4. stored state points to another full SHA → `project-state-mismatch`;
+5. ARM9 succeeds, ARM7 fails → preserve project, record `latest-failure.json`;
+6. analyst marker fixture survives rerun.
 
-1. identical successful sidecars → use `-process`, no `-import`, return `already-current` for bridge-owned state after successful processing;
-2. same ROM SHA but newer manifest → use `-process`, return `reconciled`;
-3. project directory exists without matching RE-MCP run-state identity → `project-state-mismatch`;
-4. run-state references another full ROM SHA → `project-state-mismatch`;
-5. ARM9 success followed by ARM7 failure → preserve project and record structured last failure, never delete project.
+- [ ] **Step 5: Implement rerun rules**
 
-- [ ] **Step 5: Implement rerun decision rules**
+Never infer owned program existence solely from directory existence. Require matching RE-MCP state. Never delete project on failed reconciliation.
 
-Never infer a usable existing RE-MCP program solely from directory existence. Require matching RE-MCP sidecar identity; otherwise fail closed.
+- [ ] **Step 6: Write failing non-mutating status tests**
 
-Do not use `-overwrite` for reconciliations.
+Assert status parses ROM identity and deterministic bridge/state files but never calls installation validation, bridge generation, `runProcess`, or Ghidra.
 
-- [ ] **Step 6: Write failing status tests**
+- [ ] **Step 7: Implement status**
 
-Assert `readNdsGhidraStatus()`:
+Missing project is a normal status result, not an error.
 
-- parses the ROM to obtain the full SHA;
-- does not call installation validation or `runProcess`;
-- reports absent project cleanly;
-- reports manifest/run-state metadata when present;
-- reports `lastFailure` from sidecar without mutating files.
+- [ ] **Step 8: Add ROM-race tests**
 
-- [ ] **Step 7: Implement non-mutating status**
+Mutation after bridge generation/before execution and mutation after Ghidra/before final return both → `invalid-rom`, no success claim.
 
-Status may hash/read deterministic manifest/sidecar files but must not launch Ghidra or regenerate the bridge.
-
-- [ ] **Step 8: Add source-SHA race tests**
-
-Mutate the ROM after bridge generation but before invocation and after the final processor run; both must return `invalid-rom` and not claim success.
-
-- [ ] **Step 9: Run focused tests and typecheck**
+- [ ] **Step 9: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra project|Ghidra status"
 npm run typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 10: Commit**
-
-```bash
 git add src/services/nds/ghidra-project.ts tests/nds-ghidra-project.test.ts
 git commit -m "feat: orchestrate analyst-safe Ghidra projects"
 ```
 
 ---
 
-### Task 7: Expose the two bounded MCP tools and capability/error metadata
+### Task 7: Register exactly two bounded MCP tools
 
 **Files:**
 - Create: `src/tools/nds-ghidra.ts`
 - Create: `tests/nds-ghidra-tools.test.ts`
 - Modify: `src/index.ts`
 
-**Interfaces:**
-- Consumes: `bootstrapNdsGhidraProject()`, `readNdsGhidraStatus()`, `ServerConfig`.
-- Produces exactly two public tools:
-
-```text
-nds_ghidra_bootstrap
-nds_ghidra_status
-```
-
-Both schemas accept only:
+**Public schemas:**
 
 ```ts
 { rom: z.string().min(1) }
 ```
 
-- [ ] **Step 1: Write failing tool registration/schema tests**
+for both `nds_ghidra_bootstrap` and `nds_ghidra_status`.
 
-Verify both tools register and reject extra caller-controlled Ghidra inputs such as `executable`, `projectPath`, `processor`, `args`, and `scriptPath` because they are absent from the schema.
+- [ ] **Step 1: Write failing tool-registration/schema tests**
 
-- [ ] **Step 2: Run and confirm failure**
+Require exactly the two names and no schema fields for executable, projectPath, processor, language, loader, args, env, scriptPath, or outputPath.
+
+- [ ] **Step 2: Run; verify FAIL**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra MCP tools"
 ```
 
-Expected: FAIL because tools are not registered.
+- [ ] **Step 3: Implement `registerNdsGhidraTools()`**
 
-- [ ] **Step 3: Implement `registerNdsGhidraTools(server, config)`**
+Resolve ROM inside workspace, call project service, bound serialized output under `maxOutputBytes`, and map all Ghidra categories to corrective actions.
 
-Use `resolveInside(config.workspaceRoot, rom)` before service calls. Follow existing bounded JSON response patterns and map Ghidra categories to corrective actions such as:
+Example:
 
 ```ts
 case "ghidra-not-configured":
   return "Set RE_MCP_GHIDRA_HOME to a supported local Ghidra 12.x installation and restart RE-MCP.";
 case "ghidra-project-locked":
-  return "Close the SHA-scoped Ghidra project in GUI/headless processes, then retry without deleting the project.";
+  return "Close the SHA-scoped project in other Ghidra processes, then retry without deleting the project.";
 case "project-state-mismatch":
-  return "Inspect the SHA-scoped project/run-state metadata; RE-MCP will not overwrite unrecognized analyst state.";
+  return "Inspect the SHA-scoped RE-MCP state; RE-MCP will not overwrite unrecognized analyst project state.";
 ```
 
-- [ ] **Step 4: Register tools in `src/index.ts` and update capability output**
+- [ ] **Step 4: Register in `src/index.ts`**
 
-Add:
+Add import + `registerNdsGhidraTools(server, config)`, both tool names in capabilities, and policy text describing optional SHA-scoped analyst-preserving Ghidra bootstrap with non-authoritative Ghidra inference.
 
-```ts
-import { registerNdsGhidraTools } from "./tools/nds-ghidra.js";
-...
-registerNdsGhidraTools(server, config);
-```
+- [ ] **Step 5: Add output-bound/error tests**
 
-Add both names to `server_capabilities.tools` and extend `ndsStaticAnalysisPolicy` to state that controlled Ghidra bootstrap is optional, SHA-scoped, analyst-preserving, and non-authoritative for RE-MCP evidence.
-
-- [ ] **Step 5: Write output-bound/error tests**
-
-Assert success responses above `RE_MCP_MAX_OUTPUT_BYTES` produce the existing output-bound error shape and failures preserve structured Ghidra categories/corrective actions.
-
-- [ ] **Step 6: Run tool tests, typecheck, and build**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra MCP tools|server capabilities"
 npm run typecheck
 npm run build
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add src/tools/nds-ghidra.ts src/index.ts tests/nds-ghidra-tools.test.ts
 git commit -m "feat: expose controlled NDS Ghidra tools"
 ```
 
 ---
 
-### Task 8: Package resources and document the installation/workflow
+### Task 8: Package resources and update user-facing documentation
 
 **Files:**
 - Modify: `scripts/check-install.mjs`
@@ -989,13 +715,9 @@ git commit -m "feat: expose controlled NDS Ghidra tools"
 - Modify: `mcp-config.example.json`
 - Modify: `README.md`
 
-**Interfaces:**
-- Consumes: compiled tool registration and `resources/ghidra/*.java`.
-- Produces a self-contained downloadable RE-MCP bundle that includes Ghidra bridge scripts but does not include Ghidra itself.
+- [ ] **Step 1: Add failing package-resource checks**
 
-- [ ] **Step 1: Write a failing package self-check expectation**
-
-Extend `scripts/check-install.mjs` to require these exact files beneath the package root:
+Require:
 
 ```text
 resources/ghidra/ReMcpPrepareProgram.java
@@ -1003,18 +725,16 @@ resources/ghidra/ReMcpImportEvidence.java
 resources/ghidra/ReMcpRecordAnalysis.java
 ```
 
-Also inspect compiled `dist/index.js`/registered module content sufficiently to assert `nds_ghidra_bootstrap` and `nds_ghidra_status` are shipped.
+and compiled Ghidra tool registration.
 
-- [ ] **Step 2: Run package check locally and confirm failure before workflow copy change**
+- [ ] **Step 2: Run package check; verify failure before packaging update**
 
 ```bash
 npm run build
 node scripts/check-install.mjs .
 ```
 
-Expected: FAIL on the new resource requirement until package/resource handling is updated.
-
-- [ ] **Step 3: Update package workflow to include resources**
+- [ ] **Step 3: Update package workflow**
 
 Add:
 
@@ -1022,90 +742,65 @@ Add:
 cp -R resources "$root/"
 ```
 
-before the production install/self-check.
+before production install/self-check.
 
-- [ ] **Step 4: Update example MCP configuration**
-
-Use:
+- [ ] **Step 4: Update example config**
 
 ```json
 {
   "RE_MCP_WORKSPACE_ROOT": "/ABSOLUTE/PATH/TO/rom-modding",
-  "RE_MCP_GHIDRA_HOME": "/ABSOLUTE/PATH/TO/ghidra_12.1_PUBLIC",
+  "RE_MCP_GHIDRA_HOME": "/ABSOLUTE/PATH/TO/ghidra_12.1.2_PUBLIC",
   "RE_MCP_GHIDRA_TIMEOUT_MS": "900000"
 }
 ```
 
-Explain in README that the two Ghidra settings are optional unless Ghidra tools are used.
+README must say Ghidra settings are optional unless these two tools are used.
 
-- [ ] **Step 5: Document exact bridge/project layout and trust model**
+- [ ] **Step 5: Document trust/lifecycle semantics**
 
-README must state:
+Document full-SHA project layout, v5t/v4t, true uncompressed overlay spaces, compressed omission, proven-entry-not-body semantics, non-authoritative auto-analysis, analyst-work preservation, no generic Ghidra tool, non-mutating status, and separation from Catalina debugger acceptance.
 
-- one full-SHA project per ROM;
-- ARM9 v5t / ARM7 v4t;
-- true overlay spaces for uncompressed overlays;
-- compressed overlays omitted;
-- RE-MCP imports proven entries, not proven body boundaries;
-- Ghidra auto-analysis remains non-authoritative;
-- reruns preserve analyst work;
-- no generic Ghidra command/script tool;
-- status does not invoke Ghidra;
-- real-Ghidra acceptance is separate from Catalina debugger acceptance.
-
-- [ ] **Step 6: Run package check and full verification**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 npm run check
 npm run build
 node scripts/check-install.mjs .
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add scripts/check-install.mjs .github/workflows/package.yml mcp-config.example.json README.md
 git commit -m "docs: package and document Ghidra integration"
 ```
 
 ---
 
-### Task 9: Add manual real-Ghidra 12.1 acceptance
+### Task 9: Add manual real-Ghidra 12.1.2 acceptance
 
 **Files:**
-- Create: `.github/workflows/ghidra-integration.yml`
-- Modify: `tests/nds-ghidra-resources.test.ts` or create `scripts/ghidra-acceptance.mjs` if the workflow needs a single deterministic verifier.
 - Create: `scripts/ghidra-acceptance.mjs`
+- Create: `.github/workflows/ghidra-integration.yml`
 
-**Interfaces:**
-- Consumes: built RE-MCP code, official Ghidra 12.1 distribution, synthetic NDS fixture generated locally in the workflow.
-- Produces: a manually-triggered pass/fail acceptance artifact/log; it is not part of normal `pull_request` CI.
+**Pinned release:**
 
-- [ ] **Step 1: Add a deterministic acceptance verifier script with failing fixture-first tests**
+```text
+Tag: Ghidra_12.1.2_build
+Asset: ghidra_12.1.2_PUBLIC_20260605.zip
+URL: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/ghidra_12.1.2_PUBLIC_20260605.zip
+SHA-256: b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d
+Java: JDK 21
+```
 
-`ghidra-acceptance.mjs` accepts only:
+- [ ] **Step 1: Implement deterministic acceptance script with fixture assertions**
+
+CLI:
 
 ```text
 node scripts/ghidra-acceptance.mjs <workspace-root> <rom-relative-path>
 ```
 
-It launches the built RE-MCP service layer or directly calls the compiled bootstrap service with configured environment and verifies:
+Generate/use a synthetic NDS containing ARM9 main direct call, ARM7 main, two uncompressed overlays sharing a runtime base, one compressed overlay record, and an exact Thumb target. No private ROM.
 
-- project exists under `analysis/ghidra/nds/<full-sha>/`;
-- ARM9/ARM7 success sidecars exist;
-- expected language IDs are recorded;
-- two synthetic overlapping overlays are represented by distinct named spaces;
-- one compressed overlay is reported omitted;
-- a known ARM entry and Thumb direct-call target carry RE-MCP evidence;
-- no bridge metadata claims a function end/body;
-- second bootstrap leaves bridge-owned identity unchanged;
-- an analyst-marker fixture added between runs remains present.
+Verify project/state paths, processor language metadata, distinct overlay spaces, compressed omission, ARM/Thumb entry evidence, no bridge body/end claim, successful auto-analysis, second-run non-destructive reconciliation, and preservation of a deterministic analyst marker inserted between runs.
 
-- [ ] **Step 2: Create a `workflow_dispatch`-only Ghidra workflow**
-
-Use:
+- [ ] **Step 2: Create `workflow_dispatch`-only workflow**
 
 ```yaml
 name: Ghidra Integration Acceptance
@@ -1119,64 +814,42 @@ jobs:
     timeout-minutes: 30
 ```
 
-Pin Ghidra 12.1 download URL and SHA-256 in workflow environment variables. Verify the archive SHA before extraction. Do not attach this workflow to `push` or `pull_request`.
+Use `actions/setup-java@v4` with Java 21. Download exactly the pinned URL, verify exact SHA with `sha256sum -c`, then unzip.
 
-- [ ] **Step 3: Generate the synthetic NDS fixture inside the workflow**
-
-Use an existing test fixture helper exposed through a small Node script or add a deterministic fixture builder to `scripts/ghidra-acceptance.mjs`. The fixture must contain:
-
-- ARM9 main entry with at least one direct call;
-- ARM7 main entry;
-- two uncompressed overlays sharing the same runtime base but different IDs;
-- one compressed overlay metadata record;
-- at least one proven Thumb target with exact mode evidence.
-
-No private ROM is used or uploaded.
-
-- [ ] **Step 4: Run build and real headless acceptance in the workflow**
-
-Commands:
+- [ ] **Step 3: Execute source verification + real acceptance**
 
 ```bash
 npm install
 npm run check
 npm run build
 RE_MCP_WORKSPACE_ROOT="$RUNNER_TEMP/work" \
-RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1_PUBLIC" \
+RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC" \
 RE_MCP_GHIDRA_TIMEOUT_MS=900000 \
 node scripts/ghidra-acceptance.mjs "$RUNNER_TEMP/work" fixture.nds
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add .github/workflows/ghidra-integration.yml scripts/ghidra-acceptance.mjs tests/nds-ghidra-resources.test.ts
-git commit -m "ci: add manual Ghidra 12.1 acceptance"
+git add scripts/ghidra-acceptance.mjs .github/workflows/ghidra-integration.yml
+git commit -m "ci: add manual Ghidra 12.1.2 acceptance"
 ```
 
 ---
 
-### Task 10: Final regression, package verification, and PR readiness
+### Task 10: Final verification and PR readiness
 
 **Files:**
-- Modify only files required by failures found in this task.
+- Modify only files required by verified failures.
 
-**Interfaces:**
-- Consumes: all previous tasks.
-- Produces: a review-ready branch with green normal CI/package checks and no debugger-gate regression.
-
-- [ ] **Step 1: Run the complete repository verification suite**
+- [ ] **Step 1: Run full normal verification**
 
 ```bash
 npm run check
 npm run build
 ```
 
-Expected: PASS.
-
-- [ ] **Step 2: Run package assembly semantics locally**
-
-Mirror the package workflow:
+- [ ] **Step 2: Mirror packaged-bundle assembly locally**
 
 ```bash
 version="$(node -p "require('./package.json').version")"
@@ -1193,54 +866,33 @@ cp -R dist/src/. "$root/dist/"
 )
 ```
 
-Expected: `check-install.mjs` reports success without requiring Ghidra.
-
 - [ ] **Step 3: Run targeted safety regressions**
 
 ```bash
 npm test -- --test-name-pattern="Ghidra|process runner|NDS function|analysis bundle|DeSmuME"
 ```
 
-Expected: PASS. No DeSmuME/GDB production behavior should have changed.
+- [ ] **Step 4: Diff-scope review**
 
-- [ ] **Step 4: Inspect the final diff for forbidden scope expansion**
+Confirm no generic shell/Ghidra tool, arbitrary command args/path surface, compressed-overlay decode, Ghidra-to-RE-MCP promotion, function-body proof, ROM mutation, or debugger extension.
 
-Confirm there is no:
-
-- generic command/script tool;
-- arbitrary Ghidra args/path schema;
-- compressed-overlay decoding;
-- Ghidra-to-RE-MCP evidence promotion;
-- function-end/body proof claim;
-- native debugger extension.
-
-- [ ] **Step 5: Commit any verification-only fixes**
-
-If no fixes were needed, do not create an empty commit. If fixes were required:
+- [ ] **Step 5: Commit verified fixes only if needed**
 
 ```bash
-git add <only files changed by verified fixes>
+git add <files actually changed by fixes>
 git commit -m "fix: close Ghidra integration verification gaps"
 ```
 
-- [ ] **Step 6: Open a pull request against `main`**
+Do not create an empty commit.
 
-Use title:
+- [ ] **Step 6: Open PR against `main`**
+
+Title:
 
 ```text
 Add controlled NDS Ghidra integration
 ```
 
-PR body must summarize:
+PR body must report SHA-scoped lifecycle, v5t/v4t programs, true overlays, compressed omissions, proven-entry-only semantics, analyst preservation, bounded `analyzeHeadless`, normal CI/package results, manual 12.1.2 acceptance status, and unchanged Catalina/DeSmuME gate.
 
-- SHA-scoped project lifecycle;
-- ARM9/ARM7 languages and true overlay spaces;
-- compressed-overlay omission;
-- proven-entry-only evidence semantics;
-- analyst-work preservation;
-- bounded `analyzeHeadless` safety;
-- normal CI/package results;
-- manual Ghidra 12.1 acceptance status;
-- explicit statement that Catalina/DeSmuME acceptance remains separate and unchanged.
-
-Do not merge without explicit user approval.
+**Do not merge without explicit user approval.**
