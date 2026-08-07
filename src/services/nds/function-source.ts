@@ -49,7 +49,7 @@ export interface PreparedFunctionSearch {
 function functionError(
   category: NdsFunctionErrorCategory,
   message: string,
-): NdsError {
+): NdsError<AnyNdsErrorCategory> {
   return new NdsError(category as AnyNdsErrorCategory, message);
 }
 
