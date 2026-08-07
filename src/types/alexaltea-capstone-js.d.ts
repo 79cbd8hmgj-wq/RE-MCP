@@ -3,6 +3,11 @@ declare module "@alexaltea/capstone-js" {
     readonly type: number;
     readonly imm?: number;
     readonly reg?: number;
+    readonly mem?: {
+      readonly base?: number;
+      readonly index?: number;
+      readonly disp?: number;
+    };
   }
 
   export interface CapstoneInstruction {
@@ -41,8 +46,11 @@ declare module "@alexaltea/capstone-js" {
     readonly GRP_RET: number;
     readonly ARM_OP_IMM: number;
     readonly ARM_OP_REG: number;
+    readonly ARM_OP_MEM: number;
     readonly ARM_CC_INVALID: number;
     readonly ARM_CC_AL: number;
+    readonly ARM_INS_ADD: number;
+    readonly ARM_INS_ADR: number;
     readonly ARM_INS_B: number;
     readonly ARM_INS_BL: number;
     readonly ARM_INS_BLX: number;
@@ -52,6 +60,8 @@ declare module "@alexaltea/capstone-js" {
     readonly ARM_INS_BXNS: number;
     readonly ARM_INS_CBZ: number;
     readonly ARM_INS_CBNZ: number;
+    readonly ARM_INS_LDR: number;
+    readonly ARM_INS_SUB: number;
     readonly Capstone: new (architecture: number, mode: number) => CapstoneHandle;
   }
 
