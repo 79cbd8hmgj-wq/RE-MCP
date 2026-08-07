@@ -7,13 +7,15 @@ import {
   ExecutableRangeRegistry,
   type BreakpointMode,
   type ExecutableRangeInput,
+  type ExecutableRangeRecord,
 } from "./executable-ranges.js";
 import {
   GdbSession,
+  type DebuggerState,
   type ExecutionResult,
   type StepSequenceResult,
 } from "./gdb-session.js";
-import type { GdbStopReply } from "./gdb-stop.js";
+import { parseGdbStopReply, type GdbStopReply } from "./gdb-stop.js";
 import type { Arm9ExecutableRange } from "./nds-arm9.js";
 import {
   captureStopContext,
@@ -51,6 +53,12 @@ export interface PauseRequest extends StopCaptureOptions {
 
 export interface WaitForStopRequest extends StopCaptureOptions {
   readonly timeoutMs: number;
+}
+
+export interface CaptureCurrentStopContextRequest {
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly additionalRegions?: readonly StopContextRegionRequest[] | undefined;
 }
 
 export type DebugExecutionResult =
@@ -96,6 +104,22 @@ export class DebugController {
 
   constructor(createSession: GdbSessionFactory) {
     this.#createSession = createSession;
+  }
+
+  state(): DebuggerState {
+    return this.#session?.state() ?? "unavailable";
+  }
+
+  listBreakpoints(): readonly BreakpointRecord[] {
+    return this.#breakpoints.list();
+  }
+
+  maximumBreakpoints(): number {
+    return this.#breakpoints.maximum();
+  }
+
+  listExecutableRanges(): readonly ExecutableRangeRecord[] {
+    return this.#requireRanges().list();
   }
 
   initialize(sessionIdentity: string, arm9Range: Arm9ExecutableRange): void {
@@ -171,6 +195,21 @@ export class DebugController {
     return removed;
   }
 
+  async readRegisterPacket(timeoutMs: number): Promise<string> {
+    return await this.#requireSession().sendStoppedCommand("g", timeoutMs);
+  }
+
+  async readMemory(address: number, length: number, timeoutMs: number): Promise<string> {
+    const reply = await this.#requireSession().sendStoppedCommand(
+      `m${address.toString(16)},${length.toString(16)}`,
+      timeoutMs,
+    );
+    if (reply.startsWith("E")) {
+      throw new Error(`GDB memory read failed: ${reply}`);
+    }
+    return reply;
+  }
+
   async continueExecution(input: ContinueRequest): Promise<DebugExecutionResult> {
     if (input.expectedBreakpointId !== undefined) {
       this.#breakpoints.get(input.expectedBreakpointId);
@@ -227,6 +266,46 @@ export class DebugController {
       captureContext: request.captureContext,
       maxOutputBytes: request.maxOutputBytes,
       additionalRegions: request.additionalRegions,
+    });
+  }
+
+  async captureCurrentStopContext(
+    input: CaptureCurrentStopContextRequest,
+  ): Promise<StopContext> {
+    const session = this.#requireSession();
+    if (session.state() !== "stopped") {
+      throw new Error(`Stop context requires stopped state; current state is ${session.state()}`);
+    }
+
+    const stop = this.#lastStop ?? parseGdbStopReply(
+      await session.sendStoppedCommand("?", input.timeoutMs),
+    );
+    if (stop.kind !== "signal") {
+      throw new Error(`Stop context requires a live signal stop; current stop is ${stop.kind}`);
+    }
+    this.#lastStop = stop;
+
+    const registers = decodeArm9RegisterPacket(
+      await session.sendStoppedCommand("g", input.timeoutMs),
+    );
+    const ranges = this.#requireRanges();
+    ranges.recordExecution(registers.pc, registers.mode);
+    const breakpoint = this.#breakpoints.list().find(
+      (candidate) =>
+        candidate.enabled
+        && candidate.address === registers.pc
+        && candidate.resolvedMode === registers.mode,
+    );
+    this.#lastMatchedBreakpointId = breakpoint?.id ?? null;
+
+    return await captureStopContext({
+      session,
+      stop,
+      timeoutMs: input.timeoutMs,
+      maxOutputBytes: input.maxOutputBytes,
+      registers,
+      ...(breakpoint === undefined ? {} : { breakpoint }),
+      additionalRegions: input.additionalRegions,
     });
   }
 
