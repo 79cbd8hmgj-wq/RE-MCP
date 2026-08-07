@@ -17,7 +17,15 @@ export type NdsReferenceErrorCategory =
   | "invalid-reference-seed"
   | "reference-scan-limit-exceeded";
 
-export type AnyNdsErrorCategory = NdsErrorCategory | NdsReferenceErrorCategory;
+export type NdsPatternSearchErrorCategory =
+  | "invalid-pattern"
+  | "invalid-pattern-scope"
+  | "pattern-search-limit-exceeded";
+
+export type AnyNdsErrorCategory =
+  | NdsErrorCategory
+  | NdsReferenceErrorCategory
+  | NdsPatternSearchErrorCategory;
 
 export class NdsError<
   Category extends AnyNdsErrorCategory = NdsErrorCategory,

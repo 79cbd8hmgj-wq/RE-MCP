@@ -33,10 +33,11 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Build bounded direct-control-flow graphs across deterministic same-processor branch targets without recursively traversing calls
 - Classify deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address references
 - Find bounded reverse cross-references through proven code seeds with explicit component coverage and truncation status
+- Search validated NDS bytes for exact/wildcard signatures, typed integers, ASCII strings, and UTF-16LE strings using canonical component or explicit whole-ROM scope
 - Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
 
-The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, or arbitrary ROM offset/length extraction requests.
+The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
 
 ### DeSmuME and ARM9 GDB
 
@@ -58,7 +59,7 @@ RE-MCP does **not** expose register writes, general memory writes, watchpoints, 
 
 ## NDS Static Analysis
 
-The static-analysis surface consists of eleven MCP tools:
+The static-analysis surface consists of twelve MCP tools:
 
 - `nds_inspect_rom`
 - `nds_list_files`
@@ -71,6 +72,7 @@ The static-analysis surface consists of eleven MCP tools:
 - `nds_analyze_control_flow`
 - `nds_list_references`
 - `nds_find_xrefs`
+- `nds_search_pattern`
 
 These tools are native-independent and have no DeSmuME or GDB dependency.
 
@@ -206,7 +208,69 @@ A result containing zero xrefs is definitive for the selected static scope only 
 
 Runtime targets may preserve `resolved`, ambiguous-overlay, BSS, compressed-overlay, or unmapped ownership metadata; reference matching still uses the exact requested runtime address. A ROM-offset target is accepted only when that offset maps to exactly one runtime address for the selected processor. Structural/NitroFS-only bytes are not reverse-xref targets in this milestone.
 
-Reference searches are on-demand only. RE-MCP does not create a persistent whole-ROM xref database or index. Generic byte signatures, string/pattern searching, heuristic pointer discovery, and arbitrary immediate-pointer inference remain deferred.
+Reference searches are on-demand only. RE-MCP does not create a persistent whole-ROM xref database or index. Raw pattern search is a separate exact byte-level facility and does not change or broaden the deterministic reference classifier. Heuristic pointer discovery and arbitrary immediate-pointer inference remain deferred.
+
+### Raw pattern and signature discovery
+
+`nds_search_pattern` searches one validated `.nds` ROM for one deterministic byte-level pattern. It accepts exactly four pattern kinds:
+
+- `byte-signature`
+- `integer`
+- `ascii`
+- `utf16le`
+
+Byte signatures use whitespace-separated exact bytes plus the whole-byte wildcard `??`:
+
+```text
+12 34 56 78
+12 34 ?? 78
+AA ?? ?? FF
+```
+
+Concrete bytes must contain exactly two hexadecimal digits. `??` is the only wildcard syntax. Nibble wildcards such as `A?`, regular expressions, alternation, repetition, fuzzy matching, and all-wildcard signatures are rejected.
+
+Typed integers require an explicit width of 8, 16, or 32 bits, explicit little- or big-endian encoding, and explicit signedness. Alignment defaults to 1 byte and may be set explicitly to 1, 2, or 4 bytes. Alignment is checked against the absolute ROM offset; width never silently implies alignment.
+
+ASCII search is exact and case-sensitive and rejects non-ASCII input. UTF-16LE search is also exact and case-sensitive. Neither string mode appends a null terminator, performs Unicode normalization, folds case, or tries alternate encodings.
+
+Every encoded pattern must contain between 1 and 4,096 bytes.
+
+The search scope is either:
+
+- `whole-rom`, which treats the validated ROM file as one physical matching domain; or
+- `components`, selecting any bounded combination of ARM9 main, ARM7 main, explicit ARM9/ARM7 overlay IDs, NitroFS file IDs, and exact NitroFS paths.
+
+Component selections retain their canonical boundaries even when physical ranges overlap or are adjacent. Overlapping selected physical bytes are scanned once, but a component-scoped match is valid only when its complete byte span lies inside at least one selected canonical component. A signature cannot begin in one adjacent component and finish in another unless one selected component contains the entire span. `whole-rom` is the explicit mode that permits matches across structural/component boundaries.
+
+Compressed overlays are searchable because this tool operates on physical ROM bytes. RE-MCP searches the exact stored FAT-backed compressed representation and marks the overlay ownership as compressed; it never decompresses the overlay or fabricates a decompressed runtime mapping.
+
+Each physical hit is emitted once in ascending ROM-offset order and preserves every deterministic canonical owner known for the complete hit span. Ownership may include main executable, overlay storage, NitroFS/FAT file, parsed header metadata, FNT, FAT, overlay tables, or `unmapped`. An owner receives a runtime address only when the **entire hit** has a deterministic direct file-backed runtime mapping. For an uncompressed overlay this mapping is limited to the initialized prefix `min(ramSize, romSize)`. Compressed overlay storage never receives a runtime address. `bannerOffset` alone does not define a validated banner extent, so the search tool does not invent banner ownership.
+
+Overlapping matches are preserved. For example, searching `AA AA` in `AA AA AA` returns starts at offsets 0 and 1 relative to that region.
+
+Search limits are:
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Returned page size | 100 | 1,000 |
+| Match-index `offset` | 0 | 99,999 |
+| Physical bytes scanned | 64 MiB | 512 MiB |
+| Context bytes per side | 0 | 64 |
+| Encoded pattern bytes | — | 4,096 |
+| Discovered matches | — | 100,000 |
+
+`offset` is a **match index**, not a ROM-byte offset and not a scan-resume cursor. Increasing `offset` does not extend coverage after a scan-byte truncation. To inspect beyond a `maxScanBytes` boundary, raise the scan budget or narrow/change the selected scope.
+
+A result is `complete` only when the selected physical scope was fully examined. Otherwise it is `truncated`, with explicit reasons chosen from:
+
+- `scan-byte-limit`
+- `match-count-limit`
+
+`discoveredMatches` counts only matches actually established before completion or truncation. `nextOffset` is non-null only when the current scan has already discovered later matches beyond the returned page; it does not speculate about unscanned bytes. Therefore a zero-hit result is definitive only when `status === "complete"`.
+
+Optional context bytes are informational only and do not affect matching or the physical scan-byte counter. Whole-ROM context is clipped only to ROM bounds. Component-scoped context remains inside a deterministic selected component that fully contains the hit, so it never leaks across an adjacent component boundary.
+
+Pattern hits are byte-level facts only. RE-MCP does **not** promote a matching integer or byte sequence into a pointer, reference, function, table, or other semantic claim. There is no generic binary search input, caller-supplied byte buffer, arbitrary caller-defined ROM range, output path, persistent signature database, decompression path, or ROM mutation surface.
 
 ### Controlled extraction
 
@@ -247,13 +311,14 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 
 1. Call `nds_inspect_rom` to validate the ROM and obtain the canonical structural summary.
 2. Use `nds_list_files`, `nds_list_overlays`, and the address resolvers to identify deterministic code/file relationships.
-3. Call `nds_disassemble_range` for a bounded ARM/Thumb instruction window at a validated runtime address or ROM offset.
-4. Call `nds_list_references` when you want deterministic references from a bounded sequential source window without traversal.
-5. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
-6. Call `nds_find_xrefs` to search for references to one runtime target within an explicit same-processor static scope; inspect `status` and component coverage before treating a negative result as definitive.
-7. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
+3. Call `nds_search_pattern` to locate an exact/wildcard byte signature, typed constant, or exact string within explicit canonical components or the whole validated ROM.
+4. Call `nds_disassemble_range` for a bounded ARM/Thumb instruction window at a validated runtime address or ROM offset.
+5. Call `nds_list_references` when you want deterministic references from a bounded sequential source window without traversal.
+6. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
+7. Call `nds_find_xrefs` to search for references to one runtime target within an explicit same-processor static scope; inspect `status` and component coverage before treating a negative result as definitive.
+8. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-This milestone still does **not** implement heuristic function discovery or function-boundary claims, generic byte/string/signature pattern search, heuristic pointer discovery, persistent xref indexing, symbol recovery, generic binary disassembly, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+The static layer still does **not** implement heuristic function discovery or function-boundary claims, heuristic pointer discovery, persistent pattern/xref indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Dynamic-debugging tools
 
@@ -315,7 +380,7 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, and smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference. The check requires no external disassembler or runtime asset download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, and smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership. The check requires no external disassembler or runtime asset download.
 
 After downloading and extracting the archive:
 
@@ -324,7 +389,7 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, ARM/Thumb decoder fixtures, and packaged deterministic reference classifier before reporting `ok: true`.
+The same self-check verifies the required package files, ARM/Thumb decoder fixtures, deterministic reference classifier, and packaged NDS pattern-search path before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
 
@@ -412,6 +477,11 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
 - NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
 - NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
+- `nds_search_pattern` accepts only a validated NDS ROM plus canonical component scope or explicit whole-ROM scope; no generic binary path, caller-supplied byte buffer, caller-defined start/end range, runtime-memory target, or output path
+- Pattern search is bounded to 4,096 encoded pattern bytes, 512 MiB scanned bytes, 1,000 returned hits per page, 100,000 discovered matches, and 64 context bytes per side
+- Component-scoped pattern hits require full-span containment in at least one selected canonical component; physical overlap is deduplicated and adjacent components do not authorize cross-boundary matches
+- Compressed overlays are pattern-searched only as exact stored FAT-backed bytes; pattern search performs no decompression and fabricates no compressed-runtime address mapping
+- Pattern hits remain byte-level facts and are not promoted into pointers, references, functions, or tables
 - ARM/Thumb linear decoding and source-reference listing are bounded to 256 instructions and 1,024 bytes per request
 - CFG traversal is bounded to 256 blocks, 4,096 instructions, 16 KiB decoded bytes, and 1,024 traversal edges
 - Reverse-xref traversal is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 returned xrefs
@@ -419,7 +489,7 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Literal-pool contents and pointer-looking ordinary immediates are not interpreted as references
 - `nds_find_xrefs` may follow proven direct calls for search coverage, while `nds_analyze_control_flow` continues to annotate calls without traversing them
 - Reverse-xref coverage gaps and truncation are explicit; a zero-xref result is definitive for selected scope only when status is `complete`
-- No persistent xref index, generic pattern/signature search, or heuristic pointer discovery
+- No persistent pattern/xref index or heuristic pointer discovery
 - Indirect targets are never guessed
 - Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed

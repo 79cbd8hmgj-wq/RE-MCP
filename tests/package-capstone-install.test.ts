@@ -39,6 +39,22 @@ test("install verifier smoke-classifies packaged ARM and Thumb references", asyn
   assert.equal(source.includes("Packaged Thumb PC-relative reference smoke failed"), true);
 });
 
+test("install verifier smoke-searches packaged NDS patterns", async () => {
+  const source = await readFile(
+    path.resolve("scripts/check-install.mjs"),
+    "utf8",
+  );
+  for (const required of [
+    "dist/services/nds/pattern-search.js",
+    "dist/services/nds/rom-map.js",
+    "Packaged NDS pattern overlap smoke failed",
+    "Packaged NDS pattern ownership smoke failed",
+    "fixture.set([0xaa, 0xaa, 0xbb], 0x200)",
+  ]) {
+    assert.equal(source.includes(required), true, required);
+  }
+});
+
 test("package workflow labels the assembled-bundle smoke acceptance explicitly", async () => {
   const source = await readFile(
     path.resolve(".github/workflows/package.yml"),

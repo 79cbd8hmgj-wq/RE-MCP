@@ -1,4 +1,5 @@
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -8,6 +9,8 @@ const required = [
   "dist/index.js",
   "dist/services/nds/disassembly.js",
   "dist/services/nds/references.js",
+  "dist/services/nds/pattern-search.js",
+  "dist/services/nds/rom-map.js",
   "package.json",
   "node_modules/@modelcontextprotocol/sdk/package.json",
   "node_modules/zod/package.json",
@@ -35,9 +38,17 @@ const disassemblyUrl = pathToFileURL(
 const referencesUrl = pathToFileURL(
   path.join(root, "dist/services/nds/references.js"),
 ).href;
+const patternSearchUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/pattern-search.js"),
+).href;
+const romMapUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/rom-map.js"),
+).href;
 const { createCapstoneArmBackend } = await import(adapterUrl);
 const { decodeNdsInstructionDetailed } = await import(disassemblyUrl);
 const { classifyNdsInstructionReferences } = await import(referencesUrl);
+const { searchNdsPattern } = await import(patternSearchUrl);
+const { readNdsRomMap } = await import(romMapUrl);
 
 const arm9 = {
   ramAddress: 0x02000000,
@@ -128,6 +139,51 @@ try {
   }
 } finally {
   backend.close();
+}
+
+const patternTemp = await mkdtemp(path.join(os.tmpdir(), "re-mcp-pattern-"));
+try {
+  const fixture = Buffer.alloc(0x1000);
+  fixture.writeUInt32LE(0x200, 0x20);
+  fixture.writeUInt32LE(0x02000000, 0x24);
+  fixture.writeUInt32LE(0x02000000, 0x28);
+  fixture.writeUInt32LE(0x20, 0x2c);
+  fixture.writeUInt32LE(0x300, 0x30);
+  fixture.writeUInt32LE(0x03800000, 0x34);
+  fixture.writeUInt32LE(0x03800000, 0x38);
+  fixture.writeUInt32LE(0x20, 0x3c);
+  fixture.writeUInt32LE(0x400, 0x40);
+  fixture.writeUInt32LE(0x500, 0x48);
+  fixture.writeUInt32LE(0x600, 0x50);
+  fixture.writeUInt32LE(0x700, 0x58);
+  fixture.writeUInt32LE(0x800, 0x68);
+  fixture.set([0xaa, 0xaa, 0xbb], 0x200);
+
+  const patternRom = path.join(patternTemp, "pattern-smoke.nds");
+  await writeFile(patternRom, fixture);
+  const patternMap = await readNdsRomMap(patternRom);
+  const patternResult = await searchNdsPattern(
+    patternMap,
+    { kind: "byte-signature", signature: "AA ??" },
+    { kind: "components", arm9Main: true },
+    { offset: 0, limit: 10, maxScanBytes: 0x20, contextBytes: 0 },
+  );
+  const patternOffsets = patternResult.matches.map((hit) => hit.romOffset);
+  if (
+    patternOffsets.length !== 2
+    || patternOffsets[0] !== 0x200
+    || patternOffsets[1] !== 0x201
+  ) {
+    throw new Error("Packaged NDS pattern overlap smoke failed");
+  }
+  const mainOwner = patternResult.matches[0]?.owners.find(
+    (owner) => owner.kind === "arm9-main",
+  );
+  if (mainOwner?.runtimeAddress !== 0x02000000) {
+    throw new Error("Packaged NDS pattern ownership smoke failed");
+  }
+} finally {
+  await rm(patternTemp, { recursive: true, force: true });
 }
 
 process.stdout.write(
