@@ -96,3 +96,16 @@ jobs:
             -noanalysis \
             -scriptPath "$diag" \
             -postScript DumpBlocks.java
+
+      - name: Dump Ghidra script errors
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
+          if [[ ! -f "$log" ]]; then
+            echo "No Ghidra application log available"
+            exit 0
+          fi
+          echo "=== RE-MCP / script / exception diagnostics ==="
+          grep -nE 'ReMcp|ERROR|Exception|MemoryConflict|overlay|SCRIPT' "$log" | tail -n 400 || true
