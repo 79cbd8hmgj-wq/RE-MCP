@@ -150,7 +150,7 @@ public class ReMcpImportEvidence extends GhidraScript {
                     to,
                     RefType.UNCONDITIONAL_CALL,
                     SourceType.IMPORTED,
-                    Reference.OTHER);
+                    Reference.MNEMONIC);
             }
         }
     }
