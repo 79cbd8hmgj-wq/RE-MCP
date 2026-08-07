@@ -206,7 +206,7 @@ export class DebugController {
 
   async pause(input: number | PauseRequest): Promise<DebugExecutionResult> {
     const request: PauseRequest = typeof input === "number"
-      ? { timeoutMs: input, captureContext: false }
+      ? { timeoutMs: input }
       : input;
     const result = await this.#requireSession().interruptAndWait(request.timeoutMs);
     return await this.#enrichExecutionResult(result, {
@@ -219,7 +219,7 @@ export class DebugController {
 
   async waitForStop(input: number | WaitForStopRequest): Promise<DebugExecutionResult> {
     const request: WaitForStopRequest = typeof input === "number"
-      ? { timeoutMs: input, captureContext: false }
+      ? { timeoutMs: input }
       : input;
     const result = await this.#requireSession().waitForStop(request.timeoutMs);
     return await this.#enrichExecutionResult(result, {
@@ -260,6 +260,15 @@ export class DebugController {
       };
     }
 
+    if (!this.#shouldInspectSignalStop(options)) {
+      this.#lastMatchedBreakpointId = null;
+      return {
+        ...result,
+        stoppedAt,
+        emulatorRunning: true,
+      };
+    }
+
     const session = this.#requireSession();
     const registers = decodeArm9RegisterPacket(
       await session.sendStoppedCommand("g", options.timeoutMs),
@@ -291,6 +300,14 @@ export class DebugController {
         : { expectedBreakpointMatched: matchedBreakpoint?.id === options.expectedBreakpointId }),
       ...(context === undefined ? {} : { context }),
     };
+  }
+
+  #shouldInspectSignalStop(options: EnrichmentOptions): boolean {
+    return options.captureContext !== undefined
+      || options.expectedBreakpointId !== undefined
+      || options.additionalRegions !== undefined
+      || options.maxOutputBytes !== undefined
+      || this.#breakpoints.list().length > 0;
   }
 
   #requireSession(): GdbSession {
