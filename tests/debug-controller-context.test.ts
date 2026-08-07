@@ -279,25 +279,62 @@ test("step attaches context only to the final result", async () => {
 
 test("wait and pause use the same stop enrichment path", async () => {
   const received: string[] = [];
-  const server = scriptedRspServer(
-    [
-      { command: "c", reply: null },
-      { command: "g", reply: registerPacket({ pc: 0x02000300 }) },
-      { command: "c", reply: null },
-      { command: "INTERRUPT", reply: "S02" },
-      { command: "g", reply: registerPacket({ pc: 0x02000304 }) },
-    ],
-    received,
-  );
+  let continueCount = 0;
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      if (chunk.includes(0x03)) {
+        received.push("INTERRUPT");
+        socket.write(encodeRspPacket("S02"), "ascii");
+        return;
+      }
+
+      buffer += chunk.toString("ascii");
+      for (;;) {
+        const parsed = parseRspPacket(buffer);
+        if (parsed === null) return;
+        buffer = buffer.slice(parsed.consumed);
+        received.push(parsed.payload);
+
+        if (parsed.payload === "c") {
+          continueCount += 1;
+          socket.write("+", "ascii");
+          if (continueCount === 1) {
+            setTimeout(() => socket.write(encodeRspPacket("S05"), "ascii"), 60);
+          }
+          continue;
+        }
+
+        if (parsed.payload === "g") {
+          const pc = continueCount === 1 ? 0x02000300 : 0x02000304;
+          socket.write(`+${encodeRspPacket(registerPacket({ pc }))}`, "ascii");
+        }
+      }
+    });
+  });
   const port = await listen(server);
   const controller = controllerFor(port);
 
   try {
     controller.initialize("session", ARM9_RANGE);
-    assert.equal((await controller.continueExecution({ timeoutMs: 20 })).kind, "timeout");
+    assert.equal(
+      (await controller.continueExecution({ timeoutMs: 20, captureContext: false })).kind,
+      "timeout",
+    );
+    const waited = await controller.waitForStop({ timeoutMs: 1000, captureContext: false });
+    assert.equal(waited.kind, "stop");
+    if (waited.kind !== "stop") throw new Error("Expected stop result");
+    assert.equal(waited.stop.raw, "S05");
 
-    const socket = [...server.connectionsCheckingInterval ? [] : []];
-    void socket;
+    assert.equal(
+      (await controller.continueExecution({ timeoutMs: 20, captureContext: false })).kind,
+      "timeout",
+    );
+    const paused = await controller.pause({ timeoutMs: 1000, captureContext: false });
+    assert.equal(paused.kind, "stop");
+    if (paused.kind !== "stop") throw new Error("Expected stop result");
+    assert.equal(paused.stop.raw, "S02");
+    assert.deepEqual(received, ["c", "g", "c", "INTERRUPT", "g"]);
   } finally {
     await controller.reset("test cleanup");
     await close(server);
