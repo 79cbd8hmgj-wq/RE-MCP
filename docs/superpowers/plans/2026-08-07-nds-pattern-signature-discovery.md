@@ -35,7 +35,7 @@
 - Context is informational, does not count toward `scannedBytes`, and remains inside a deterministic selected containing component for component scope; whole-ROM context is clipped only to ROM bounds.
 - Attach a runtime address only when the full hit span has a deterministic direct file-backed runtime mapping. Uncompressed overlay mapping is bounded to `min(ramSize, romSize)`; compressed overlays never receive runtime mapping.
 - Do not invent banner ownership from `bannerOffset`; the current canonical model has no validated banner extent.
-- Pattern search verifies ROM SHA-256 before scanning and again before return, including failure paths where practical; never return mixed-revision bytes.
+- Pattern search verifies ROM SHA-256 before scanning and again before returning. If the scan fails, the final SHA check still runs before the original scan error is rethrown.
 - Add pattern-specific errors exactly: `invalid-pattern`, `invalid-pattern-scope`, `pattern-search-limit-exceeded`; reuse existing NDS structural/file/output errors where already applicable.
 - No generic binary input, caller-supplied bytes, caller-supplied base/runtime address, arbitrary start/end range, arbitrary output path, ROM mutation/rebuild, runtime memory search, decompression, heuristic pointer/reference inference, persistent index, or multi-pattern batch.
 - Do not change Capstone, disassembly, CFG, proven-reference, reverse-xref, extraction, or DeSmuME debugger/controller/runtime semantics.
@@ -52,24 +52,24 @@
 - `src/services/nds/pattern-ownership.ts` — full-span canonical ownership and deterministic direct runtime mappings.
 - `src/services/nds/pattern-match.ts` — low-level chunked exact/masked matcher, alignment, overlap, scan/match limits, page accounting.
 - `src/services/nds/pattern-search.ts` — top-level filesystem/SHA orchestration, compiler/scope/matcher composition, context reads, final result model.
-- `tests/nds-patterns.test.ts` — pattern compiler/range/encoding tests.
-- `tests/nds-pattern-scope.test.ts` — canonical component and physical-union tests.
-- `tests/nds-pattern-ownership.test.ts` — owner/runtime mapping tests.
-- `tests/nds-pattern-match.test.ts` — chunking, overlap, alignment, component-boundary, scan-limit, pagination tests.
-- `tests/nds-pattern-search.test.ts` — filesystem integration, context, source-integrity, whole-ROM/component search tests.
+- `tests/nds-patterns.test.ts`
+- `tests/nds-pattern-scope.test.ts`
+- `tests/nds-pattern-ownership.test.ts`
+- `tests/nds-pattern-match.test.ts`
+- `tests/nds-pattern-search.test.ts`
 
 ### Modify
 
-- `src/services/nds/errors.ts` — pattern-search error union.
-- `src/services/nds/header.ts` — export the already-used parsed-header byte extent constant so ownership code does not duplicate `0x6c`.
-- `src/tools/nds.ts` — bounded schemas, handler, corrective actions for `nds_search_pattern`.
-- `src/index.ts` — add the twelfth NDS tool and update the static-analysis capability policy.
-- `tests/nds-tools.test.ts` — exact tool count, schemas/defaults/caps, handler integration, forbidden generic surface, output bound.
-- `scripts/check-install.mjs` — packaged pattern-search smoke using a tiny synthetic NDS ROM.
-- `tests/package-capstone-install.test.ts` — require packaged pattern-search files/smoke messages while retaining existing Capstone/reference checks.
-- `README.md` — pattern syntax, scope, ownership, pagination/truncation/context/security documentation.
+- `src/services/nds/errors.ts`
+- `src/services/nds/header.ts`
+- `src/tools/nds.ts`
+- `src/index.ts`
+- `tests/nds-tools.test.ts`
+- `scripts/check-install.mjs`
+- `tests/package-capstone-install.test.ts`
+- `README.md`
 
-### Reuse unchanged unless a failing test demonstrates a narrow compatibility defect
+### Reuse unchanged unless a failing regression test proves a narrow compatibility defect
 
 - `src/services/nds/rom-map.ts`
 - `src/services/nds/fat.ts`
@@ -95,8 +95,6 @@
 - Test: `tests/nds-patterns.test.ts`
 
 **Interfaces:**
-- Consumes: existing `NdsError` and `AnyNdsErrorCategory`.
-- Produces:
 
 ```ts
 export type NdsSearchPattern =
@@ -123,7 +121,7 @@ export const NDS_PATTERN_MAX_BYTES = 4096;
 export function compileNdsPattern(pattern: NdsSearchPattern): CompiledNdsPattern;
 ```
 
-And in `errors.ts`:
+`src/services/nds/errors.ts` adds:
 
 ```ts
 export type NdsPatternSearchErrorCategory =
@@ -132,16 +130,15 @@ export type NdsPatternSearchErrorCategory =
   | "pattern-search-limit-exceeded";
 ```
 
-`AnyNdsErrorCategory` must include `NdsPatternSearchErrorCategory`.
+and includes it in `AnyNdsErrorCategory`.
 
-- [ ] **Step 1: Write compiler tests first**
+- [ ] **Step 1: Write failing compiler tests**
 
-Create `tests/nds-patterns.test.ts` with concrete RED cases:
+Create `tests/nds-patterns.test.ts`:
 
 ```ts
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { NdsError } from "../src/services/nds/errors.js";
 import { compileNdsPattern } from "../src/services/nds/patterns.js";
 
@@ -159,7 +156,7 @@ test("compiles exact and wildcard byte signatures", () => {
   assert.equal(compiled.alignment, 1);
 });
 
-test("rejects malformed, empty, nibble-wildcard, and all-wildcard signatures", () => {
+test("rejects malformed and non-identifying byte signatures", () => {
   for (const signature of ["", "12 GG", "A? 12", "??", "?? ??"] as const) {
     assert.throws(
       () => compileNdsPattern({ kind: "byte-signature", signature }),
@@ -168,7 +165,7 @@ test("rejects malformed, empty, nibble-wildcard, and all-wildcard signatures", (
   }
 });
 
-test("encodes signed and unsigned integer widths and endianness exactly", () => {
+test("encodes integer width, endian, signedness, and alignment exactly", () => {
   assert.equal(hex(compileNdsPattern({
     kind: "integer", value: 0x1234, width: 16, endian: "little", signed: false,
   }).bytes), "3412");
@@ -177,17 +174,14 @@ test("encodes signed and unsigned integer widths and endianness exactly", () => 
   }).bytes), "1234");
   assert.equal(hex(compileNdsPattern({
     kind: "integer", value: -1, width: 32, endian: "little", signed: true,
+    alignment: 4,
   }).bytes), "ffffffff");
-});
-
-test("validates integer range and keeps alignment explicit", () => {
   assert.equal(compileNdsPattern({
     kind: "integer", value: 1, width: 32, endian: "little", signed: false,
   }).alignment, 1);
-  assert.equal(compileNdsPattern({
-    kind: "integer", value: 1, width: 32, endian: "little", signed: false,
-    alignment: 4,
-  }).alignment, 4);
+});
+
+test("rejects integer values outside requested range", () => {
   for (const pattern of [
     { kind: "integer", value: 256, width: 8, endian: "little", signed: false },
     { kind: "integer", value: -129, width: 8, endian: "little", signed: true },
@@ -211,77 +205,62 @@ test("encodes ASCII and UTF-16LE exactly without terminators", () => {
     (error) => error instanceof NdsError && error.category === "invalid-pattern",
   );
 });
+
+test("enforces 4096 encoded-byte maximum", () => {
+  assert.equal(compileNdsPattern({ kind: "ascii", text: "A".repeat(4096) }).bytes.length, 4096);
+  assert.throws(
+    () => compileNdsPattern({ kind: "ascii", text: "A".repeat(4097) }),
+    (error) => error instanceof NdsError && error.category === "invalid-pattern",
+  );
+});
 ```
 
-Also add a generated 4097-byte signature/string case and prove it returns `invalid-pattern`.
-
-- [ ] **Step 2: Prove RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-patterns.test.ts
 ```
 
-Expected: FAIL because `patterns.ts` and the pattern-specific error categories do not exist.
+Expected: FAIL because the new service/error category does not exist.
 
-- [ ] **Step 3: Extend the NDS error union**
+- [ ] **Step 3: Implement the error union and byte-signature compiler**
 
-In `src/services/nds/errors.ts`, add exactly:
-
-```ts
-export type NdsPatternSearchErrorCategory =
-  | "invalid-pattern"
-  | "invalid-pattern-scope"
-  | "pattern-search-limit-exceeded";
-
-export type AnyNdsErrorCategory =
-  | NdsErrorCategory
-  | NdsReferenceErrorCategory
-  | NdsPatternSearchErrorCategory;
-```
-
-Do not rename or remove any existing category.
-
-- [ ] **Step 4: Implement exact byte-signature compilation**
-
-In `patterns.ts`, tokenize only by whitespace and require every token to match:
+Use only:
 
 ```ts
 const EXACT_BYTE = /^[0-9a-fA-F]{2}$/u;
 const WILDCARD = "??";
 ```
 
-For each wildcard append `0x00` byte and `0x00` mask. For each concrete token append parsed byte and `0xff` mask. Reject no tokens, malformed tokens, and `mask.every((value) => value === 0)`.
+Concrete tokens append parsed byte + `0xff` mask. `??` appends `0x00` byte + `0x00` mask. Reject no tokens, malformed tokens, and masks containing no exact byte.
 
-- [ ] **Step 5: Implement exact integer encoding**
+- [ ] **Step 4: Implement integer encoding**
 
-Use `BigInt` for range validation so 32-bit signed/unsigned boundaries are exact even though the public value is a JavaScript number:
+Require `Number.isSafeInteger(value)`. Validate range with `BigInt`:
 
 ```ts
 function integerBounds(width: 8 | 16 | 32, signed: boolean): readonly [bigint, bigint] {
   const bits = BigInt(width);
-  if (signed) {
-    return [-(1n << (bits - 1n)), (1n << (bits - 1n)) - 1n];
-  }
-  return [0n, (1n << bits) - 1n];
+  return signed
+    ? [-(1n << (bits - 1n)), (1n << (bits - 1n)) - 1n]
+    : [0n, (1n << bits) - 1n];
 }
 ```
 
-Require `Number.isSafeInteger(pattern.value)`. Convert negative signed values to two's complement with:
+For signed negatives use two's complement:
 
 ```ts
-const modulus = 1n << BigInt(pattern.width);
+const modulus = 1n << BigInt(width);
 const encoded = value < 0n ? modulus + value : value;
 ```
 
-Emit bytes explicitly in requested endian order. Do not search alternate encodings.
+Emit exact requested endian bytes; never search an alternate representation.
 
-- [ ] **Step 6: Implement exact ASCII/UTF-16LE compilation and shared length check**
+- [ ] **Step 5: Implement strings and shared encoded-length validation**
 
-ASCII requires every UTF-16 code unit `<= 0x7f` and then uses `Buffer.from(text, "ascii")` only after validation. UTF-16LE uses `Buffer.from(text, "utf16le")`. Reject encoded length `<1` or `>4096` for every pattern kind.
+Reject any ASCII UTF-16 code unit above `0x7f`, then encode via `Buffer.from(text, "ascii")`. Encode UTF-16LE via `Buffer.from(text, "utf16le")`. Reject every encoded result outside `1..4096` bytes. Return fresh `Uint8Array` objects.
 
-Return fresh `Uint8Array` values and never expose mutable shared buffers.
-
-- [ ] **Step 7: Verify GREEN**
+- [ ] **Step 6: Run GREEN**
 
 ```bash
 node --test --import tsx tests/nds-patterns.test.ts
@@ -290,7 +269,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/services/nds/errors.ts src/services/nds/patterns.ts tests/nds-patterns.test.ts
@@ -306,8 +285,6 @@ git commit -m "feat: compile bounded NDS search patterns"
 - Test: `tests/nds-pattern-scope.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsRomMap`, `NdsOverlay`, canonical NitroFS/FAT mappings, `NdsError`.
-- Produces:
 
 ```ts
 export type NdsPatternSearchScope =
@@ -352,125 +329,124 @@ export interface ResolvedNdsPatternScope {
   readonly physicalRanges: readonly NdsPatternPhysicalRange[];
 }
 
-export const NDS_PATTERN_MAX_OVERLAY_SELECTORS = 128;
-export const NDS_PATTERN_MAX_NITROFS_SELECTORS = 256;
-export const NDS_PATTERN_MAX_COMPONENTS = 256;
-
-export function resolveNdsPatternScope(
-  map: NdsRomMap,
-  scope: NdsPatternSearchScope,
-): ResolvedNdsPatternScope;
-
-export function patternSpanIsEligible(
-  scope: ResolvedNdsPatternScope,
-  start: number,
-  end: number,
-): boolean;
-
-export function selectPatternContextComponent(
-  scope: ResolvedNdsPatternScope,
-  start: number,
-  end: number,
-): NdsPatternComponent | null;
+export function resolveNdsPatternScope(map: NdsRomMap, scope: NdsPatternSearchScope): ResolvedNdsPatternScope;
+export function patternSpanIsEligible(scope: ResolvedNdsPatternScope, start: number, end: number): boolean;
+export function selectPatternContextComponent(scope: ResolvedNdsPatternScope, start: number, end: number): NdsPatternComponent | null;
 ```
 
-- [ ] **Step 1: Write scope tests first**
+- [ ] **Step 1: Write failing scope tests with an explicit fixture helper**
 
-Create a fixture with ARM9/ARM7 main, two FAT files, one named NitroFS file, and one ARM9 overlay using existing fixture helpers. Add tests like:
+At the top of `tests/nds-pattern-scope.test.ts`, define:
 
 ```ts
-test("resolves and deduplicates canonical component selectors", async () => {
-  const fixture = await buildScopeFixture();
-  const map = await readNdsRomMap(fixture.romPath);
-  const resolved = resolveNdsPatternScope(map, {
-    kind: "components",
-    arm9Main: true,
-    arm9OverlayIds: [7, 7],
-    nitroFsFileIds: [0],
-    nitroFsPaths: ["asset.bin"],
+async function createScopeFixture() {
+  const fixture = await createNdsFixture({
+    fileSize: 0x5000,
+    fntSize: 0x40,
+    fatSize: 16,
+    arm9OverlaySize: 32,
   });
-  assert.equal(resolved.components.filter((component) => component.kind === "arm9-main").length, 1);
-  assert.equal(resolved.components.filter((component) => component.kind === "arm9-overlay").length, 1);
-  assert.equal(resolved.components.filter((component) => component.kind === "nitrofs-file").length, 1);
-});
-
-test("normalizes overlapping physical selections without losing canonical components", async () => {
-  const fixture = await buildOverlayBackedFileFixture();
-  const map = await readNdsRomMap(fixture.romPath);
-  const resolved = resolveNdsPatternScope(map, {
-    kind: "components",
-    arm9OverlayIds: [7],
-    nitroFsFileIds: [1],
+  writeFatEntry(fixture.buffer, 0x900, 0, 0x1200, 0x1220);
+  writeFatEntry(fixture.buffer, 0x900, 1, 0x1300, 0x1380);
+  writeFntMainRecord(fixture.buffer, 0x800, 0, 8, 0, 1);
+  writeFntSubtable(fixture.buffer, 0x800, 8, [encodeFntFileEntry("asset.bin")]);
+  writeOverlayRecord(fixture.buffer, 0xa00, 0, {
+    overlayId: 7,
+    ramAddress: 0x02200000,
+    ramSize: 0x80,
+    bssSize: 0,
+    staticInitStart: 0,
+    staticInitEnd: 0,
+    fileId: 1,
+    compressedSize: 0,
+    flags: 0,
   });
-  assert.equal(resolved.components.length, 2);
-  assert.deepEqual(resolved.physicalRanges, [{ start: 0x1300, end: 0x1380 }]);
-});
+  await fixture.write();
+  return fixture;
+}
 ```
 
-Add full-span containment cases that prove:
+Then test selector deduplication and physical overlap:
 
 ```ts
-assert.equal(patternSpanIsEligible(resolved, 0x1304, 0x1310), true);
-assert.equal(patternSpanIsEligible(adjacentScope, 0x121f, 0x1221), false);
+const fixture = await createScopeFixture();
+const map = await readNdsRomMap(fixture.romPath);
+const resolved = resolveNdsPatternScope(map, {
+  kind: "components",
+  arm9Main: true,
+  arm9OverlayIds: [7, 7],
+  nitroFsFileIds: [0],
+  nitroFsPaths: ["asset.bin"],
+});
+assert.equal(resolved.components.filter((c) => c.kind === "arm9-main").length, 1);
+assert.equal(resolved.components.filter((c) => c.kind === "arm9-overlay").length, 1);
+assert.equal(resolved.components.filter((c) => c.kind === "nitrofs-file").length, 1);
+
+const overlap = resolveNdsPatternScope(map, {
+  kind: "components",
+  arm9OverlayIds: [7],
+  nitroFsFileIds: [1],
+});
+assert.equal(overlap.components.length, 2);
+assert.deepEqual(overlap.physicalRanges, [{ start: 0x1300, end: 0x1380 }]);
 ```
 
-Add context selection tests: choose greatest containing component span, then stable component order for equal spans.
+Add direct containment tests using a manual scope so no helper is implicit:
 
-- [ ] **Step 2: Prove RED**
+```ts
+const adjacent: ResolvedNdsPatternScope = {
+  kind: "components",
+  components: [
+    { key: "file:0", kind: "nitrofs-file", start: 0, end: 2, processor: null, overlayId: null, fileId: 0, path: "a.bin", compressed: false },
+    { key: "file:1", kind: "nitrofs-file", start: 2, end: 4, processor: null, overlayId: null, fileId: 1, path: "b.bin", compressed: false },
+  ],
+  physicalRanges: [{ start: 0, end: 4 }],
+};
+assert.equal(patternSpanIsEligible(adjacent, 1, 3), false);
+
+const overlapping: ResolvedNdsPatternScope = {
+  kind: "components",
+  components: [
+    { key: "file:0", kind: "nitrofs-file", start: 0, end: 4, processor: null, overlayId: null, fileId: 0, path: "a.bin", compressed: false },
+    { key: "file:1", kind: "nitrofs-file", start: 2, end: 6, processor: null, overlayId: null, fileId: 1, path: "b.bin", compressed: false },
+  ],
+  physicalRanges: [{ start: 0, end: 6 }],
+};
+assert.equal(patternSpanIsEligible(overlapping, 1, 3), true);
+```
+
+Also test empty component scope, unknown overlay/file/path, combined selector caps, 256-component cap, whole-ROM range, and deterministic context component selection.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-pattern-scope.test.ts
 ```
 
-Expected: FAIL because the scope service does not exist.
+Expected: FAIL because `pattern-scope.ts` does not exist.
 
-- [ ] **Step 3: Implement canonical component construction**
+- [ ] **Step 3: Implement canonical component construction and validation**
 
-Use main executable ROM ranges directly from `map.header.arm9/arm7`. Use overlay stored ranges exactly:
+Use main ROM ranges from `map.header.arm9/arm7`, overlay stored ranges `[overlay.romOffset, overlay.romOffset + overlay.romSize)`, and files from `map.filesystem.files`. Exact paths compare with `===`.
 
-```ts
-start = overlay.romOffset;
-end = overlay.romOffset + overlay.romSize;
-```
-
-Use NitroFS/FAT files from `map.filesystem.files`, preserving `fileId` and parsed `path` (which may be `null`). Resolve exact path by equality, not prefix.
-
-Unknown overlay IDs throw existing `unknown-overlay-id`. Unknown file ID/path throw existing `unknown-file-id`.
-
-- [ ] **Step 4: Enforce selector and component caps**
-
-Before deduplication, require:
+Combined pre-dedup caps:
 
 ```ts
-(arm9OverlayIds.length + arm7OverlayIds.length) <= 128
-(nitroFsFileIds.length + nitroFsPaths.length) <= 256
+arm9OverlayIds.length + arm7OverlayIds.length <= 128
+nitroFsFileIds.length + nitroFsPaths.length <= 256
 ```
 
-After canonical component deduplication by `key`, require `components.length <= 256`. Empty `components` scope throws `invalid-pattern-scope`. Bound violations throw `pattern-search-limit-exceeded`.
+After deduplication by stable component `key`, require `components.length <= 256`. Empty `components` throws `invalid-pattern-scope`. Cap violations throw `pattern-search-limit-exceeded`. Missing IDs reuse `unknown-overlay-id` / `unknown-file-id`.
 
-- [ ] **Step 5: Implement physical-union normalization**
+- [ ] **Step 4: Normalize only the physical read union**
 
-Sort component `[start,end)` ranges by start/end and merge physically overlapping **or adjacent** ranges only for I/O efficiency:
+Sort selected `[start,end)` ranges and merge when `next.start <= current.end`. This merge is only an I/O optimization. `patternSpanIsEligible()` must separately require the complete hit span to fit within at least one original selected component. `whole-rom` returns `{ start: 0, end: map.fileSize }`.
 
-```ts
-if (next.start <= current.end) current.end = Math.max(current.end, next.end);
-```
+- [ ] **Step 5: Implement deterministic context component selection**
 
-This merge must not authorize matches. `patternSpanIsEligible()` separately checks whether the full candidate span is contained in at least one original selected component. For `whole-rom`, return one range `{ start: 0, end: map.fileSize }` and eligibility is simply `start >= 0 && end <= map.fileSize`.
+Among components fully containing the hit, sort by descending span, then kind order `arm9-main`, `arm7-main`, `arm9-overlay`, `arm7-overlay`, `nitrofs-file`, then overlay/file ID ascending, then key lexical. Return the first; return `null` for whole-ROM.
 
-- [ ] **Step 6: Implement deterministic context component selection**
-
-Filter selected components that fully contain the hit, then sort by:
-
-1. descending `(end - start)`;
-2. canonical kind order `arm9-main`, `arm7-main`, `arm9-overlay`, `arm7-overlay`, `nitrofs-file`;
-3. overlay ID ascending;
-4. file ID ascending;
-5. key lexical.
-
-Return the first component or `null` for whole-ROM.
-
-- [ ] **Step 7: Verify GREEN**
+- [ ] **Step 6: Run GREEN**
 
 ```bash
 node --test --import tsx tests/nds-pattern-scope.test.ts
@@ -479,7 +455,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/services/nds/pattern-scope.ts tests/nds-pattern-scope.test.ts
@@ -496,18 +472,12 @@ git commit -m "feat: resolve bounded NDS pattern scopes"
 - Test: `tests/nds-pattern-ownership.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsRomMap`, validated header/FNT/FAT/overlay ranges.
-- Produces:
 
 ```ts
-export const NDS_PARSED_HEADER_BYTES = 0x6c; // exported from header.ts
+export const NDS_PARSED_HEADER_BYTES = 0x6c;
 
 export type NdsPatternOwner =
-  | {
-      readonly kind: "arm9-main" | "arm7-main";
-      readonly processor: "arm9" | "arm7";
-      readonly runtimeAddress: number;
-    }
+  | { readonly kind: "arm9-main" | "arm7-main"; readonly processor: "arm9" | "arm7"; readonly runtimeAddress: number }
   | {
       readonly kind: "arm9-overlay" | "arm7-overlay";
       readonly processor: "arm9" | "arm7";
@@ -516,59 +486,84 @@ export type NdsPatternOwner =
       readonly compressed: boolean;
       readonly runtimeAddress: number | null;
     }
-  | {
-      readonly kind: "nitrofs-file";
-      readonly fileId: number;
-      readonly path: string | null;
-    }
-  | {
-      readonly kind:
-        | "header"
-        | "fnt"
-        | "fat"
-        | "arm9-overlay-table"
-        | "arm7-overlay-table";
-    }
+  | { readonly kind: "nitrofs-file"; readonly fileId: number; readonly path: string | null }
+  | { readonly kind: "header" | "fnt" | "fat" | "arm9-overlay-table" | "arm7-overlay-table" }
   | { readonly kind: "unmapped" };
 
-export function ownersForNdsPatternHit(
-  map: NdsRomMap,
-  start: number,
-  end: number,
-): readonly NdsPatternOwner[];
+export function ownersForNdsPatternHit(map: NdsRomMap, start: number, end: number): readonly NdsPatternOwner[];
 ```
 
-Every owner uses full-hit-span containment, not mere start-byte overlap.
+All ownership uses full-hit-span containment.
 
-- [ ] **Step 1: Write ownership tests first**
+- [ ] **Step 1: Write failing ownership tests with an explicit fixture helper**
 
-Cover main, overlay, compressed overlay, NitroFS, structural regions, multiple ownership, and unmapped bytes:
+Define:
 
 ```ts
-test("maps full-span main and uncompressed overlay hits to runtime addresses", async () => {
-  const fixture = await buildOwnershipFixture();
-  const map = await readNdsRomMap(fixture.romPath);
-  assert.deepEqual(ownersForNdsPatternHit(map, 0x204, 0x208), [{
-    kind: "arm9-main",
-    processor: "arm9",
-    runtimeAddress: 0x02000004,
-  }]);
-
-  const overlayOwners = ownersForNdsPatternHit(map, 0x1304, 0x1308);
-  const overlay = overlayOwners.find((owner) => owner.kind === "arm9-overlay");
-  assert.equal(overlay?.runtimeAddress, 0x02200004);
-});
+async function createOwnershipFixture() {
+  const fixture = await createNdsFixture({
+    fileSize: 0x5000,
+    fntSize: 0x40,
+    fatSize: 24,
+    arm9OverlaySize: 64,
+  });
+  writeFatEntry(fixture.buffer, 0x900, 0, 0x1200, 0x1220);
+  writeFatEntry(fixture.buffer, 0x900, 1, 0x1300, 0x1340);
+  writeFatEntry(fixture.buffer, 0x900, 2, 0x1400, 0x1440);
+  writeFntMainRecord(fixture.buffer, 0x800, 0, 8, 0, 1);
+  writeFntSubtable(fixture.buffer, 0x800, 8, [encodeFntFileEntry("asset.bin")]);
+  writeOverlayRecord(fixture.buffer, 0xa00, 0, {
+    overlayId: 7,
+    ramAddress: 0x02200000,
+    ramSize: 0x20,
+    bssSize: 0,
+    staticInitStart: 0,
+    staticInitEnd: 0,
+    fileId: 1,
+    compressedSize: 0,
+    flags: 0,
+  });
+  writeOverlayRecord(fixture.buffer, 0xa00, 1, {
+    overlayId: 8,
+    ramAddress: 0x02300000,
+    ramSize: 0x80,
+    bssSize: 0,
+    staticInitStart: 0,
+    staticInitEnd: 0,
+    fileId: 2,
+    compressedSize: 0x30,
+    flags: 1,
+  });
+  await fixture.write();
+  return fixture;
+}
 ```
 
-Add a fixture where `overlay.ramSize < overlay.romSize` and prove bytes beyond `min(ramSize, romSize)` still receive an overlay owner but `runtimeAddress: null`.
+Tests must assert:
 
-Add compressed overlay proof that `runtimeAddress` is always `null`.
+```ts
+const fixture = await createOwnershipFixture();
+const map = await readNdsRomMap(fixture.romPath);
+assert.deepEqual(ownersForNdsPatternHit(map, 0x204, 0x208), [{
+  kind: "arm9-main", processor: "arm9", runtimeAddress: 0x02000004,
+}]);
 
-Add an overlay/NitroFS shared range proof that one hit gets both owner records.
+const mapped = ownersForNdsPatternHit(map, 0x1304, 0x1308)
+  .find((owner) => owner.kind === "arm9-overlay");
+assert.equal(mapped?.runtimeAddress, 0x02200004);
 
-Add structural owner tests for `[0,0x6c)`, FNT, FAT, and both overlay tables. Add a hit at `bannerOffset` that receives no fabricated banner owner.
+const beyondPrefix = ownersForNdsPatternHit(map, 0x1324, 0x1328)
+  .find((owner) => owner.kind === "arm9-overlay");
+assert.equal(beyondPrefix?.runtimeAddress, null);
 
-- [ ] **Step 2: Prove RED**
+const compressed = ownersForNdsPatternHit(map, 0x1404, 0x1408)
+  .find((owner) => owner.kind === "arm9-overlay");
+assert.equal(compressed?.runtimeAddress, null);
+```
+
+Also assert overlay-backed bytes include both overlay and `nitrofs-file` ownership for file ID 1, structural regions receive header/FNT/FAT/overlay-table owners when the full hit fits, a hit at `bannerOffset` gets no banner owner, and truly ownerless bytes get exactly `{ kind: "unmapped" }`.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-pattern-ownership.test.ts
@@ -576,50 +571,40 @@ node --test --import tsx tests/nds-pattern-ownership.test.ts
 
 Expected: FAIL because ownership mapping and exported header extent do not exist.
 
-- [ ] **Step 3: Export the existing parsed-header extent**
+- [ ] **Step 3: Export the existing parsed-header extent without behavior change**
 
-In `src/services/nds/header.ts`, change only the constant visibility:
+In `header.ts`:
 
 ```ts
 export const NDS_PARSED_HEADER_BYTES = 0x6c;
 ```
 
-Use this same constant in `parseNdsHeader()` where `FULL_HEADER_BYTES` was previously used; do not change parsing behavior.
+Use this constant where the private `FULL_HEADER_BYTES` value was used.
 
-- [ ] **Step 4: Implement full-span owner containment**
+- [ ] **Step 4: Implement full-span ownership and runtime mapping**
 
-Use helper:
+Use:
 
 ```ts
-function contains(start: number, end: number, ownerStart: number, ownerEnd: number): boolean {
-  return start >= ownerStart && end <= ownerEnd && end > start;
+function contains(hitStart: number, hitEnd: number, ownerStart: number, ownerEnd: number): boolean {
+  return hitEnd > hitStart && hitStart >= ownerStart && hitEnd <= ownerEnd;
 }
 ```
 
-Add owners in deterministic order: main executables, overlays sorted by processor/ID, NitroFS files by file ID, structural regions, then `unmapped` only when no owner was added.
+Main runtime mapping is `ramAddress + (hitStart - romOffset)` only for a fully contained hit.
 
-- [ ] **Step 5: Implement direct runtime mapping conservatively**
-
-Main runtime mapping:
-
-```ts
-runtimeAddress = executable.ramAddress + (start - executable.romOffset);
-```
-
-only when the full hit is inside `[romOffset, romEnd)`.
-
-Uncompressed overlay direct prefix:
+Uncompressed overlay mapping uses:
 
 ```ts
 const mappedBytes = Math.min(overlay.ramSize, overlay.romSize);
 const mappedEnd = overlay.romOffset + mappedBytes;
 ```
 
-Attach `overlay.ramAddress + (start - overlay.romOffset)` only when `!overlay.compressed && end <= mappedEnd`. Otherwise set `runtimeAddress: null`.
+and attaches a runtime address only when `!overlay.compressed && hitEnd <= mappedEnd`. Otherwise the overlay owner remains valid with `runtimeAddress: null`.
 
-Never add banner ownership from offset alone.
+Owner order is deterministic: ARM9 main, ARM7 main, ARM9 overlays by ID, ARM7 overlays by ID, NitroFS files by file ID, header, FNT, FAT, ARM9 overlay table, ARM7 overlay table. Add `unmapped` only when no owner exists.
 
-- [ ] **Step 6: Verify GREEN plus header regression**
+- [ ] **Step 5: Run GREEN plus header regression**
 
 ```bash
 node --test --import tsx tests/nds-pattern-ownership.test.ts tests/nds-header.test.ts
@@ -628,7 +613,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/header.ts src/services/nds/pattern-ownership.ts tests/nds-pattern-ownership.test.ts
@@ -644,13 +629,9 @@ git commit -m "feat: map NDS pattern hit ownership"
 - Test: `tests/nds-pattern-match.test.ts`
 
 **Interfaces:**
-- Consumes: `CompiledNdsPattern`, `ResolvedNdsPatternScope`, `patternSpanIsEligible()`.
-- Produces:
 
 ```ts
-export type NdsPatternTruncationReason =
-  | "scan-byte-limit"
-  | "match-count-limit";
+export type NdsPatternTruncationReason = "scan-byte-limit" | "match-count-limit";
 
 export interface NdsPatternMatchOptions {
   readonly offset: number;
@@ -669,10 +650,7 @@ export interface NdsPatternScanResult {
   readonly matchOffsets: readonly number[];
 }
 
-export type NdsPatternReadAt = (
-  romOffset: number,
-  length: number,
-) => Promise<Buffer>;
+export type NdsPatternReadAt = (romOffset: number, length: number) => Promise<Buffer>;
 
 export const NDS_PATTERN_DEFAULT_SCAN_BYTES = 64 * 1024 * 1024;
 export const NDS_PATTERN_MAX_SCAN_BYTES = 512 * 1024 * 1024;
@@ -691,29 +669,36 @@ export async function scanNdsPatternMatches(
 ): Promise<NdsPatternScanResult>;
 ```
 
-`internalChunkBytes` is an internal/test seam only; it is never exposed by MCP.
+`internalChunkBytes` is a service/test seam only and is never exposed by MCP.
 
-- [ ] **Step 1: Write pure matcher tests first**
+- [ ] **Step 1: Write failing pure matcher tests with all local helpers defined**
 
-Use an in-memory reader:
+At the top of `tests/nds-pattern-match.test.ts` define:
 
 ```ts
-function reader(buffer: Buffer) {
+function memoryReader(buffer: Buffer) {
   return async (offset: number, length: number) =>
     Buffer.from(buffer.subarray(offset, offset + length));
 }
+
+function wholeRomScope(size: number): ResolvedNdsPatternScope {
+  return {
+    kind: "whole-rom",
+    components: [],
+    physicalRanges: [{ start: 0, end: size }],
+  };
+}
 ```
 
-Add exact RED tests:
+Then test overlap and chunk carry:
 
 ```ts
-test("returns overlapping matches in ascending ROM order", async () => {
+test("returns overlapping matches and counts each physical byte once", async () => {
   const bytes = Buffer.from([0xaa, 0xaa, 0xaa]);
-  const scope = wholeRomScope(bytes.length);
   const result = await scanNdsPatternMatches(
-    scope,
+    wholeRomScope(bytes.length),
     compileNdsPattern({ kind: "byte-signature", signature: "AA AA" }),
-    reader(bytes),
+    memoryReader(bytes),
     { offset: 0, limit: 10, maxScanBytes: 3 },
     2,
   );
@@ -723,90 +708,86 @@ test("returns overlapping matches in ascending ROM order", async () => {
 });
 ```
 
-Add tests for:
+Add a wildcard match that crosses a two-byte internal chunk boundary and assert it appears once.
 
-- wildcard match across an internal 2/3-byte chunk boundary;
-- no duplicate emitted from carry bytes;
-- 2/4-byte absolute ROM alignment filtering;
-- disconnected physical ranges scanned in ascending order;
-- adjacent selected components physically coalesced for I/O but a spanning candidate rejected by `patternSpanIsEligible()`;
-- overlapping selected components where a candidate crossing an internal provenance edge remains valid because one selected component contains the full span;
-- whole-ROM candidate crossing the same structural edge remains valid.
-
-- [ ] **Step 2: Add pagination/truncation RED tests**
-
-Concrete assertions:
+For adjacent-component rejection use this exact scope:
 
 ```ts
-assert.deepEqual(page.matchOffsets, [2, 3]);
-assert.equal(page.discoveredMatches, 5);
-assert.equal(page.nextOffset, 4);
+const adjacentScope: ResolvedNdsPatternScope = {
+  kind: "components",
+  components: [
+    { key: "file:0", kind: "nitrofs-file", start: 0, end: 2, processor: null, overlayId: null, fileId: 0, path: "a", compressed: false },
+    { key: "file:1", kind: "nitrofs-file", start: 2, end: 4, processor: null, overlayId: null, fileId: 1, path: "b", compressed: false },
+  ],
+  physicalRanges: [{ start: 0, end: 4 }],
+};
 ```
 
-for `offset: 2, limit: 2` over five known matches.
+Search pattern `BB CC` in bytes `[0x00,0xbb,0xcc,0x00]` and assert no match at 1. Search the same bytes with `wholeRomScope(4)` and assert match `[1]`.
 
-For scan-byte truncation, use a range larger than `maxScanBytes` and assert:
+Also add an overlapping-component scope where one selected component spans the entire candidate and prove the match remains valid.
+
+- [ ] **Step 2: Add pagination/alignment/truncation RED tests**
+
+Use single-byte `AA` over five bytes and assert for `offset:2, limit:2`:
 
 ```ts
+assert.deepEqual(result.matchOffsets, [2, 3]);
+assert.equal(result.discoveredMatches, 5);
+assert.equal(result.nextOffset, 4);
+```
+
+Test 2-byte and 4-byte alignment against non-zero absolute ROM starts.
+
+For scan truncation, make the physical range larger than `maxScanBytes` and assert `status === "truncated"`, reasons equal `[
+"scan-byte-limit"]`, and a candidate whose final byte was not read is absent.
+
+For the 100000 ceiling, use a 100001-byte in-memory buffer of `0xaa`, single-byte pattern `AA`, a sufficiently large scan budget, and assert:
+
+```ts
+assert.equal(result.discoveredMatches, 100000);
 assert.equal(result.status, "truncated");
-assert.deepEqual(result.truncationReasons, ["scan-byte-limit"]);
-assert.equal(result.nextOffset, null); // when no already-discovered later page hit exists
+assert.deepEqual(result.truncationReasons, ["match-count-limit"]);
 ```
 
-Prove a candidate whose final byte lies outside the physically examined prefix is not reported.
-
-For match ceiling, construct a synthetic read source/range that produces at least 100001 single-byte exact hits and assert `discoveredMatches === 100000`, `status === "truncated"`, and `match-count-limit` is present.
-
-- [ ] **Step 3: Prove RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-pattern-match.test.ts
 ```
 
-Expected: FAIL because the matcher does not exist.
+Expected: FAIL because `pattern-match.ts` does not exist.
 
-- [ ] **Step 4: Validate matcher options**
+- [ ] **Step 4: Implement exact option validation and chunked scanning**
 
-Inside `scanNdsPatternMatches`, require safe integers and exact bounds:
+Require safe integers with:
 
-```ts
+```text
 1 <= limit <= 1000
 0 <= offset <= 99999
-1 <= maxScanBytes <= 512 * 1024 * 1024
+1 <= maxScanBytes <= 512 MiB
 1 <= internalChunkBytes
 ```
 
-Invalid bounds throw `NdsError("pattern-search-limit-exceeded", ...)`.
+Invalid values throw `pattern-search-limit-exceeded`.
 
-- [ ] **Step 5: Implement chunked unique-byte scanning**
+Iterate `scope.physicalRanges` in ascending order. Read at most `min(chunkBytes, rangeRemaining, scanBudgetRemaining)` new bytes. Carry at most `pattern.bytes.length - 1` previous contiguous bytes into the next matching window. Do not carry across a physical gap. Increment `scannedBytes` only by newly read bytes.
 
-Iterate normalized `scope.physicalRanges` in ascending order. Read at most `min(chunkBytes, remainingRangeBytes, remainingScanBudget)` new physical bytes per iteration. Preserve up to `pattern.bytes.length - 1` carry bytes only when the previous read ended exactly at the current physical position.
+- [ ] **Step 5: Implement exact candidate matching**
 
-Build each matching window as `carry + newBytes`, but increment:
+For every candidate start with a full pattern available:
 
-```ts
-scannedBytes += newBytes.length;
-```
-
-only once. Track the absolute start offset represented by the window so candidate offsets remain exact.
-
-Do not carry across a physical gap.
-
-- [ ] **Step 6: Implement exact/masked candidates and eligibility**
-
-For each candidate start in the combined window that has all `pattern.bytes.length` bytes available:
-
-1. reject if `candidateStart % pattern.alignment !== 0`;
-2. reject unless `patternSpanIsEligible(scope, candidateStart, candidateEnd)`;
+1. require absolute ROM alignment;
+2. require `patternSpanIsEligible(scope, start, end)`;
 3. compare every byte using `(actual & mask) === (expected & mask)`;
-4. guard against re-checking candidate starts already considered in the prior carry window;
-5. on match increment `discoveredMatches` and append the start only when its match index lies in `[offset, offset + limit)`.
+4. avoid rechecking starts already completed in the prior carry window;
+5. on match increment `discoveredMatches` and retain only match indices in the requested page.
 
-This preserves overlapping starts by advancing the candidate by exactly one byte.
+Advance candidate start by one byte so overlap is preserved.
 
-- [ ] **Step 7: Implement truncation and `nextOffset` semantics**
+- [ ] **Step 6: Implement truncation and page metadata**
 
-If the scan budget is exhausted before the normalized physical union is fully read, add `scan-byte-limit` and stop. If `discoveredMatches === 100000`, add `match-count-limit` and stop immediately.
+Stop with `scan-byte-limit` when the physical scan budget ends before all ranges are fully read. Stop immediately at 100000 established matches with `match-count-limit`.
 
 Set:
 
@@ -815,9 +796,9 @@ const returnedEndIndex = options.offset + matchOffsets.length;
 const nextOffset = returnedEndIndex < discoveredMatches ? returnedEndIndex : null;
 ```
 
-`status` is `truncated` iff at least one truncation reason exists. Do not infer undiscovered matches beyond the scan boundary.
+Do not infer undiscovered matches beyond a truncation boundary.
 
-- [ ] **Step 8: Verify GREEN**
+- [ ] **Step 7: Run GREEN**
 
 ```bash
 node --test --import tsx tests/nds-pattern-match.test.ts
@@ -826,7 +807,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/services/nds/pattern-match.ts tests/nds-pattern-match.test.ts
@@ -842,8 +823,6 @@ git commit -m "feat: scan bounded NDS byte patterns"
 - Test: `tests/nds-pattern-search.test.ts`
 
 **Interfaces:**
-- Consumes: `compileNdsPattern`, `resolveNdsPatternScope`, `scanNdsPatternMatches`, `ownersForNdsPatternHit`, `hashFileSha256`, `readExact`.
-- Produces:
 
 ```ts
 export interface NdsPatternHitContext {
@@ -895,11 +874,9 @@ export async function searchNdsPattern(
 ): Promise<NdsPatternSearchResult>;
 ```
 
-The optional dependency object is an internal deterministic-test seam; MCP never exposes it.
+- [ ] **Step 1: Write failing real-file search tests**
 
-- [ ] **Step 1: Write end-to-end service tests first**
-
-Use real NDS fixtures/files. Add a component search:
+Start with:
 
 ```ts
 test("searches ARM9 main and returns canonical hit records", async () => {
@@ -919,19 +896,21 @@ test("searches ARM9 main and returns canonical hit records", async () => {
 });
 ```
 
-Add separate tests for integer, ASCII, UTF-16LE, compressed overlay stored bytes, NitroFS exact path, and combined component scope.
+Add separate real-file cases for integer, ASCII, UTF-16LE, compressed overlay stored bytes, exact NitroFS path, and combined component scope. Build those fixtures directly with the existing `createNdsFixture`, `writeFatEntry`, `writeFntMainRecord`, `writeFntSubtable`, `encodeFntFileEntry`, and `writeOverlayRecord` helpers; do not introduce a second shared fixture module.
 
-- [ ] **Step 2: Add component-boundary and whole-ROM integration tests**
+- [ ] **Step 2: Add boundary and context RED tests**
 
-Construct two adjacent selected FAT/NitroFS components containing bytes `AA | BB` at the boundary and assert component scope does not return `AA BB`. Search the same ROM using `{ kind: "whole-rom" }` and assert the physical cross-boundary match is returned.
+Construct two adjacent FAT/NitroFS files with ranges `[0x1200,0x1220)` and `[0x1220,0x1240)`, place `AA` at `0x121f` and `BB` at `0x1220`, and assert component scope over both files does not return `AA BB`. Assert whole-ROM scope does return it.
 
-- [ ] **Step 3: Add context tests**
+For component context, place a hit one byte from a selected file start, request `contextBytes: 4`, and assert before-context clips at that file start with `clippedAtStart: true`. For whole-ROM, prove context is clipped only at offset 0/file size.
 
-For component scope, request `contextBytes: 4` around a hit near the selected component start/end and assert `beforeHex`/`afterHex` are clipped to the deterministic containing component and `clippedAtStart`/`clippedAtEnd` accurately reflect clipping.
+- [ ] **Step 3: Add source-integrity RED tests**
 
-For whole-ROM, prove context can cross ordinary component/structure boundaries and is clipped only at offsets `0` and `map.fileSize`.
+Define the pattern explicitly:
 
-- [ ] **Step 4: Add source-integrity RED tests**
+```ts
+const pattern = { kind: "byte-signature", signature: "AA" } as const;
+```
 
 Pre-scan mismatch:
 
@@ -945,7 +924,7 @@ await assert.rejects(
 );
 ```
 
-Post-scan verification is deterministic through the dependency seam:
+Post-scan check through the deterministic hash dependency:
 
 ```ts
 let hashCalls = 0;
@@ -958,19 +937,17 @@ await assert.rejects(
 assert.equal(hashCalls, 2);
 ```
 
-Also prove the second hash is attempted when the matcher/read path throws by using a fixture that is truncated after map creation or a narrow injected hash sequence plus an invalidated read, and assert the original read error is returned only when the post-hash still matches.
-
-- [ ] **Step 5: Prove RED**
+- [ ] **Step 4: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-pattern-search.test.ts
 ```
 
-Expected: FAIL because the top-level service does not exist.
+Expected: FAIL because `pattern-search.ts` does not exist.
 
-- [ ] **Step 6: Implement defaults and integrity envelope**
+- [ ] **Step 5: Implement defaults, compiler/scope composition, and the integrity envelope**
 
-Defaults are exact:
+Defaults:
 
 ```ts
 const offset = options.offset ?? 0;
@@ -979,46 +956,38 @@ const maxScanBytes = options.maxScanBytes ?? 64 * 1024 * 1024;
 const contextBytes = options.contextBytes ?? 0;
 ```
 
-Validate `contextBytes` as safe integer `0..64`, else `pattern-search-limit-exceeded`.
+Validate `contextBytes` as a safe integer in `0..64` or throw `pattern-search-limit-exceeded`.
 
-Before opening/reading, hash `map.romPath` and require equality with `map.sha256`. Open one file handle, run the scan and context reads, capture success/error, close the handle, then hash again before returning/rethrowing. If the final hash differs, throw `NdsError("invalid-rom", "Source ROM changed during pattern search")` even if the scan otherwise succeeded.
+Use the same outcome structure as `withValidatedNdsRomReader`: hash before, open file, run scan/context reads while capturing success/error, close file in `finally`, hash after, then either throw changed-ROM `invalid-rom`, rethrow the original scan error, or return success.
 
-- [ ] **Step 7: Compose compiler, scope, and matcher**
+The injected dependency may replace only `hashFileSha256`; filesystem reading always uses production `open`/`readExact`.
 
-Compile the public pattern, resolve the scope, and create `readAt` using `readExact(handle, offset, length, "NDS pattern search")`. Pass the exact matcher defaults/options. Keep the compiled pattern local; do not expose an arbitrary read primitive publicly.
+- [ ] **Step 6: Implement result records and context reads**
 
-- [ ] **Step 8: Build full hit records**
-
-For each returned `matchOffset`:
+Compile once, resolve scope once, call `scanNdsPatternMatches`, then for every returned offset read the exact matched bytes and create:
 
 ```ts
-const endOffset = matchOffset + compiled.bytes.length;
-const matchedBytes = await readExact(handle, matchOffset, compiled.bytes.length, "NDS pattern hit");
+{
+  romOffset,
+  endOffset: romOffset + compiled.bytes.length,
+  length: compiled.bytes.length,
+  bytesHex: matchedBytes.toString("hex"),
+  owners: ownersForNdsPatternHit(map, romOffset, endOffset),
+}
 ```
 
-Return lowercase `bytesHex`, `ownersForNdsPatternHit(map, matchOffset, endOffset)`, and context only when `contextBytes > 0`.
+When `contextBytes > 0`, component scope uses `selectPatternContextComponent()` and clamps context to that component. Whole-ROM clamps to `[0,map.fileSize)`. `clippedAtStart` / `clippedAtEnd` compare requested vs clamped bounds. Context reads do not modify `scannedBytes`.
 
-For component context use `selectPatternContextComponent()`. Compute requested context bounds, clamp to the chosen component. For whole-ROM clamp to `[0,map.fileSize)`. Set clip booleans by comparing unclamped and clamped bounds.
-
-Context reads do not alter `scannedBytes`.
-
-- [ ] **Step 9: Verify GREEN and related NDS regressions**
+- [ ] **Step 7: Run GREEN and related regressions**
 
 ```bash
-node --test --import tsx \
-  tests/nds-patterns.test.ts \
-  tests/nds-pattern-scope.test.ts \
-  tests/nds-pattern-ownership.test.ts \
-  tests/nds-pattern-match.test.ts \
-  tests/nds-pattern-search.test.ts \
-  tests/nds-resolver.test.ts \
-  tests/nds-extraction.test.ts
+node --test --import tsx tests/nds-patterns.test.ts tests/nds-pattern-scope.test.ts tests/nds-pattern-ownership.test.ts tests/nds-pattern-match.test.ts tests/nds-pattern-search.test.ts tests/nds-resolver.test.ts tests/nds-extraction.test.ts
 npm run typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/services/nds/pattern-search.ts tests/nds-pattern-search.test.ts
@@ -1034,21 +1003,13 @@ git commit -m "feat: add canonical NDS pattern search service"
 - Modify: `src/index.ts`
 - Modify: `tests/nds-tools.test.ts`
 
-**Interfaces:**
-- Consumes: `NdsSearchPattern`, `NdsPatternSearchScope`, `searchNdsPattern()`, standard `boundedTextResult()`/`ndsErrorResult()` helpers.
-- Produces: public MCP tool `nds_search_pattern` with exactly the approved fields/defaults.
+**Interfaces:** public MCP tool `nds_search_pattern`.
 
-- [ ] **Step 1: Extend tool-registration tests first**
+- [ ] **Step 1: Write failing registration/schema tests**
 
-Update `EXPECTED_TOOLS` in `tests/nds-tools.test.ts` to include:
+Add `"nds_search_pattern"` to `EXPECTED_TOOLS` and require exactly twelve registrations.
 
-```ts
-"nds_search_pattern",
-```
-
-and rename the registration test to exactly twelve tools.
-
-Add schema tests:
+Assert defaults:
 
 ```ts
 assert.deepEqual(server.parse("nds_search_pattern", {
@@ -1066,11 +1027,9 @@ assert.deepEqual(server.parse("nds_search_pattern", {
 });
 ```
 
-Prove schema maxes reject `limit: 1001`, `offset: 100000`, `maxScanBytes: 512*1024*1024 + 1`, and `contextBytes: 65`.
+Assert schema rejection for `limit:1001`, `offset:100000`, `maxScanBytes:512*1024*1024+1`, `contextBytes:65`, and integer alignment `3`.
 
-Prove nested integer alignment accepts only `1 | 2 | 4`.
-
-For forbidden generic surface, assert the top-level schema has no:
+Assert no top-level schema fields named:
 
 ```ts
 for (const forbidden of [
@@ -1081,39 +1040,21 @@ for (const forbidden of [
 }
 ```
 
-- [ ] **Step 2: Add handler RED tests**
+- [ ] **Step 2: Write failing handler/error/output-bound tests**
 
-Use a fixture with `AA AA AA` in ARM9 main. Invoke:
+Build an ARM9 fixture with `AA AA AA`, invoke the tool, and assert offsets `[0x200,0x201]`. Add malformed-pattern and empty-component-scope calls and require error categories `invalid-pattern` and `invalid-pattern-scope` with corrective actions. Register with a very small `maxOutputBytes`, request many hits/context, and require existing `output-bound-exceeded` handling.
 
-```ts
-const body = resultBody(await server.invoke("nds_search_pattern", {
-  rom,
-  pattern: { kind: "byte-signature", signature: "AA AA" },
-  scope: { kind: "components", arm9Main: true },
-  limit: 10,
-}));
-assert.equal(body.status, "complete");
-assert.deepEqual(
-  (body.matches as Array<Record<string, unknown>>).map((hit) => hit.romOffset),
-  [0x200, 0x201],
-);
-```
-
-Add tool error tests for malformed pattern and empty scope, asserting `isError === true`, categories `invalid-pattern` / `invalid-pattern-scope`, and non-empty corrective actions.
-
-Add a tiny `maxOutputBytes` test with context/many hits and assert existing `output-bound-exceeded` behavior.
-
-- [ ] **Step 3: Prove RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-tools.test.ts
 ```
 
-Expected: FAIL because the twelfth tool/schema/handlers do not exist.
+Expected: FAIL because the twelfth tool does not exist.
 
-- [ ] **Step 4: Add bounded Zod schemas**
+- [ ] **Step 4: Add exact Zod schemas**
 
-In `src/tools/nds.ts`, define nested discriminated unions:
+Use:
 
 ```ts
 const patternSchema = z.discriminatedUnion("kind", [
@@ -1144,53 +1085,61 @@ const patternScopeSchema = z.discriminatedUnion("kind", [
 ]);
 ```
 
-Service-level validation still enforces combined selector totals and non-empty components.
+Add scalar schemas for exact defaults/maxes. Service-level validation still enforces combined selector totals and non-empty component scope.
 
-Add scalar schemas with exact defaults/maxes.
+- [ ] **Step 5: Register the exact handler and corrective actions**
 
-- [ ] **Step 5: Register the handler and corrective actions**
-
-Import `searchNdsPattern`. Register:
+Register:
 
 ```ts
 server.tool(
   "nds_search_pattern",
   "Search one bounded exact/wildcard byte signature, typed integer, ASCII string, or UTF-16LE string in a validated Nintendo DS ROM without mutation or heuristic inference.",
-  { rom, pattern, scope, offset, limit, maxScanBytes, contextBytes },
-  async (...) => { ... },
+  {
+    rom: romSchema,
+    pattern: patternSchema,
+    scope: patternScopeSchema,
+    offset: z.number().int().min(0).max(99999).default(0),
+    limit: z.number().int().min(1).max(1000).default(100),
+    maxScanBytes: z.number().int().min(1).max(512 * 1024 * 1024).default(64 * 1024 * 1024),
+    contextBytes: z.number().int().min(0).max(64).default(0),
+  },
+  async ({ rom, pattern, scope, offset, limit, maxScanBytes, contextBytes }) => {
+    const operation = "nds_search_pattern";
+    try {
+      const map = await readNdsRomMap(resolveRom(config, rom));
+      const result = await searchNdsPattern(map, pattern, scope, {
+        offset,
+        limit,
+        maxScanBytes,
+        contextBytes,
+      });
+      return boundedTextResult(config, operation, {
+        rom: relativeWorkspacePath(config, map.romPath),
+        sha256: map.sha256,
+        ...result,
+      });
+    } catch (error) {
+      return ndsErrorResult(config, operation, error, "invalid-rom");
+    }
+  },
 );
 ```
 
-Handler flow:
+Extend `correctiveAction()` for the three new categories without changing existing actions.
 
-```ts
-const map = await readNdsRomMap(resolveRom(config, rom));
-const result = await searchNdsPattern(map, pattern, scope, {
-  offset, limit, maxScanBytes, contextBytes,
-});
-return boundedTextResult(config, operation, {
-  rom: relativeWorkspacePath(config, map.romPath),
-  sha256: map.sha256,
-  ...result,
-});
-```
+- [ ] **Step 6: Update `server_capabilities`**
 
-Extend `correctiveAction()` with the three exact new categories. Use `invalid-rom` as the fallback category only for unexpected non-`NdsError` failures in this handler.
+Insert `nds_search_pattern` exactly once in the tool array after `nds_find_xrefs`. Update `ndsStaticAnalysisPolicy` to allow bounded validated-NDS pattern search while still explicitly prohibiting generic binary pattern search. Do not change debugger/runtime policies.
 
-- [ ] **Step 6: Update server capabilities**
-
-In `src/index.ts`, insert `nds_search_pattern` after the existing NDS reference/xref tools. Update `ndsStaticAnalysisPolicy` to state that bounded deterministic raw pattern search is allowed only over validated NDS canonical components or explicit whole-ROM scope, while **generic binary** pattern search remains prohibited.
-
-Do not change debugger/runtime policies.
-
-- [ ] **Step 7: Verify GREEN**
+- [ ] **Step 7: Run GREEN**
 
 ```bash
 node --test --import tsx tests/nds-tools.test.ts
 npm run typecheck
 ```
 
-Expected: PASS with exactly twelve NDS tool registrations.
+Expected: PASS with exactly twelve NDS registrations.
 
 - [ ] **Step 8: Commit**
 
@@ -1207,75 +1156,67 @@ git commit -m "feat: expose bounded NDS pattern search tool"
 - Modify: `scripts/check-install.mjs`
 - Modify: `tests/package-capstone-install.test.ts`
 
-**Interfaces:**
-- Consumes: compiled `dist/services/nds/rom-map.js`, `dist/services/nds/pattern-search.js`; existing package verifier.
-- Produces: assembled-bundle smoke proof of compiler + real file search + overlapping hits + canonical ownership.
+- [ ] **Step 1: Write failing package-verifier assertions**
 
-- [ ] **Step 1: Extend package-verifier source tests first**
-
-Add a test requiring:
+Add:
 
 ```ts
-for (const required of [
-  "dist/services/nds/pattern-search.js",
-  "dist/services/nds/rom-map.js",
-  "Packaged NDS pattern overlap smoke failed",
-  "Packaged NDS pattern ownership smoke failed",
-]) {
-  assert.equal(source.includes(required), true, required);
-}
+test("install verifier smoke-searches packaged NDS patterns", async () => {
+  const source = await readFile(path.resolve("scripts/check-install.mjs"), "utf8");
+  for (const required of [
+    "dist/services/nds/pattern-search.js",
+    "dist/services/nds/rom-map.js",
+    "Packaged NDS pattern overlap smoke failed",
+    "Packaged NDS pattern ownership smoke failed",
+  ]) {
+    assert.equal(source.includes(required), true, required);
+  }
+});
 ```
 
-Keep all existing Capstone/WASM/reference smoke assertions unchanged.
+Keep all existing Capstone/WASM/reference checks unchanged.
 
-- [ ] **Step 2: Prove RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/package-capstone-install.test.ts
 ```
 
-Expected: FAIL because packaged pattern-search assets/smoke messages are not required yet.
+Expected: FAIL because pattern-search packaged checks are absent.
 
-- [ ] **Step 3: Require the compiled pattern-search asset**
+- [ ] **Step 3: Extend assembled required/imported files**
 
-In `scripts/check-install.mjs`, add:
+Add `dist/services/nds/pattern-search.js` and `dist/services/nds/rom-map.js` to `required`. Dynamically import `searchNdsPattern` and `readNdsRomMap` from assembled `dist` URLs.
 
-```js
-"dist/services/nds/pattern-search.js",
-"dist/services/nds/rom-map.js",
-```
+- [ ] **Step 4: Create and remove a tiny valid NDS fixture inside `check-install.mjs`**
 
-to `required` and dynamically import `searchNdsPattern` / `readNdsRomMap` from those compiled paths.
-
-- [ ] **Step 4: Create a tiny valid NDS fixture inside the assembled verifier**
-
-Use only Node built-ins (`mkdtemp`, `writeFile`, `rm`, `os.tmpdir`, `path.join`). Allocate `Buffer.alloc(0x1000)` and write the minimum canonical header fields:
+Import `mkdtemp`, `writeFile`, `rm` from `node:fs/promises` and `os` from `node:os`. Create `Buffer.alloc(0x1000)` and write:
 
 ```js
-fixture.writeUInt32LE(0x200, 0x20);      // ARM9 ROM
-fixture.writeUInt32LE(0x02000000, 0x24); // ARM9 entry
-fixture.writeUInt32LE(0x02000000, 0x28); // ARM9 RAM
-fixture.writeUInt32LE(0x20, 0x2c);       // ARM9 size
-fixture.writeUInt32LE(0x300, 0x30);      // ARM7 ROM
-fixture.writeUInt32LE(0x03800000, 0x34); // ARM7 entry
-fixture.writeUInt32LE(0x03800000, 0x38); // ARM7 RAM
-fixture.writeUInt32LE(0x20, 0x3c);       // ARM7 size
-fixture.writeUInt32LE(0x400, 0x40);      // FNT offset, size remains 0
-fixture.writeUInt32LE(0x500, 0x48);      // FAT offset, size remains 0
-fixture.writeUInt32LE(0x600, 0x50);      // ARM9 overlay table, size 0
-fixture.writeUInt32LE(0x700, 0x58);      // ARM7 overlay table, size 0
-fixture.writeUInt32LE(0x800, 0x68);      // banner offset only
+fixture.writeUInt32LE(0x200, 0x20);
+fixture.writeUInt32LE(0x02000000, 0x24);
+fixture.writeUInt32LE(0x02000000, 0x28);
+fixture.writeUInt32LE(0x20, 0x2c);
+fixture.writeUInt32LE(0x300, 0x30);
+fixture.writeUInt32LE(0x03800000, 0x34);
+fixture.writeUInt32LE(0x03800000, 0x38);
+fixture.writeUInt32LE(0x20, 0x3c);
+fixture.writeUInt32LE(0x400, 0x40);
+fixture.writeUInt32LE(0x500, 0x48);
+fixture.writeUInt32LE(0x600, 0x50);
+fixture.writeUInt32LE(0x700, 0x58);
+fixture.writeUInt32LE(0x800, 0x68);
 fixture.set([0xaa, 0xaa, 0xaa], 0x200);
 ```
 
-Write it to a temporary `.nds`, parse it with packaged `readNdsRomMap`, and remove the temporary directory in `finally`.
+Write it under a temp directory, parse with packaged `readNdsRomMap`, and remove the directory in `finally`.
 
-- [ ] **Step 5: Smoke-search the compiled service**
+- [ ] **Step 5: Smoke the compiled search service**
 
 Call:
 
 ```js
-const patternResult = await searchNdsPattern(
+const result = await searchNdsPattern(
   patternMap,
   { kind: "byte-signature", signature: "AA ??" },
   { kind: "components", arm9Main: true },
@@ -1283,13 +1224,11 @@ const patternResult = await searchNdsPattern(
 );
 ```
 
-Require exact overlapping starts `[0x200, 0x201]`; otherwise throw `Packaged NDS pattern overlap smoke failed`.
+Require exact offsets `[0x200,0x201]`, else throw `Packaged NDS pattern overlap smoke failed`. Require first-hit owner `arm9-main` with runtime address `0x02000000`, else throw `Packaged NDS pattern ownership smoke failed`.
 
-Require the first hit has an owner with `kind === "arm9-main"` and `runtimeAddress === 0x02000000`; otherwise throw `Packaged NDS pattern ownership smoke failed`.
+The smoke must not import `src/` or `tests/helpers`.
 
-This smoke must use assembled `dist` files only, never `src/` or test fixtures.
-
-- [ ] **Step 6: Verify GREEN locally/source-side**
+- [ ] **Step 6: Run GREEN**
 
 ```bash
 npm run build
@@ -1297,7 +1236,7 @@ node --test --import tsx tests/package-capstone-install.test.ts
 node scripts/check-install.mjs .
 ```
 
-Expected: PASS with existing Capstone/reference smoke behavior plus the new pattern-search smoke.
+Expected: PASS including existing Capstone/reference smoke checks.
 
 - [ ] **Step 7: Commit**
 
@@ -1312,36 +1251,20 @@ git commit -m "test: smoke packaged NDS pattern search"
 
 **Files:**
 - Modify: `README.md`
-- Test: source/document checks via `grep` plus full verification.
 
-**Interfaces:**
-- Consumes: final public tool/schema/result semantics from Tasks 1-7.
-- Produces: documented twelfth NDS static tool and exact behavior/limits.
+- [ ] **Step 1: Document the twelfth NDS tool and exact pattern syntax**
 
-- [ ] **Step 1: Update the NDS tool list and capability narrative**
+Add `nds_search_pattern` to the tool list. Document `12 34 56 78`, `12 34 ?? 78`, typed integers, ASCII, UTF-16LE, and explicitly state no nibble wildcard, regex, case folding, normalization, alternate encoding, or implicit terminator.
 
-Document `nds_search_pattern` alongside the existing eleven NDS tools. State explicitly that it is NDS-aware and read-only, not a generic binary scanner.
+- [ ] **Step 2: Document scope, ownership, and boundary semantics**
 
-- [ ] **Step 2: Document exact pattern syntax**
+Explain canonical component combinations, explicit `whole-rom`, physical deduplication, full-span component containment, compressed-overlay stored-byte search, full-span runtime mapping, and no inferred banner extent.
 
-Include examples:
+- [ ] **Step 3: Document limits, pagination, truncation, context, and security**
 
-```text
-12 34 56 78
-12 34 ?? 78
-```
+Include `4096` pattern bytes, `100/1000` result limit, `0/99999` offset, `64 MiB/512 MiB` scan bytes, `0/64` context, 100000 discovered-match ceiling, exact truncation reasons, non-resumable scan-byte truncation, `nextOffset` semantics, and the generic-binary prohibition.
 
-and typed integer/ASCII/UTF-16LE request examples. State no nibble wildcards, regex, case folding, normalization, alternate encodings, or implicit terminators.
-
-- [ ] **Step 3: Document scope and boundary semantics**
-
-Explain canonical component combinations, explicit `whole-rom`, compressed-overlay stored-byte behavior, deduplication of overlapping physical selections, and the rule that component matches require full containment by at least one selected component.
-
-- [ ] **Step 4: Document results, ownership, context, pagination, and limits**
-
-Include exact defaults/maxes, both truncation reasons, `offset` as match index, non-resumable scan-byte truncation, `discoveredMatches` established-only meaning, `nextOffset` meaning, full-span runtime mapping rule, context clipping, and the fact that banner ownership is not inferred from offset alone.
-
-- [ ] **Step 5: Verify documentation contains the required contract**
+- [ ] **Step 4: Verify docs and repository checks**
 
 ```bash
 grep -n "nds_search_pattern" README.md
@@ -1353,9 +1276,9 @@ grep -n "generic binary" README.md
 npm run check
 ```
 
-Expected: every grep finds the documented contract and `npm run check` passes.
+Expected: every grep finds the contract and `npm run check` exits 0.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add README.md
@@ -1367,28 +1290,17 @@ git commit -m "docs: document NDS pattern discovery"
 ### Task 9: Final regression, package, and scope audit
 
 **Files:**
-- No planned production changes. Fix only defects proven by the final verification; any fix must receive its own RED test and commit.
-
-**Interfaces:**
-- Consumes: complete milestone.
-- Produces: verified branch ready for code review/PR with no unsupported platform claim.
+- No planned production changes. Any final defect fix must start with a failing regression test and receive a separate commit.
 
 - [ ] **Step 1: Run focused milestone tests**
 
 ```bash
-node --test --import tsx \
-  tests/nds-patterns.test.ts \
-  tests/nds-pattern-scope.test.ts \
-  tests/nds-pattern-ownership.test.ts \
-  tests/nds-pattern-match.test.ts \
-  tests/nds-pattern-search.test.ts \
-  tests/nds-tools.test.ts \
-  tests/package-capstone-install.test.ts
+node --test --import tsx tests/nds-patterns.test.ts tests/nds-pattern-scope.test.ts tests/nds-pattern-ownership.test.ts tests/nds-pattern-match.test.ts tests/nds-pattern-search.test.ts tests/nds-tools.test.ts tests/package-capstone-install.test.ts
 ```
 
 Expected: PASS.
 
-- [ ] **Step 2: Run complete repository verification**
+- [ ] **Step 2: Run complete verification**
 
 ```bash
 npm run typecheck
@@ -1398,63 +1310,58 @@ npm run check
 node scripts/check-install.mjs .
 ```
 
-Expected: every command exits 0.
+Expected: all commands exit 0.
 
-- [ ] **Step 3: Audit dependency and forbidden-surface stability**
+- [ ] **Step 3: Audit dependencies and milestone diff**
 
 ```bash
 git diff -- package.json package-lock.json
 git diff --name-only e3769d2756364dd2f2546536b3015e86c7b73473...HEAD
 ```
 
-Expected:
+Expected: dependency diff empty. Changed production files are confined to new NDS pattern services, `errors.ts`, exported header constant, NDS tool/capability wiring, package smoke, README, design/plan docs, and tests. No DeSmuME, Capstone, disassembly, CFG, reference, or xref production implementation file changes.
 
-- dependency diff is empty;
-- changed production files are confined to NDS pattern services, `errors.ts`, exported header constant, NDS tool/capability wiring, package smoke, README/docs/tests;
-- no DeSmuME GDB/controller/runtime implementation file changed;
-- no Capstone/disassembly/CFG/reference/xref production file changed.
-
-- [ ] **Step 4: Inspect public tool surface mechanically**
+- [ ] **Step 4: Mechanically inspect public tool surface**
 
 ```bash
-grep -n '"nds_' src/index.ts
+grep -n 'nds_search_pattern' src/index.ts src/tools/nds.ts README.md
 grep -n 'server.tool(' src/tools/nds.ts
 ```
 
-Expected: `nds_search_pattern` is present exactly once in capabilities and exactly once as a registration, and the NDS tool test proves exactly twelve registrations.
+Expected: capability and registration each contain the new tool exactly once; `tests/nds-tools.test.ts` proves twelve NDS registrations.
 
-- [ ] **Step 5: Run GitHub Actions verification on the final branch head**
+- [ ] **Step 5: Require final GitHub Actions evidence**
 
-Push the final branch/PR head and require both repository workflows used by prior milestones:
+Push the final branch/PR head and require both workflows used by prior milestones:
 
-- CI: success;
+- CI: success.
 - Package: success, including `Assemble and smoke-test self-contained bundle`.
 
-Do not claim post-merge `main` verification unless a separate run is actually visible after merge.
+Do not claim post-merge `main` verification unless a separate post-merge run is actually visible.
 
-- [ ] **Step 6: Review only the milestone diff**
+- [ ] **Step 6: Review the milestone diff**
 
-Request code review against baseline `e3769d2756364dd2f2546536b3015e86c7b73473`. Any accepted defect fix must add/adjust a failing regression test first, then rerun Steps 1-5.
+Request code review against baseline `e3769d2756364dd2f2546536b3015e86c7b73473`. Any accepted defect fix must add or adjust a failing regression test first, then rerun Steps 1-5.
 
 - [ ] **Step 7: Prepare merge summary**
 
-The final summary must state:
+The summary must state:
 
 - `nds_search_pattern` is the twelfth NDS static-analysis tool;
-- supported pattern kinds and exact limits;
-- component/whole-ROM boundary semantics;
+- exact supported pattern kinds and bounds;
+- component vs whole-ROM boundary semantics;
 - compressed overlays are searched only as stored bytes;
-- pattern hits do not imply pointers/references/functions/tables;
-- all final CI/package evidence by run number/status;
+- pattern hits do not imply pointers, references, functions, or tables;
+- final CI/package run numbers and statuses;
 - physical Intel Catalina/DeSmuME acceptance remains separate.
 
 ---
 
 ## Execution Notes
 
-- Use TDD for every implementation task: RED test → minimal GREEN implementation → focused verification → commit.
-- Use frequent task-sized commits; do not collapse all milestone work into one commit.
-- Because repository execution/verification may be mediated through GitHub Actions, refresh the branch head before every write if a message stream interruption occurs. Never replay a stale write over a delayed landed commit.
-- If a GitHub contents write returns a stale-SHA/409 conflict, refetch the branch/file and reconcile the already-landed content before retrying.
-- Do not broaden scope to regex, multi-pattern databases, decompression, arbitrary ranges, generic binaries, or runtime search when implementing convenience behavior.
-- Native Intel Catalina/DeSmuME acceptance is not part of this implementation plan and is not a blocker for this static-analysis milestone.
+- Use RED test → minimal GREEN implementation → focused verification → commit for every implementation task.
+- Keep task-sized commits; do not collapse the milestone into one implementation commit.
+- Refresh the GitHub branch head before every write after any message-stream interruption. Reconcile delayed landed commits before retrying a stale write.
+- If a GitHub contents write returns stale-SHA/409, refetch the branch/file and reconcile before retrying.
+- Do not broaden scope to regex, multi-pattern databases, decompression, arbitrary ranges, generic binaries, or runtime memory search.
+- Native Intel Catalina/DeSmuME acceptance is not part of this plan and is not a blocker for this static-analysis milestone.
