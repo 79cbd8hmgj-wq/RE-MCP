@@ -166,9 +166,16 @@ function looksLikeProjectLock(stderr: string): boolean {
   return /LockException|write-lock|project[^\n]*locked|already[^\n]*open/iu.test(stderr);
 }
 
+function combinedOutput(result: RunResult): string {
+  return `${result.stdout}\n${result.stderr}`;
+}
+
 function hasReportedImportFailure(result: RunResult): boolean {
-  const output = `${result.stdout}\n${result.stderr}`;
-  return /REPORT:\s+(?:Save failed for:|Import failed\b)/iu.test(output);
+  return /REPORT:\s+(?:Save failed for:|Import failed\b)/iu.test(combinedOutput(result));
+}
+
+function hasReportedScriptError(result: RunResult): boolean {
+  return /REPORT SCRIPT ERROR:/u.test(combinedOutput(result));
 }
 
 function diagnosticTail(value: string): {
@@ -235,6 +242,14 @@ export async function runGhidraInvocation(
         ? "ghidra-import-failed"
         : "ghidra-analysis-failed",
       `${invocation.stage} failed with exit code ${result.exitCode ?? "null"}${result.signal === null ? "" : ` and signal ${result.signal}`}${failureDiagnostics(result)}`,
+    );
+  }
+  if (hasReportedScriptError(result)) {
+    throw new NdsError(
+      isImportStage(invocation.stage)
+        ? "ghidra-import-failed"
+        : "ghidra-analysis-failed",
+      `${invocation.stage} reported a Ghidra script error despite exit code 0${failureDiagnostics(result)}`,
     );
   }
   if (isImportStage(invocation.stage) && hasReportedImportFailure(result)) {
