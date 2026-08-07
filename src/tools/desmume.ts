@@ -146,6 +146,10 @@ export function registerDesmumeTools(
   manager: OwnedProcessManager,
   debuggerController: DebugController = createDesmumeDebugController(config, manager),
 ): DebugController {
+  manager.onExit(() => {
+    void debuggerController.reset("Owned DeSmuME process exited").catch(() => undefined);
+  });
+
   server.tool(
     "desmume_status",
     "Report the single DeSmuME process owned by this RE-MCP server instance.",
@@ -460,8 +464,11 @@ export function registerDesmumeTools(
 
   server.tool("desmume_stop", "Stop only the owned DeSmuME process.", {}, async () => {
     try {
+      const wasRunning = manager.status().running;
       const status = await manager.stop();
-      await debuggerController.reset("Owned DeSmuME process stopped");
+      if (!wasRunning) {
+        await debuggerController.reset("Owned DeSmuME process stopped");
+      }
       return textResult(status);
     } catch (error) {
       return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
