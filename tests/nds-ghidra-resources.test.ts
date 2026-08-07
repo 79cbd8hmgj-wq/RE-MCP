@@ -73,11 +73,17 @@ test("Ghidra preparation contract owns exact program identity, manifest-backed o
   assert.match(source, /setExecute\(true\)/);
   assert.match(source, /getProgramContext\s*\(\)/);
   assert.match(source, /getRegister\s*\(\s*"TMode"\s*\)/);
+  assert.match(source, /getValue\s*\(/, "reruns must inspect existing mode context before rewriting it");
   assert.match(source, /setValue\s*\(/);
   assert.match(source, /BigInteger\.ONE|BigInteger\.ZERO/);
+  assert.match(
+    source,
+    /validateOwnedValue\s*\(\s*info\s*,\s*KEY_BRIDGE_FORMAT/u,
+    "prepare must reject conflicting bridge-format ownership metadata",
+  );
 });
 
-test("Ghidra evidence contract records exact entry, mode, overlay, and call evidence", async () => {
+test("Ghidra evidence contract records exact entry, mode, overlay, and isolated call evidence", async () => {
   const source = (await sources())["ReMcpImportEvidence.java"];
   for (const key of [
     "re-mcp.function-id",
@@ -93,6 +99,7 @@ test("Ghidra evidence contract records exact entry, mode, overlay, and call evid
   assert.match(source, /addMemoryReference\s*\(/);
   assert.match(source, /RefType\.UNCONDITIONAL_CALL/);
   assert.match(source, /SourceType\.IMPORTED/);
+  assert.match(source, /Reference\.OTHER/, "RE-MCP evidence must not occupy Ghidra's mnemonic/operand reference slot");
   assert.doesNotMatch(source, /setBody\s*\(/);
 });
 
