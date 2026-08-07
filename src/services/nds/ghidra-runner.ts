@@ -19,6 +19,7 @@ import type { NdsRomMap } from "./rom-map.js";
 export type { ValidatedGhidraInstallation } from "./ghidra-installation.js";
 
 const DEFAULT_GHIDRA_TIMEOUT_MS = 900_000;
+const GHIDRA_DIAGNOSTIC_STREAM_BYTES = 4 * 1024;
 
 export interface GhidraInvocationInput {
   readonly installation: ValidatedGhidraInstallation;
@@ -165,6 +166,33 @@ function looksLikeProjectLock(stderr: string): boolean {
   return /LockException|write-lock|project[^\n]*locked|already[^\n]*open/iu.test(stderr);
 }
 
+function diagnosticTail(value: string): {
+  readonly text: string;
+  readonly clipped: boolean;
+} {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.length <= GHIDRA_DIAGNOSTIC_STREAM_BYTES) {
+    return { text: value.trim(), clipped: false };
+  }
+  return {
+    text: encoded.subarray(encoded.length - GHIDRA_DIAGNOSTIC_STREAM_BYTES).toString("utf8").trim(),
+    clipped: true,
+  };
+}
+
+function failureDiagnostics(result: RunResult): string {
+  const sections: string[] = [];
+  for (const [name, value] of [["stdout", result.stdout], ["stderr", result.stderr]] as const) {
+    if (value.length === 0) continue;
+    const tail = diagnosticTail(value);
+    const clipping = tail.clipped
+      ? ` [diagnostic clipped to last ${GHIDRA_DIAGNOSTIC_STREAM_BYTES} bytes]`
+      : "";
+    sections.push(`${name}${clipping}:\n${tail.text}`);
+  }
+  return sections.length === 0 ? "" : `\n${sections.join("\n")}`;
+}
+
 export async function runGhidraInvocation(
   invocation: GhidraInvocation,
   config: ServerConfig,
@@ -194,14 +222,14 @@ export async function runGhidraInvocation(
     if (looksLikeProjectLock(result.stderr)) {
       throw new NdsError(
         "ghidra-project-locked",
-        `${invocation.stage} could not obtain the Ghidra project write lock`,
+        `${invocation.stage} could not obtain the Ghidra project write lock${failureDiagnostics(result)}`,
       );
     }
     throw new NdsError(
       isImportStage(invocation.stage)
         ? "ghidra-import-failed"
         : "ghidra-analysis-failed",
-      `${invocation.stage} failed with exit code ${result.exitCode ?? "null"}${result.signal === null ? "" : ` and signal ${result.signal}`}`,
+      `${invocation.stage} failed with exit code ${result.exitCode ?? "null"}${result.signal === null ? "" : ` and signal ${result.signal}`}${failureDiagnostics(result)}`,
     );
   }
 
