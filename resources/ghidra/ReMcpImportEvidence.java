@@ -22,10 +22,6 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressFactory;
 import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.listing.Program;
-import ghidra.program.model.symbol.RefType;
-import ghidra.program.model.symbol.Reference;
-import ghidra.program.model.symbol.ReferenceManager;
-import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.util.PropertyMapManager;
 import ghidra.program.model.util.StringPropertyMap;
 
@@ -115,7 +111,6 @@ public class ReMcpImportEvidence extends GhidraScript {
             Map<String, JsonObject> functionsById,
             Map<Integer, String> overlaySpaces,
             StringPropertyMap callEvidence) {
-        ReferenceManager references = currentProgram.getReferenceManager();
         for (JsonElement element : requireArray(discovery, "calls")) {
             JsonObject call = element.getAsJsonObject();
             String callerId = requireString(call, "callerFunctionId");
@@ -130,28 +125,15 @@ public class ReMcpImportEvidence extends GhidraScript {
             JsonObject calleeEntry = requireObject(callee, "entry");
             long instructionAddress = requireUint32(call, "instructionAddress");
             Address from = componentAddress(callerEntry, instructionAddress, overlaySpaces);
-            Address to = identityAddress(calleeEntry, overlaySpaces);
-            callEvidence.add(from, gson.toJson(call));
 
-            boolean exact = false;
-            for (Reference reference : references.getReferencesFrom(from)) {
-                if (
-                    reference.isMemoryReference()
-                    && reference.getToAddress().equals(to)
-                    && reference.getReferenceType().isCall()
-                ) {
-                    exact = true;
-                    break;
-                }
-            }
-            if (!exact && !references.hasReferencesFrom(from, 0)) {
-                references.addMemoryReference(
-                    from,
-                    to,
-                    RefType.UNCONDITIONAL_CALL,
-                    SourceType.IMPORTED,
-                    0);
-            }
+            // Resolve the callee identity to ensure the exact target belongs to a canonical,
+            // available main/overlay address space.  RE-MCP intentionally does not create a
+            // Ghidra flow Reference here: ProvenFunctionCallEdge proves the exact source/target
+            // relationship but does not retain conditional-vs-unconditional execution semantics.
+            // Normal Ghidra auto-analysis may derive its own correctly typed flow reference later;
+            // that Ghidra-derived reference remains non-authoritative to RE-MCP.
+            identityAddress(calleeEntry, overlaySpaces);
+            callEvidence.add(from, gson.toJson(call));
         }
     }
 
