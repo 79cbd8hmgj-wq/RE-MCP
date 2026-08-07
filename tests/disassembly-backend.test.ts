@@ -36,7 +36,7 @@ test("decodes known ARM and Thumb instructions", async () => {
   }
 });
 
-test("normalizes ARM and Thumb PC-relative operands from structured detail", async () => {
+test("normalizes PC-relative semantics when Capstone 5.0.9 omits operand detail", async () => {
   const backend = await createCapstoneArmBackend();
   try {
     const armLiteral = backend.decodeOne(
@@ -64,10 +64,6 @@ test("normalizes ARM and Thumb PC-relative operands from structured detail", asy
     assert.ok(thumbLiteral);
     assert.ok(armAdd);
     assert.ok(thumbAdr);
-    console.log("ARM_LITERAL_DIAGNOSTIC", JSON.stringify(armLiteral));
-    console.log("THUMB_LITERAL_DIAGNOSTIC", JSON.stringify(thumbLiteral));
-    console.log("ARM_ADD_DIAGNOSTIC", JSON.stringify(armAdd));
-    console.log("THUMB_ADR_DIAGNOSTIC", JSON.stringify(thumbAdr));
 
     assert.deepEqual(armLiteral.pcRelative, {
       kind: "literal-load",
