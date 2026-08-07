@@ -69,6 +69,8 @@ test("Ghidra preparation contract owns exact program identity, manifest-backed o
   assert.match(source, /not-imported-compressed/);
   assert.match(source, /spaceName/);
   assert.match(source, /bssSize/);
+  assert.match(source, /getAddressInThisSpaceOnly\s*\(\s*bssOffset\s*\)/,
+    "BSS beyond the initialized overlay region must stay in the existing overlay address space");
   assert.match(source, /setExecute\(true\)/);
   assert.match(source, /getProgramContext\s*\(\)/);
   assert.match(source, /getRegister\s*\(\s*"TMode"\s*\)/);
@@ -111,6 +113,11 @@ test("Ghidra analysis-record contract validates the declared result and writes g
   assert.match(source, /sourceRomSha256/);
   assert.match(source, /programName/);
   assert.match(source, /ghidraVersion/);
+  assert.match(source, /validateImportedOverlay\s*\(/,
+    "recording complete analysis must revalidate every manifest-declared importable overlay");
+  assert.match(source, /MemoryBlock/);
+  assert.match(source, /isOverlay\s*\(\)/);
+  assert.match(source, /getAddressSpace\s*\(\)\.getName\s*\(\)/);
   assert.match(source, /normalize\s*\(\)/);
   assert.match(source, /Files\.writeString/);
   assert.match(source, /Files\.move/);
