@@ -62,9 +62,8 @@ test("Ghidra resource contract contains every RE-MCP-owned metadata key", async 
 test("Ghidra preparation contract owns exact program identity, manifest-backed overlays and proven mode context", async () => {
   const source = (await sources())["ReMcpPrepareProgram.java"];
   assert.match(source, /Program\.PROGRAM_INFO/);
-  assert.match(source, /currentProgram\.setName\s*\(/);
-  assert.match(source, /RE-MCP_ARM9/);
-  assert.match(source, /RE-MCP_ARM7/);
+  assert.match(source, /requireString\s*\(\s*processorManifest\s*,\s*"programName"\s*\)/);
+  assert.match(source, /currentProgram\.setName\s*\(\s*expectedProgramName\s*\)/);
   assert.match(source, /createInitializedBlock\s*\(/);
   assert.match(source, /createUninitializedBlock\s*\(/);
   assert.match(source, /not-imported-compressed/);
