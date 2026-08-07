@@ -45,8 +45,8 @@ Before Ghidra is launched, RE-MCP must verify all of the following:
 2. the current source ROM SHA-256 matches the canonical NDS map;
 3. the full-SHA Ghidra project has both `.gpr` and `.rep` markers;
 4. `latest-success.json` exists, belongs to the same full ROM SHA, and contains both ARM9 and ARM7 completed processors;
-5. `latest-run.json` also represents a complete matching success rather than an interrupted/reconciling run;
-6. no later `latest-failure.json` indicates a failed reconciliation after the last trusted success;
+5. `latest-run.json` also represents the same complete success rather than an interrupted/reconciling run;
+6. `latest-failure.json` does not exist (successful bootstrap removes it, so its presence means the latest known reconciliation is not fully trusted);
 7. the generated Ghidra bridge manifest exists and its actual SHA-256 matches the trusted success state's `manifestSha256`;
 8. the configured Ghidra installation validates successfully;
 9. the configured Ghidra version exactly matches the version recorded by the trusted project state.
@@ -77,7 +77,7 @@ Rules:
 - main executable addresses map to the canonical default program address space;
 - an uncompressed overlay maps to its deterministic RE-MCP Ghidra overlay space name derived internally from processor + overlay ID;
 - overlapping overlay runtime ranges without sufficient identity remain ambiguous and fail closed;
-- compressed overlays return `compressed-overlay-not-imported` because this milestone does not decompress them;
+- compressed overlays are rejected as `ghidra-address-not-inspectable` with metadata explaining that the overlay is not present in Ghidra because controlled decompression is not implemented;
 - runtime-only BSS may be inspected for address-level symbols/references when the corresponding overlay space exists, but it is not decompilable code merely because Ghidra can address it;
 - function/decompiler operations require a Ghidra-present executable main or uncompressed-overlay code identity;
 - callers cannot supply an arbitrary Ghidra address-space string.
@@ -379,7 +379,6 @@ unsupported-ghidra-version
 ghidra-language-unavailable
 ghidra-project-locked
 project-state-mismatch
-compressed-overlay-not-decodable / compressed-overlay-not-imported equivalent at tool boundary
 invalid-rom
 output-bound-exceeded
 ghidra-output-limit
@@ -413,7 +412,7 @@ Add focused tests for:
 
 - strict inspection-ready state validation;
 - refusal when project/bridge/state is missing or stale;
-- refusal after a later failed reconciliation;
+- refusal after a failed reconciliation;
 - exact configured-Ghidra-version match;
 - canonical main/overlay address-space selection;
 - ambiguity rejection;
