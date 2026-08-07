@@ -179,8 +179,7 @@ export async function scanNdsPatternMatches(
     }
   }
 
-  const scanLimitReached = !matchLimitReached
-    && scannedBytes < physicalBytes
+  const scanLimitReached = scannedBytes < physicalBytes
     && scannedBytes >= options.maxScanBytes;
   const truncationReasons: NdsPatternTruncationReason[] = [];
   if (scanLimitReached) truncationReasons.push("scan-byte-limit");
