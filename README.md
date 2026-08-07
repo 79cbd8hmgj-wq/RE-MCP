@@ -33,6 +33,8 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Build bounded direct-control-flow graphs across deterministic same-processor branch targets without recursively traversing calls
 - Classify deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address references
 - Find bounded reverse cross-references through proven code seeds with explicit component coverage and truncation status
+- Discover bounded ARM9/ARM7 function-entry call graphs using only program-entry and deterministic resolved direct-call proof
+- Prove one requested function entry and distinguish complete negative evidence from incomplete proof coverage before analyzing its CFG
 - Search validated NDS bytes for exact/wildcard signatures, typed integers, ASCII strings, and UTF-16LE strings using canonical component or explicit whole-ROM scope
 - Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
@@ -59,7 +61,7 @@ RE-MCP does **not** expose register writes, general memory writes, watchpoints, 
 
 ## NDS Static Analysis
 
-The static-analysis surface consists of twelve MCP tools:
+The static-analysis surface consists of fourteen MCP tools:
 
 - `nds_inspect_rom`
 - `nds_list_files`
@@ -73,6 +75,8 @@ The static-analysis surface consists of twelve MCP tools:
 - `nds_list_references`
 - `nds_find_xrefs`
 - `nds_search_pattern`
+- `nds_discover_functions`
+- `nds_analyze_function`
 
 These tools are native-independent and have no DeSmuME or GDB dependency.
 
@@ -167,6 +171,8 @@ Reference discovery is deliberately narrower than generic pattern or pointer sea
 - `literal-pool`
 - `pc-relative-address`
 
+Direct branch/call references also retain the canonical ARM/Thumb target mode when control-flow decoding proves it. Data/address references such as literal-pool slots do not receive an invented target mode.
+
 `literal-pool` means the architecturally computed literal-pool **slot address**. The word stored in that slot is not automatically interpreted as another pointer or reference. Ordinary immediates are not references merely because their numeric value looks like a ROM/RAM address, and this milestone performs no register-value or broader data-flow inference.
 
 `nds_list_references` is source → reference analysis. It decodes one bounded sequential ARM/Thumb window using the same source policy as `nds_disassemble_range`, classifies each decoded instruction, and does not follow branches or calls. Its bounds are therefore the same:
@@ -209,6 +215,75 @@ A result containing zero xrefs is definitive for the selected static scope only 
 Runtime targets may preserve `resolved`, ambiguous-overlay, BSS, compressed-overlay, or unmapped ownership metadata; reference matching still uses the exact requested runtime address. A ROM-offset target is accepted only when that offset maps to exactly one runtime address for the selected processor. Structural/NitroFS-only bytes are not reverse-xref targets in this milestone.
 
 Reference searches are on-demand only. RE-MCP does not create a persistent whole-ROM xref database or index. Raw pattern search is a separate exact byte-level facility and does not change or broaden the deterministic reference classifier. Heuristic pointer discovery and arbitrary immediate-pointer inference remain deferred.
+
+### Proven function-entry discovery
+
+`nds_discover_functions` and `nds_analyze_function` add a higher-level static layer without broadening the evidence model. A function **entry** is proven only by one of two sources:
+
+- the selected processor's NDS main executable entry address in ARM mode (`program-entry`); or
+- a deterministic resolved direct call whose target address, target ARM/Thumb mode, processor, component, and overlay ownership are exact (`direct-call`).
+
+The following are explicitly **not** function proof: direct or conditional branch targets, indirect calls, returns, alignment, prologue-looking bytes, pointer-like constants, selected overlay IDs, or caller-supplied seeds. Explicit seeds provide bounded code-search coverage only.
+
+A proven function identity is deterministic across:
+
+```text
+processor + component + overlay ID + runtime address + ARM/Thumb mode
+```
+
+`nds_discover_functions` starts from the selected main program entry plus any validated coverage-only seeds, analyzes bounded CFGs, and follows deterministic resolved direct calls as function-to-function proof. Recursion and mutual recursion terminate through canonical function identity. Distinct direct call sites remain distinct evidence, while duplicate observations of the same site/target are deduplicated.
+
+Direct branches remain intrafunction CFG edges and do not create functions. Indirect calls remain unresolved. The tool does not infer tail calls, shared epilogues, function ends, or exclusive byte ownership.
+
+Whole-operation discovery bounds are:
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Components considered | 32 | 128 |
+| Proven functions | 128 | 1,024 |
+| Direct call sites | 512 | 8,192 |
+| Total basic blocks | 512 | 4,096 |
+| Total instructions | 4,096 | 32,768 |
+| Total decoded source bytes | 32 KiB | 256 KiB |
+| Total traversal edges | 2,048 | 16,384 |
+
+Each individual function CFG is also capped independently:
+
+| Per-function CFG limit | Default | Maximum |
+| --- | ---: | ---: |
+| Basic blocks | 64 | 256 |
+| Instructions | 512 | 4,096 |
+| Decoded bytes | 2 KiB | 16 KiB |
+| Traversal edges | 128 | 1,024 |
+
+Aggregate budgets always dominate. Before a CFG is analyzed, its local limits are clipped to the remaining whole-operation budget so one function cannot overshoot a global cap before returning control.
+
+Discovery status is `complete`, `partial-coverage`, or `truncated`. Component coverage uses the same explicit vocabulary as xref search: `scanned`, `no-proven-seed`, `compressed-overlay-not-decodable`, and `out-of-limit`. Selecting an overlay does not disambiguate overlapping runtime ownership by itself. A call target becomes a proven function only when the canonical control-flow resolver actually produces one exact source.
+
+`nds_analyze_function` focuses on one requested processor/address/mode/optional overlay identity. It first requires that identity to resolve uniquely to exact initialized, uncompressed file-backed code. It then returns one proof status:
+
+- `proven`: program-entry or at least one exact direct-call proof exists;
+- `not-proven-function-entry`: the selected proof search completed with no qualifying proof;
+- `proof-inconclusive`: no proof was found, but truncation or a coverage gap means a negative conclusion would be unsafe.
+
+A positive proof remains `proven` even when unrelated selected coverage is incomplete; the coverage metadata still reports that incompleteness.
+
+Focused proof-search bounds are:
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Components considered | 32 | 128 |
+| Blocks decoded | 128 | 512 |
+| Instructions decoded | 2,048 | 16,384 |
+| Decoded bytes | 8 KiB | 64 KiB |
+| Traversal edges | 512 | 4,096 |
+| Direct-call proof sites | 256 | 2,048 |
+
+A full target CFG is returned only when the entry is proven, using the standard CFG bounds of 64/256 blocks, 512/4,096 instructions, 2 KiB/16 KiB decoded bytes, and 128/1,024 traversal edges.
+
+Neither function tool claims an end address. Multiple returns, shared epilogues, jump tables, tail branches, interleaved data, and unreachable code make such a claim unsafe under this milestone. Heuristic function discovery and function-boundary ownership inference remain deferred.
+
+This function layer is fully static and does not depend on physical Catalina/DeSmuME Dynamic Debugging acceptance.
 
 ### Raw pattern and signature discovery
 
@@ -316,9 +391,10 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 5. Call `nds_list_references` when you want deterministic references from a bounded sequential source window without traversal.
 6. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
 7. Call `nds_find_xrefs` to search for references to one runtime target within an explicit same-processor static scope; inspect `status` and component coverage before treating a negative result as definitive.
-8. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
+8. Call `nds_discover_functions` to turn program-entry/direct-call evidence into a bounded proven-function call graph, or `nds_analyze_function` to prove and inspect one exact entry.
+9. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-The static layer still does **not** implement heuristic function discovery or function-boundary claims, heuristic pointer discovery, persistent pattern/xref indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+The static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Dynamic-debugging tools
 
@@ -380,7 +456,7 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, and smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership. The check requires no external disassembler or runtime asset download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The check requires no external disassembler or runtime asset download.
 
 After downloading and extracting the archive:
 
@@ -389,7 +465,7 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, ARM/Thumb decoder fixtures, deterministic reference classifier, and packaged NDS pattern-search path before reporting `ok: true`.
+The same self-check verifies the required package files, assembled function-tool registration, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
 
@@ -489,11 +565,17 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Literal-pool contents and pointer-looking ordinary immediates are not interpreted as references
 - `nds_find_xrefs` may follow proven direct calls for search coverage, while `nds_analyze_control_flow` continues to annotate calls without traversing them
 - Reverse-xref coverage gaps and truncation are explicit; a zero-xref result is definitive for selected scope only when status is `complete`
-- No persistent pattern/xref index or heuristic pointer discovery
+- Proven function discovery is bounded to 128 selected components, 1,024 functions, 8,192 direct call sites, 4,096 blocks, 32,768 instructions, 256 KiB decoded bytes, and 16,384 traversal edges
+- Focused function proof is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 retained direct-call proof sites
+- Function entries are proven only by NDS program-entry or exact deterministic direct-call evidence; direct branches, indirect calls, returns, explicit seeds, alignment, and prologue-like bytes do not prove functions
+- Function tools do not infer end addresses, tail calls, shared-epilogue ownership, or exclusive function byte ranges
+- Function proof preserves exact processor/component/overlay/address/mode identity; scope selection never turns ambiguous overlay ownership into proof
+- Explicit function seeds provide coverage only; unseeded/compressed components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
+- No persistent pattern/xref/function index or heuristic pointer/function discovery
 - Indirect targets are never guessed
 - Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
-- Static overlay selection/disassembly/reference search never claims that an overlay is loaded at runtime
+- Static overlay selection/disassembly/reference/function search never claims that an overlay is loaded at runtime
 - Static operations revalidate the source ROM SHA-256 before and after decoding/searching
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
