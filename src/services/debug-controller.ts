@@ -1,3 +1,4 @@
+import { decodeArm9RegisterPacket } from "./arm9-registers.js";
 import {
   BreakpointRegistry,
   type BreakpointRecord,
@@ -12,7 +13,13 @@ import {
   type ExecutionResult,
   type StepSequenceResult,
 } from "./gdb-session.js";
+import type { GdbStopReply } from "./gdb-stop.js";
 import type { Arm9ExecutableRange } from "./nds-arm9.js";
+import {
+  captureStopContext,
+  type StopContext,
+  type StopContextRegionRequest,
+} from "./stop-context.js";
 
 export interface AddBreakpointRequest {
   readonly address: number;
@@ -22,16 +29,61 @@ export interface AddBreakpointRequest {
   readonly timeoutMs: number;
 }
 
-export interface ContinueRequest {
-  readonly timeoutMs: number;
+export interface StopCaptureOptions {
+  readonly captureContext?: boolean;
+  readonly maxOutputBytes?: number;
+  readonly additionalRegions?: readonly StopContextRegionRequest[];
 }
 
-export interface StepRequest {
+export interface ContinueRequest extends StopCaptureOptions {
+  readonly timeoutMs: number;
+  readonly expectedBreakpointId?: string;
+}
+
+export interface StepRequest extends StopCaptureOptions {
   readonly count: number;
   readonly perStepTimeoutMs: number;
 }
 
+export interface PauseRequest extends StopCaptureOptions {
+  readonly timeoutMs: number;
+}
+
+export interface WaitForStopRequest extends StopCaptureOptions {
+  readonly timeoutMs: number;
+}
+
+export type DebugExecutionResult =
+  | {
+      readonly kind: "timeout";
+      readonly state: "running";
+    }
+  | {
+      readonly kind: "stop";
+      readonly stop: GdbStopReply;
+      readonly state: "stopped" | "unavailable";
+      readonly stoppedAt: string;
+      readonly emulatorRunning: boolean;
+      readonly matchedBreakpoint?: BreakpointRecord;
+      readonly expectedBreakpointMatched?: boolean;
+      readonly context?: StopContext;
+    };
+
+export interface DebugStepSequenceResult {
+  readonly requested: number;
+  readonly completed: number;
+  readonly completedAll: boolean;
+  readonly result: DebugExecutionResult;
+}
+
+interface EnrichmentOptions extends StopCaptureOptions {
+  readonly timeoutMs: number;
+  readonly expectedBreakpointId?: string;
+}
+
 export type GdbSessionFactory = (sessionIdentity: string) => GdbSession;
+
+const DEFAULT_CONTEXT_OUTPUT_BYTES = 64 * 1024;
 
 export class DebugController {
   readonly #createSession: GdbSessionFactory;
@@ -39,6 +91,8 @@ export class DebugController {
   #session: GdbSession | null = null;
   #ranges: ExecutableRangeRegistry | null = null;
   #breakpoints = new BreakpointRegistry();
+  #lastStop: GdbStopReply | null = null;
+  #lastMatchedBreakpointId: string | null = null;
 
   constructor(createSession: GdbSessionFactory) {
     this.#createSession = createSession;
@@ -57,6 +111,8 @@ export class DebugController {
     const session = this.#createSession(sessionIdentity);
     this.#session?.reset("Debugger session identity changed");
     this.#breakpoints.clear();
+    this.#lastStop = null;
+    this.#lastMatchedBreakpointId = null;
     this.#sessionIdentity = sessionIdentity;
     this.#session = session;
     this.#ranges = ranges;
@@ -115,23 +171,63 @@ export class DebugController {
     return removed;
   }
 
-  async continueExecution(input: ContinueRequest): Promise<ExecutionResult> {
-    return await this.#requireSession().continueExecution(input.timeoutMs);
+  async continueExecution(input: ContinueRequest): Promise<DebugExecutionResult> {
+    if (input.expectedBreakpointId !== undefined) {
+      this.#breakpoints.get(input.expectedBreakpointId);
+    }
+    const result = await this.#requireSession().continueExecution(input.timeoutMs);
+    return await this.#enrichExecutionResult(result, {
+      timeoutMs: input.timeoutMs,
+      captureContext: input.captureContext,
+      maxOutputBytes: input.maxOutputBytes,
+      additionalRegions: input.additionalRegions,
+      expectedBreakpointId: input.expectedBreakpointId,
+    });
   }
 
-  async step(input: StepRequest): Promise<StepSequenceResult> {
-    return await this.#requireSession().stepInstructions(
+  async step(input: StepRequest): Promise<DebugStepSequenceResult> {
+    const sequence: StepSequenceResult = await this.#requireSession().stepInstructions(
       input.count,
       input.perStepTimeoutMs,
     );
+    const result = await this.#enrichExecutionResult(sequence.result, {
+      timeoutMs: input.perStepTimeoutMs,
+      captureContext: input.captureContext,
+      maxOutputBytes: input.maxOutputBytes,
+      additionalRegions: input.additionalRegions,
+    });
+    return {
+      requested: sequence.requested,
+      completed: sequence.completed,
+      completedAll: sequence.completedAll,
+      result,
+    };
   }
 
-  async pause(timeoutMs: number): Promise<ExecutionResult> {
-    return await this.#requireSession().interruptAndWait(timeoutMs);
+  async pause(input: number | PauseRequest): Promise<DebugExecutionResult> {
+    const request: PauseRequest = typeof input === "number"
+      ? { timeoutMs: input, captureContext: false }
+      : input;
+    const result = await this.#requireSession().interruptAndWait(request.timeoutMs);
+    return await this.#enrichExecutionResult(result, {
+      timeoutMs: request.timeoutMs,
+      captureContext: request.captureContext,
+      maxOutputBytes: request.maxOutputBytes,
+      additionalRegions: request.additionalRegions,
+    });
   }
 
-  async waitForStop(timeoutMs: number): Promise<ExecutionResult> {
-    return await this.#requireSession().waitForStop(timeoutMs);
+  async waitForStop(input: number | WaitForStopRequest): Promise<DebugExecutionResult> {
+    const request: WaitForStopRequest = typeof input === "number"
+      ? { timeoutMs: input, captureContext: false }
+      : input;
+    const result = await this.#requireSession().waitForStop(request.timeoutMs);
+    return await this.#enrichExecutionResult(result, {
+      timeoutMs: request.timeoutMs,
+      captureContext: request.captureContext,
+      maxOutputBytes: request.maxOutputBytes,
+      additionalRegions: request.additionalRegions,
+    });
   }
 
   async reset(reason: string): Promise<void> {
@@ -140,6 +236,61 @@ export class DebugController {
     this.#session = null;
     this.#ranges = null;
     this.#breakpoints.clear();
+    this.#lastStop = null;
+    this.#lastMatchedBreakpointId = null;
+  }
+
+  async #enrichExecutionResult(
+    result: ExecutionResult,
+    options: EnrichmentOptions,
+  ): Promise<DebugExecutionResult> {
+    if (result.kind === "timeout") return result;
+
+    const stoppedAt = new Date().toISOString();
+    this.#lastStop = result.stop;
+    if (result.stop.kind !== "signal") {
+      this.#lastMatchedBreakpointId = null;
+      return {
+        ...result,
+        stoppedAt,
+        emulatorRunning: false,
+        ...(options.expectedBreakpointId === undefined
+          ? {}
+          : { expectedBreakpointMatched: false }),
+      };
+    }
+
+    const session = this.#requireSession();
+    const registers = decodeArm9RegisterPacket(
+      await session.sendStoppedCommand("g", options.timeoutMs),
+    );
+    const ranges = this.#requireRanges();
+    ranges.recordExecution(registers.pc, registers.mode);
+    const matchedBreakpoint = this.#breakpoints.recordHit(registers.pc, registers.mode);
+    this.#lastMatchedBreakpointId = matchedBreakpoint?.id ?? null;
+
+    const context = options.captureContext === true
+      ? await captureStopContext({
+          session,
+          stop: result.stop,
+          timeoutMs: options.timeoutMs,
+          maxOutputBytes: options.maxOutputBytes ?? DEFAULT_CONTEXT_OUTPUT_BYTES,
+          registers,
+          ...(matchedBreakpoint === null ? {} : { breakpoint: matchedBreakpoint }),
+          additionalRegions: options.additionalRegions,
+        })
+      : undefined;
+
+    return {
+      ...result,
+      stoppedAt,
+      emulatorRunning: true,
+      ...(matchedBreakpoint === null ? {} : { matchedBreakpoint }),
+      ...(options.expectedBreakpointId === undefined
+        ? {}
+        : { expectedBreakpointMatched: matchedBreakpoint?.id === options.expectedBreakpointId }),
+      ...(context === undefined ? {} : { context }),
+    };
   }
 
   #requireSession(): GdbSession {
