@@ -194,7 +194,7 @@ test("whole-ROM context clips only at ROM bounds", async () => {
 test("rejects a ROM whose current hash no longer matches the canonical map", async () => {
   const fixture = await createSearchFixture();
   const map = await readNdsRomMap(fixture.romPath);
-  fixture.buffer[0x200] ^= 0xff;
+  fixture.buffer[0x200] = fixture.buffer[0x200]! ^ 0xff;
   await fixture.write();
 
   await assert.rejects(
