@@ -73,7 +73,7 @@ function manifest(): GhidraBridgeManifest {
         language: "ARM:LE:32:v5t",
         programName: "RE-MCP_ARM9",
         main: {
-          artifactPath: "../arm9.bin",
+          artifactPath: "imports/RE-MCP_ARM9",
           romOffset: 0x4000,
           runtimeAddress: 0x02000000,
           entryAddress: 0x02000000,
@@ -86,7 +86,7 @@ function manifest(): GhidraBridgeManifest {
         language: "ARM:LE:32:v4t",
         programName: "RE-MCP_ARM7",
         main: {
-          artifactPath: "../arm7.bin",
+          artifactPath: "imports/RE-MCP_ARM7",
           romOffset: 0x5000,
           runtimeAddress: 0x03800000,
           entryAddress: 0x03800000,
@@ -170,7 +170,10 @@ test("Ghidra import invocation uses exact canonical ARM9 BinaryLoader and RE-MCP
     `/workspace/analysis/ghidra/nds/${SHA}/project`,
     `RE-MCP-${SHA}`,
   ]);
-  assert.equal(hasSequence(invocation.args, ["-import", `/workspace/analysis/generated/nds/${PREFIX}/arm9.bin`]), true);
+  assert.equal(hasSequence(invocation.args, [
+    "-import",
+    `/workspace/analysis/generated/nds/${PREFIX}/ghidra-bridge/imports/RE-MCP_ARM9`,
+  ]), true);
   assert.equal(hasSequence(invocation.args, ["-loader", "BinaryLoader"]), true);
   assert.equal(hasSequence(invocation.args, ["-processor", "ARM:LE:32:v5t"]), true);
   assert.equal(hasSequence(invocation.args, ["-loader-baseAddr", "0x2000000"]), true);
@@ -198,6 +201,7 @@ test("Ghidra ARM7 import uses the exact v4t language and canonical base", () => 
     processor: "arm7",
     workspaceRoot: "/workspace",
   });
+  assert.equal(hasSequence(invocation.args, ["-import", `/workspace/analysis/generated/nds/${PREFIX}/ghidra-bridge/imports/RE-MCP_ARM7`]), true);
   assert.equal(hasSequence(invocation.args, ["-processor", "ARM:LE:32:v4t"]), true);
   assert.equal(hasSequence(invocation.args, ["-loader-baseAddr", "0x3800000"]), true);
 });
