@@ -16,9 +16,11 @@ async function writeRom(options: {
   const romPath = path.join(directory, "test.nds");
   const fileSize = options.fileSize ?? 0x400;
   const buffer = Buffer.alloc(fileSize);
-  buffer.writeUInt32LE(options.romOffset ?? 0x100, 0x20);
-  buffer.writeUInt32LE(options.ramAddress ?? 0x02000000, 0x28);
-  buffer.writeUInt32LE(options.size ?? 0x200, 0x2c);
+  if (fileSize >= 0x30) {
+    buffer.writeUInt32LE(options.romOffset ?? 0x100, 0x20);
+    buffer.writeUInt32LE(options.ramAddress ?? 0x02000000, 0x28);
+    buffer.writeUInt32LE(options.size ?? 0x200, 0x2c);
+  }
   await writeFile(romPath, buffer);
   return romPath;
 }
