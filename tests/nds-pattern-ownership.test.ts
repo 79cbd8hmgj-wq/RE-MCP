@@ -53,15 +53,14 @@ async function createOwnershipFixture() {
   return fixture;
 }
 
-function isArm9Overlay(
-  owner: NdsPatternOwner,
-): owner is Extract<NdsPatternOwner, { readonly kind: "arm9-overlay" }> {
+type OverlayOwner = Extract<NdsPatternOwner, { readonly overlayId: number }>;
+type NitroFileOwner = Extract<NdsPatternOwner, { readonly kind: "nitrofs-file" }>;
+
+function isArm9Overlay(owner: NdsPatternOwner): owner is OverlayOwner {
   return owner.kind === "arm9-overlay";
 }
 
-function isNitroFile(
-  owner: NdsPatternOwner,
-): owner is Extract<NdsPatternOwner, { readonly kind: "nitrofs-file" }> {
+function isNitroFile(owner: NdsPatternOwner): owner is NitroFileOwner {
   return owner.kind === "nitrofs-file";
 }
 
