@@ -115,6 +115,13 @@ async function buildToolRom() {
   return { fixture, rom: path.basename(fixture.romPath) };
 }
 
+async function buildDisassemblyRom() {
+  const fixture = await createNdsFixture();
+  fixture.buffer.set([0x1e, 0xff, 0x2f, 0xe1], 0x200);
+  await fixture.write();
+  return { fixture, rom: path.basename(fixture.romPath) };
+}
+
 const EXPECTED_TOOLS = [
   "nds_inspect_rom",
   "nds_list_files",
@@ -123,9 +130,11 @@ const EXPECTED_TOOLS = [
   "nds_resolve_rom_offset",
   "nds_extract_component",
   "nds_extract_analysis_bundle",
+  "nds_disassemble_range",
+  "nds_analyze_control_flow",
 ] as const;
 
-test("registers exactly the seven approved NDS static-analysis tools", () => {
+test("registers exactly the nine approved NDS static-analysis tools", () => {
   const server = register("/workspace");
   assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
 });
@@ -164,6 +173,85 @@ test("list and resolver schemas enforce approved defaults and bounds", () => {
     () => server.parse("nds_resolve_rom_offset", { rom: "game.nds", offset: -1 }),
     /greater than or equal to 0/,
   );
+});
+
+test("disassembly schemas expose exact defaults, caps, and no generic binary surface", () => {
+  const server = register("/workspace");
+  assert.deepEqual(server.parse("nds_disassemble_range", {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+  }), {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "auto",
+    maxInstructions: 32,
+    maxBytes: 128,
+  });
+  assert.deepEqual(server.parse("nds_analyze_control_flow", {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+  }), {
+    rom: "game.nds",
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "auto",
+    maxBlocks: 64,
+    maxInstructions: 512,
+    maxBytes: 2048,
+    maxEdges: 128,
+  });
+
+  assert.throws(
+    () => server.parse("nds_disassemble_range", {
+      rom: "game.nds", processor: "arm9", runtimeAddress: 0x02000000,
+      maxInstructions: 257,
+    }),
+    /less than or equal to 256/,
+  );
+  assert.throws(
+    () => server.parse("nds_disassemble_range", {
+      rom: "game.nds", processor: "arm9", runtimeAddress: 0x02000000,
+      maxBytes: 1025,
+    }),
+    /less than or equal to 1024/,
+  );
+  for (const [field, value] of [
+    ["maxBlocks", 257],
+    ["maxInstructions", 4097],
+    ["maxBytes", 16385],
+    ["maxEdges", 1025],
+  ] as const) {
+    assert.throws(
+      () => server.parse("nds_analyze_control_flow", {
+        rom: "game.nds",
+        processor: "arm9",
+        runtimeAddress: 0x02000000,
+        [field]: value,
+      }),
+      /less than or equal to/,
+    );
+  }
+
+  for (const forbidden of [
+    "binary",
+    "bytes",
+    "baseAddress",
+    "output",
+    "path",
+    "length",
+  ]) {
+    assert.equal(
+      Object.hasOwn(server.schema("nds_disassemble_range"), forbidden),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(server.schema("nds_analyze_control_flow"), forbidden),
+      false,
+    );
+  }
 });
 
 test("component schema exposes no caller-controlled output path", () => {
@@ -224,6 +312,80 @@ test("resolver tools keep ambiguity/BSS/compression outcomes as successful struc
   assert.equal(matches.some((match) => match.kind === "arm9-overlay"), true);
 });
 
+test("disassembly handlers decode canonical ARM instructions and CFG returns", async () => {
+  const { fixture, rom } = await buildDisassemblyRom();
+  const server = register(fixture.directory);
+
+  const linearResult = await server.invoke("nds_disassemble_range", {
+    rom,
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "arm",
+    maxInstructions: 1,
+    maxBytes: 4,
+  });
+  assert.equal(resultIsError(linearResult), false);
+  const linear = resultBody(linearResult);
+  assert.equal(linear.status, "complete");
+  const instructions = linear.instructions as Array<Record<string, unknown>>;
+  assert.equal(instructions[0]?.mnemonic, "bx");
+  assert.equal(instructions[0]?.bytesHex, "1eff2fe1");
+
+  const cfgResult = await server.invoke("nds_analyze_control_flow", {
+    rom,
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    mode: "arm",
+    maxBlocks: 4,
+    maxInstructions: 8,
+    maxBytes: 32,
+    maxEdges: 8,
+  });
+  assert.equal(resultIsError(cfgResult), false);
+  const cfg = resultBody(cfgResult);
+  assert.equal(cfg.status, "complete");
+  const blocks = cfg.blocks as Array<Record<string, unknown>>;
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0]?.stopReason, "return");
+});
+
+test("disassembly handlers preserve compressed-overlay status as a successful result", async () => {
+  const { fixture, rom } = await buildToolRom();
+  const server = register(fixture.directory);
+  const result = await server.invoke("nds_disassemble_range", {
+    rom,
+    processor: "arm9",
+    runtimeAddress: 0x02200020,
+    overlayId: 7,
+    mode: "arm",
+  });
+  assert.equal(resultIsError(result), false);
+  assert.equal(resultBody(result).status, "compressed-overlay-not-decodable");
+});
+
+test("disassembly handlers reject missing or duplicate location selectors structurally", async () => {
+  const { fixture, rom } = await buildDisassemblyRom();
+  const server = register(fixture.directory);
+
+  const missing = await server.invoke("nds_disassemble_range", {
+    rom,
+    processor: "arm9",
+    mode: "arm",
+  });
+  assert.equal(resultIsError(missing), true);
+  assert.equal(resultBody(missing).category, "range-out-of-bounds");
+
+  const duplicate = await server.invoke("nds_analyze_control_flow", {
+    rom,
+    processor: "arm9",
+    runtimeAddress: 0x02000000,
+    romOffset: 0x200,
+    mode: "arm",
+  });
+  assert.equal(resultIsError(duplicate), true);
+  assert.equal(resultBody(duplicate).category, "range-out-of-bounds");
+});
+
 test("workspace escapes return structured invalid-rom errors", async () => {
   const { fixture } = await buildToolRom();
   const server = register(fixture.directory);
@@ -282,7 +444,7 @@ test("analysis bundle tool returns controlled deterministic paths", async () => 
   await readFile(String(body.manifestPath));
 });
 
-test("index capability declaration includes all seven NDS tool names", async () => {
+test("index capability declaration includes all nine NDS tool names", async () => {
   const source = await readFile(path.resolve("src/index.ts"), "utf8");
   for (const name of EXPECTED_TOOLS) {
     assert.equal(source.includes(`\"${name}\"`), true, name);
