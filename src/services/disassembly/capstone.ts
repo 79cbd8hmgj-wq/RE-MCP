@@ -149,7 +149,7 @@ function registerOperand(
   return operand?.kind === "register" ? operand.name : null;
 }
 
-function normalizePcRelative(
+function structuredPcRelative(
   cs: CapstoneModule,
   instruction: CapstoneInstruction,
   address: number,
@@ -215,6 +215,128 @@ function normalizePcRelative(
   return null;
 }
 
+function readThumbHalfword(bytes: readonly number[]): number | null {
+  const first = bytes[0];
+  const second = bytes[1];
+  if (first === undefined || second === undefined) {
+    return null;
+  }
+  return first | (second << 8);
+}
+
+function readArmWord(bytes: readonly number[]): number | null {
+  const first = bytes[0];
+  const second = bytes[1];
+  const third = bytes[2];
+  const fourth = bytes[3];
+  if (
+    first === undefined
+    || second === undefined
+    || third === undefined
+    || fourth === undefined
+  ) {
+    return null;
+  }
+  return (
+    first
+    | (second << 8)
+    | (third << 16)
+    | (fourth << 24)
+  ) >>> 0;
+}
+
+function rotateRight32(value: number, amount: number): number {
+  const rotation = amount & 31;
+  if (rotation === 0) {
+    return value >>> 0;
+  }
+  return ((value >>> rotation) | (value << (32 - rotation))) >>> 0;
+}
+
+function armImmediateOperand(word: number): number {
+  const rotate = ((word >>> 8) & 0x0f) * 2;
+  return rotateRight32(word & 0xff, rotate);
+}
+
+function encodedPcRelative(
+  bytes: readonly number[],
+  mode: ArmMode,
+): DecodedArmPcRelativeSemantics {
+  if (mode === "thumb") {
+    const halfword = readThumbHalfword(bytes);
+    if (halfword === null) {
+      return null;
+    }
+
+    // Thumb-1 LDR (literal): 01001 Rt:3 Imm8; address = Align(PC, 4) + Imm8*4.
+    if ((halfword & 0xf800) === 0x4800) {
+      return {
+        kind: "literal-load",
+        displacement: (halfword & 0xff) << 2,
+      };
+    }
+
+    // Thumb-1 ADR: 10100 Rd:3 Imm8; address = Align(PC, 4) + Imm8*4.
+    if ((halfword & 0xf800) === 0xa000) {
+      return {
+        kind: "address-add",
+        immediate: (halfword & 0xff) << 2,
+      };
+    }
+    return null;
+  }
+
+  const word = readArmWord(bytes);
+  if (word === null) {
+    return null;
+  }
+
+  // A32 LDR literal immediate, pre-indexed and without writeback.
+  // U is intentionally excluded from the mask because it controls displacement sign.
+  if ((word & 0x0f7f0000) === 0x051f0000) {
+    const magnitude = word & 0x0fff;
+    return {
+      kind: "literal-load",
+      displacement: (word & 0x00800000) !== 0 ? magnitude : -magnitude,
+    };
+  }
+
+  // A32 data-processing immediate with Rn=PC, S=0 and non-PC destination.
+  if (
+    (word & 0x0e100000) === 0x02000000
+    && ((word >>> 16) & 0x0f) === 0x0f
+    && ((word >>> 12) & 0x0f) !== 0x0f
+  ) {
+    const opcode = (word >>> 21) & 0x0f;
+    const immediate = armImmediateOperand(word);
+    if (opcode === 0x04) {
+      return { kind: "address-add", immediate };
+    }
+    if (opcode === 0x02) {
+      return { kind: "address-sub", immediate };
+    }
+  }
+
+  return null;
+}
+
+function fallbackOperandsForPcRelative(
+  operands: readonly DecodedArmOperand[],
+  pcRelative: DecodedArmPcRelativeSemantics,
+): readonly DecodedArmOperand[] {
+  if (operands.length > 0 || pcRelative?.kind !== "literal-load") {
+    return operands;
+  }
+  return [{
+    kind: "memory",
+    value: {
+      baseRegister: "pc",
+      indexRegister: null,
+      displacement: pcRelative.displacement,
+    },
+  }];
+}
+
 function normalizeInstruction(
   cs: CapstoneModule,
   decoder: CapstoneHandle,
@@ -231,11 +353,20 @@ function normalizeInstruction(
   const decodedOperands = (instruction.detail.op ?? []).map(
     (operand) => normalizeOperand(cs, decoder, operand),
   );
-  const operands = normalizeControlFlowOperands(
+  const controlFlowOperands = normalizeControlFlowOperands(
     cs,
     instruction,
     decodedOperands,
   );
+  const structured = structuredPcRelative(
+    cs,
+    instruction,
+    address,
+    mode,
+    controlFlowOperands,
+  );
+  const pcRelative = structured ?? encodedPcRelative(instruction.bytes, mode);
+  const operands = fallbackOperandsForPcRelative(controlFlowOperands, pcRelative);
   const cc = instruction.detail.cc;
   return {
     address,
@@ -260,7 +391,7 @@ function normalizeInstruction(
         && cc !== cs.ARM_CC_AL
       ),
     switchesMode: instruction.id === cs.ARM_INS_BLX,
-    pcRelative: normalizePcRelative(cs, instruction, address, mode, operands),
+    pcRelative,
   };
 }
 
