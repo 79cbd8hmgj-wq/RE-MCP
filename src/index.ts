@@ -99,7 +99,7 @@ server.tool(
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection; no register writes, general memory writes, watchpoints, or arbitrary GDB packets",
       evidencePolicy: "Atomic raw evidence under project analysis/generated only",
       ndsStaticAnalysisPolicy:
-        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly, and bounded direct-control-flow analysis; no loaded-overlay inference, generic binary input, ROM mutation, rebuild, arbitrary byte-range extraction, or caller-controlled output paths",
+        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, and bounded deterministic single-instruction reference/xref analysis; reverse-xref searches may report partial coverage and may follow proven direct calls without changing CFG call traversal; no loaded-overlay inference, generic binary/pattern search, heuristic pointer discovery, ROM mutation/rebuild, arbitrary byte-range extraction, or caller-controlled output paths",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -134,6 +134,8 @@ server.tool(
         "nds_extract_analysis_bundle",
         "nds_disassemble_range",
         "nds_analyze_control_flow",
+        "nds_list_references",
+        "nds_find_xrefs",
         "server_capabilities",
       ],
     }),
