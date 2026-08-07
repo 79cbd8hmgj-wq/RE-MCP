@@ -22,10 +22,17 @@ export type NdsPatternSearchErrorCategory =
   | "invalid-pattern-scope"
   | "pattern-search-limit-exceeded";
 
+export type NdsFunctionErrorCategory =
+  | "invalid-function-scope"
+  | "invalid-function-seed"
+  | "function-entry-not-uniquely-resolved"
+  | "function-discovery-limit-exceeded";
+
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
-  | NdsPatternSearchErrorCategory;
+  | NdsPatternSearchErrorCategory
+  | NdsFunctionErrorCategory;
 
 export class NdsError<
   Category extends AnyNdsErrorCategory = NdsErrorCategory,

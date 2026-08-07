@@ -116,6 +116,14 @@ function correctiveAction(category: NdsToolErrorCategory): string {
       return "Use whole-rom or select at least one existing canonical NDS component; arbitrary raw byte ranges are not accepted.";
     case "pattern-search-limit-exceeded":
       return "Keep NDS pattern length, selector counts, pagination, scan bytes, and context within the documented bounds.";
+    case "invalid-function-scope":
+      return "Choose main, existing overlay IDs, selected main plus overlays, or all executable components without duplicate overlay IDs.";
+    case "invalid-function-seed":
+      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected uncompressed file-backed code; seeds provide coverage only and do not prove functions.";
+    case "function-entry-not-uniquely-resolved":
+      return "Provide processor, ARM/Thumb mode, and overlay context when needed so the requested function entry selects one exact initialized executable source.";
+    case "function-discovery-limit-exceeded":
+      return "Use positive bounded function-discovery, proof-search, and CFG limits within the documented maxima.";
     case "disassembly-backend-failure":
       return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
   }

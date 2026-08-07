@@ -33,6 +33,7 @@ export interface StaticReference {
   readonly target: {
     readonly runtimeAddress: number;
     readonly romOffset: number | null;
+    readonly mode: ArmMode | null;
     readonly resolution: RuntimeResolution;
   };
   readonly evidence: {
@@ -59,6 +60,7 @@ function referenceTarget(
   map: NdsRomMap,
   processor: NdsProcessor,
   runtimeAddress: number,
+  mode: ArmMode | null,
 ): StaticReference["target"] {
   const resolution = resolveRuntimeAddress(map, runtimeAddress, processor);
   return {
@@ -66,6 +68,7 @@ function referenceTarget(
     romOffset: resolution.status === "resolved"
       ? resolution.candidate.romOffset
       : null,
+    mode,
     resolution,
   };
 }
@@ -75,6 +78,7 @@ function reference(
   detailed: DetailedStaticInstruction,
   kind: StaticReferenceKind,
   runtimeAddress: number,
+  targetMode: ArmMode | null,
   mechanism: StaticReferenceMechanism,
 ): StaticReference {
   const { instruction } = detailed;
@@ -92,6 +96,7 @@ function reference(
       map,
       instruction.source.processor,
       runtimeAddress >>> 0,
+      targetMode,
     ),
     evidence: {
       instructionMnemonic: instruction.mnemonic,
@@ -119,6 +124,7 @@ export function classifyNdsInstructionReferences(
       detailed,
       "direct-branch",
       instruction.flow.directTarget,
+      instruction.flow.targetMode,
       "direct-control-flow",
     ));
   }
@@ -132,6 +138,7 @@ export function classifyNdsInstructionReferences(
       detailed,
       "direct-call",
       instruction.flow.directTarget,
+      instruction.flow.targetMode,
       "direct-control-flow",
     ));
   }
@@ -149,6 +156,7 @@ export function classifyNdsInstructionReferences(
         detailed,
         "literal-pool",
         addUint32(pc, pcRelative.displacement),
+        null,
         "pc-relative-literal-address",
       ));
       break;
@@ -158,6 +166,7 @@ export function classifyNdsInstructionReferences(
         detailed,
         "pc-relative-address",
         addUint32(pc, pcRelative.immediate),
+        null,
         "pc-relative-address-construction",
       ));
       break;
@@ -167,6 +176,7 @@ export function classifyNdsInstructionReferences(
         detailed,
         "pc-relative-address",
         subtractUint32(pc, pcRelative.immediate),
+        null,
         "pc-relative-address-construction",
       ));
       break;
@@ -194,6 +204,10 @@ const REFERENCE_KIND_ORDER: Record<StaticReferenceKind, number> = {
 
 function compareNumber(left: number, right: number): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function targetModeOrder(mode: ArmMode | null): number {
+  return mode === null ? 2 : MODE_ORDER[mode];
 }
 
 export function compareStaticReferences(
@@ -236,5 +250,11 @@ export function compareStaticReferences(
   );
   if (compared !== 0) return compared;
 
-  return compareNumber(left.target.runtimeAddress, right.target.runtimeAddress);
+  compared = compareNumber(left.target.runtimeAddress, right.target.runtimeAddress);
+  if (compared !== 0) return compared;
+
+  return compareNumber(
+    targetModeOrder(left.target.mode),
+    targetModeOrder(right.target.mode),
+  );
 }
