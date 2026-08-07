@@ -335,7 +335,7 @@ Search limits are:
 | Encoded pattern bytes | — | 4,096 |
 | Discovered matches | — | 100,000 |
 
-`offset` is a **match index**, not a ROM-byte offset and not a scan-resume cursor. Increasing `offset` does not extend coverage after a scan-byte truncation. To inspect beyond a `maxScanBytes` boundary, raise the scan budget or narrow/change the selected scope.
+`offset` is a **match index**, not a ROM-byte offset and not a scan-resume cursor. Increasing `offset` does not extend coverage after a `maxScanBytes` boundary. To inspect beyond a `maxScanBytes` boundary, raise the scan budget or narrow/change the selected scope.
 
 A result is `complete` only when the selected physical scope was fully examined. Otherwise it is `truncated`, with explicit reasons chosen from:
 
@@ -452,7 +452,7 @@ Reruns reconcile only RE-MCP-owned metadata and evidence. Analyst-created labels
 
 `nds_ghidra_status` is non-mutating: it does not validate/install Ghidra, regenerate the bridge, run `analyzeHeadless`, or modify project state.
 
-The packaged RE-MCP bundle includes its three Ghidra Java scripts, but it does **not** bundle Ghidra itself. Normal CI/package smoke verifies the bridge, resources, runner, state model, and tool registration without downloading Ghidra. Real Ghidra 12.1.2 acceptance is a separate manual workflow and is also separate from the physical Intel Catalina/DeSmuME debugger acceptance gate.
+The packaged RE-MCP bundle includes its three Ghidra Java scripts, but it does **not** bundle Ghidra itself. Normal CI/package smoke verifies the bridge, resources, runner, state model, and tool registration without downloading Ghidra. Real Ghidra 12.1.2 acceptance is a separate manual workflow and is also separate from the physical Intel Catalina/DeSmuME debugger acceptance gate. See [`docs/nds-ghidra-integration.md`](docs/nds-ghidra-integration.md) for the focused integration contract.
 
 ## Dynamic-debugging tools
 
@@ -586,3 +586,74 @@ node dist/index.js
 The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra bootstrap is requested.
 
 ## DeSmuME launcher contract
+
+The currently verified Linux launcher contract is:
+
+```bash
+run-desmume-debug.sh --arm9gdb=20000 /path/to/game.nds
+```
+
+The Catalina-native bundle uses:
+
+```bash
+run-desmume-debug.command /path/to/game.nds 20000
+```
+
+RE-MCP owns at most one emulator child process per server instance. It rejects duplicate starts, captures bounded logs, resets session-scoped debugger state when that process exits, and terminates the owned emulator during MCP shutdown.
+
+## Security model
+
+- No arbitrary shell tool
+- No shell interpolation
+- Fixed executable and argument construction
+- Workspace path containment
+- Process timeouts and bounded output
+- Minimal child-process environment
+- Milestone 6E installation restricted to dry-run mode
+- One server-owned DeSmuME process
+- GDB restricted to the owned localhost ARM9 port
+- Breakpoints restricted to validated executable ranges
+- Maximum 32 active breakpoints and 100 instructions per single-step request
+- Bounded continue, wait, pause, register, memory, and stop-context operations
+- Controlled GDB packets only: software breakpoint insert/remove, continue, single-step, interrupt, register read, bounded memory read, and stop-status query
+- No arbitrary GDB packet tool
+- No register writes, general memory writes, or watchpoints
+- Runtime evidence restricted to project `analysis/generated`
+- NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
+- NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
+- NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
+- `nds_search_pattern` accepts only a validated NDS ROM plus canonical component scope or explicit whole-ROM scope; no generic binary path, caller-supplied byte buffer, caller-defined start/end range, runtime-memory target, or output path
+- Pattern search is bounded to 4,096 encoded pattern bytes, 512 MiB scanned bytes, 1,000 returned hits per page, 100,000 discovered matches, and 64 context bytes per side
+- Component-scoped pattern hits require full-span containment in at least one selected canonical component; physical overlap is deduplicated and adjacent components do not authorize cross-boundary matches
+- Compressed overlays are pattern-searched only as exact stored FAT-backed bytes; pattern search performs no decompression and fabricates no compressed-runtime address mapping
+- Pattern hits remain byte-level facts and are not promoted into pointers, references, functions, or tables
+- ARM/Thumb linear decoding and source-reference listing are bounded to 256 instructions and 1,024 bytes per request
+- CFG traversal is bounded to 256 blocks, 4,096 instructions, 16 KiB decoded bytes, and 1,024 traversal edges
+- Reverse-xref traversal is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 returned xrefs
+- Only deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address-construction references are emitted
+- Literal-pool contents and pointer-looking ordinary immediates are not interpreted as references
+- `nds_find_xrefs` may follow proven direct calls for search coverage, while `nds_analyze_control_flow` continues to annotate calls without traversing them
+- Reverse-xref coverage gaps and truncation are explicit; a zero-xref result is definitive for selected scope only when status is `complete`
+- Proven function discovery is bounded to 128 selected components, 1,024 functions, 8,192 direct call sites, 4,096 blocks, 32,768 instructions, 256 KiB decoded bytes, and 16,384 traversal edges
+- Focused function proof is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 retained direct-call proof sites
+- Function entries are proven only by NDS program-entry or exact deterministic direct-call evidence; direct branches, indirect calls, returns, explicit seeds, alignment, and prologue-like bytes do not prove functions
+- Function tools do not infer end addresses, tail calls, shared-epilogue ownership, or exclusive function byte ranges
+- Function proof preserves exact processor/component/overlay/address/mode identity; scope selection never turns ambiguous overlay ownership into proof
+- Explicit function seeds provide coverage only; unseeded/compressed components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
+- No persistent pattern/xref/function index or heuristic pointer/function discovery
+- Indirect targets are never guessed
+- Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
+- Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
+- Static overlay selection/disassembly/reference/function search never claims that an overlay is loaded at runtime
+- Static operations revalidate the source ROM SHA-256 before and after decoding/searching
+- Ghidra bootstrap derives one `analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME`; callers cannot provide executable paths, project paths, loaders, languages, scripts, raw Ghidra arguments, environment maps, or output paths
+- Ghidra projects are isolated by full source ROM SHA-256; generated bridge inputs remain separate from persistent analyst state
+- Uncompressed NDS overlays use distinct Ghidra overlay address spaces; compressed overlays are never decoded/imported as executable runtime bytes
+- RE-MCP imports proven entries/modes/direct-call evidence only and does not promote Ghidra-derived functions, bodies, types, or other heuristics into canonical RE-MCP evidence
+- Ghidra reruns preserve analyst-created state and fail `project-state-mismatch` instead of destructively repairing unrecognized ownership
+- Ghidra headless execution is shell-free, timeout-bounded, output-bounded, and source-ROM identity is revalidated during bootstrap
+- `nds_ghidra_status` is non-mutating and does not invoke Ghidra
+- Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
+- No attachment to unrelated emulator processes
+
+Do not use your general home directory as `RE_MCP_WORKSPACE_ROOT`. Create a dedicated directory containing only the repositories and private inputs intended for RE-MCP.
