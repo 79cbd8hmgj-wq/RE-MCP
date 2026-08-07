@@ -30,14 +30,14 @@ export interface AddBreakpointRequest {
 }
 
 export interface StopCaptureOptions {
-  readonly captureContext?: boolean;
-  readonly maxOutputBytes?: number;
-  readonly additionalRegions?: readonly StopContextRegionRequest[];
+  readonly captureContext?: boolean | undefined;
+  readonly maxOutputBytes?: number | undefined;
+  readonly additionalRegions?: readonly StopContextRegionRequest[] | undefined;
 }
 
 export interface ContinueRequest extends StopCaptureOptions {
   readonly timeoutMs: number;
-  readonly expectedBreakpointId?: string;
+  readonly expectedBreakpointId?: string | undefined;
 }
 
 export interface StepRequest extends StopCaptureOptions {
@@ -78,7 +78,7 @@ export interface DebugStepSequenceResult {
 
 interface EnrichmentOptions extends StopCaptureOptions {
   readonly timeoutMs: number;
-  readonly expectedBreakpointId?: string;
+  readonly expectedBreakpointId?: string | undefined;
 }
 
 export type GdbSessionFactory = (sessionIdentity: string) => GdbSession;
