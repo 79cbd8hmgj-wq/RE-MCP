@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { readArm9ExecutableRange } from "../src/services/nds-arm9.js";
+import { createNdsFixture } from "./helpers/nds-fixture.js";
 
 async function writeRom(options: {
   romOffset?: number;
@@ -61,4 +62,15 @@ test("rejects ARM9 data beyond the ROM file", async () => {
     readArm9ExecutableRange(await writeRom({ romOffset: 0x300, size: 0x200, fileSize: 0x400 })),
     /extends beyond the ROM file/,
   );
+});
+
+test("does not validate unrelated FAT metadata", async () => {
+  const fixture = await createNdsFixture({ fatOffset: 0x3ff0, fatSize: 0x100 });
+  assert.deepEqual(await readArm9ExecutableRange(fixture.romPath), {
+    start: 0x02000000,
+    end: 0x02000200,
+    size: 0x200,
+    source: "arm9-header",
+    label: "ARM9 main",
+  });
 });
