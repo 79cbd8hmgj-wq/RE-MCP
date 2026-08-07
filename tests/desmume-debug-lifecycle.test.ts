@@ -30,6 +30,13 @@ class FakeMcpServer {
   ): void {
     this.tools.set(name, { schema, handler });
   }
+
+  async invoke(name: string, input: unknown): Promise<unknown> {
+    const tool = this.tools.get(name);
+    if (tool === undefined) throw new Error(`Unknown test tool: ${name}`);
+    const parsed = z.object(tool.schema).parse(input);
+    return await tool.handler(parsed);
+  }
 }
 
 function runningStatus(): OwnedProcessStatus {
@@ -63,6 +70,11 @@ class FakeLifecycleManager extends OwnedProcessManager {
   override onExit(listener: OwnedProcessExitListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  override async stop(_graceMs = 5_000): Promise<OwnedProcessStatus> {
+    if (this.#status.running) this.simulateExit();
+    return this.#status;
   }
 
   simulateExit(): void {
@@ -120,19 +132,32 @@ function config(): ServerConfig {
   };
 }
 
-test("spontaneous owned DeSmuME exit resets debugger session state", async () => {
+function registerLifecycleHarness() {
   const manager = new FakeLifecycleManager();
   const controller = new ResetSpyController();
   const server = new FakeMcpServer();
-
   registerDesmumeTools(
     server as unknown as McpServer,
     config(),
     manager,
     controller as unknown as DebugController,
   );
+  return { manager, controller, server };
+}
+
+test("spontaneous owned DeSmuME exit resets debugger session state", async () => {
+  const { manager, controller } = registerLifecycleHarness();
 
   manager.simulateExit();
+  await Promise.resolve();
+
+  assert.deepEqual(controller.resetReasons, ["Owned DeSmuME process exited"]);
+});
+
+test("desmume_stop uses the owned-process exit reset exactly once", async () => {
+  const { controller, server } = registerLifecycleHarness();
+
+  await server.invoke("desmume_stop", {});
   await Promise.resolve();
 
   assert.deepEqual(controller.resetReasons, ["Owned DeSmuME process exited"]);
