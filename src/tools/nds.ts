@@ -5,6 +5,13 @@ import { z } from "zod";
 
 import type { ServerConfig } from "../config.js";
 import { resolveInside } from "../security/paths.js";
+import {
+  DisassemblyBackendError,
+} from "../services/disassembly/backend.js";
+import { createCapstoneArmBackend } from "../services/disassembly/capstone.js";
+import { analyzeNdsControlFlow } from "../services/nds/control-flow.js";
+import { disassembleNdsRange } from "../services/nds/disassembly.js";
+import type { NdsDisassemblyLocation } from "../services/nds/disassembly-source.js";
 import { NdsError, type NdsErrorCategory } from "../services/nds/errors.js";
 import {
   extractNdsAnalysisBundle,
@@ -23,6 +30,15 @@ const processorSchema = z.enum(["arm9", "arm7"]);
 const listProcessorSchema = z.enum(["arm9", "arm7", "all"]);
 const listLimitSchema = z.number().int().min(1).max(200).default(100);
 const listOffsetSchema = z.number().int().min(0).default(0);
+const disassemblyModeSchema = z.enum(["arm", "thumb", "auto"]);
+const linearInstructionLimitSchema = z.number().int().min(1).max(256).default(32);
+const linearByteLimitSchema = z.number().int().min(2).max(1024).default(128);
+const cfgBlockLimitSchema = z.number().int().min(1).max(256).default(64);
+const cfgInstructionLimitSchema = z.number().int().min(1).max(4096).default(512);
+const cfgByteLimitSchema = z.number().int().min(2).max(16384).default(2048);
+const cfgEdgeLimitSchema = z.number().int().min(1).max(1024).default(128);
+
+type NdsToolErrorCategory = NdsErrorCategory | "disassembly-backend-failure";
 
 function textResultFromText(text: string, isError = false) {
   return {
@@ -35,7 +51,7 @@ function textResult(value: unknown, isError = false) {
   return textResultFromText(JSON.stringify(value, null, 2), isError);
 }
 
-function correctiveAction(category: NdsErrorCategory): string {
+function correctiveAction(category: NdsToolErrorCategory): string {
   switch (category) {
     case "invalid-rom":
       return "Use a readable Nintendo DS ROM path inside RE_MCP_WORKSPACE_ROOT and re-run ROM inspection if the source changed.";
@@ -45,15 +61,17 @@ function correctiveAction(category: NdsErrorCategory): string {
     case "malformed-overlay-table":
       return "Inspect the ROM structure or use a known-good ROM revision; RE-MCP will not guess through malformed metadata.";
     case "range-out-of-bounds":
-      return "Use an address, ROM offset, or canonical component that lies inside the validated source ROM ranges.";
+      return "Use an address, ROM offset, mode, or canonical component that lies inside the validated source ROM ranges and approved bounds.";
     case "unknown-file-id":
       return "List NitroFS files first, then use an existing file ID or exact parsed NitroFS path.";
     case "unknown-overlay-id":
       return "List overlays first, then use an existing overlay ID for the selected processor.";
     case "output-bound-exceeded":
-      return "Narrow the request with prefix, processor, limit, or pagination offset.";
+      return "Narrow the request with prefix, processor, pagination, or smaller disassembly/CFG limits.";
     case "generated-path-failure":
       return "Check workspace write permissions and retry; generated NDS output is restricted to analysis/generated/nds.";
+    case "disassembly-backend-failure":
+      return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
   }
 }
 
@@ -85,7 +103,11 @@ function ndsErrorResult(
   error: unknown,
   fallbackCategory: NdsErrorCategory,
 ) {
-  const category = error instanceof NdsError ? error.category : fallbackCategory;
+  const category: NdsToolErrorCategory = error instanceof DisassemblyBackendError
+    ? error.category
+    : error instanceof NdsError
+      ? error.category
+      : fallbackCategory;
   const message = error instanceof Error ? error.message : String(error);
   return boundedTextResult(config, operation, {
     error: message,
@@ -134,6 +156,31 @@ function normalizeExtractionRequest(input: {
     return { component: "nitrofs-file", fileId: input.fileId! };
   }
   return { component: "nitrofs-path", filePath: input.filePath! };
+}
+
+function normalizeDisassemblyLocation(input: {
+  readonly processor: "arm9" | "arm7";
+  readonly mode: "arm" | "thumb" | "auto";
+  readonly runtimeAddress?: number;
+  readonly romOffset?: number;
+  readonly overlayId?: number;
+}): NdsDisassemblyLocation {
+  const hasRuntime = input.runtimeAddress !== undefined;
+  const hasRom = input.romOffset !== undefined;
+  if (hasRuntime === hasRom) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Disassembly requires exactly one of runtimeAddress or romOffset",
+    );
+  }
+  return {
+    processor: input.processor,
+    mode: input.mode,
+    ...(hasRuntime
+      ? { runtimeAddress: input.runtimeAddress! }
+      : { romOffset: input.romOffset! }),
+    ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
+  };
 }
 
 export function registerNdsTools(server: McpServer, config: ServerConfig): void {
@@ -339,6 +386,112 @@ export function registerNdsTools(server: McpServer, config: ServerConfig): void 
         return boundedTextResult(config, operation, result);
       } catch (error) {
         return ndsErrorResult(config, operation, error, "generated-path-failure");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_disassemble_range",
+    "Decode a bounded ARM/Thumb instruction window from one uniquely mapped Nintendo DS code source.",
+    {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxInstructions: linearInstructionLimitSchema,
+      maxBytes: linearByteLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxInstructions,
+      maxBytes,
+    }) => {
+      const operation = "nds_disassemble_range";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
+        try {
+          const result = await disassembleNdsRange(
+            map,
+            location,
+            { maxInstructions, maxBytes },
+            backend,
+          );
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
+        }
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_analyze_control_flow",
+    "Build a bounded direct-control-flow graph from one uniquely mapped Nintendo DS ARM/Thumb entry point without traversing calls.",
+    {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxBlocks: cfgBlockLimitSchema,
+      maxInstructions: cfgInstructionLimitSchema,
+      maxBytes: cfgByteLimitSchema,
+      maxEdges: cfgEdgeLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxBlocks,
+      maxInstructions,
+      maxBytes,
+      maxEdges,
+    }) => {
+      const operation = "nds_analyze_control_flow";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
+        try {
+          const result = await analyzeNdsControlFlow(
+            map,
+            location,
+            { maxBlocks, maxInstructions, maxBytes, maxEdges },
+            backend,
+          );
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
+        }
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
       }
     },
   );
