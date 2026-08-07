@@ -41,15 +41,20 @@ export type NdsGhidraErrorCategory =
   | "ghidra-output-limit"
   | "project-state-mismatch";
 
+/** Error categories handled by the pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory
+  | NdsFunctionErrorCategory;
+
+/** Complete service-layer category set, including optional Ghidra integration. */
+export type NdsServiceErrorCategory =
+  | AnyNdsErrorCategory
   | NdsGhidraErrorCategory;
 
 export class NdsError<
-  Category extends AnyNdsErrorCategory = NdsErrorCategory,
+  Category extends NdsServiceErrorCategory = NdsErrorCategory,
 > extends Error {
   constructor(
     readonly category: Category,
