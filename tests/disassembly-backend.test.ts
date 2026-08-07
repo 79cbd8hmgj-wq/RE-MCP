@@ -44,8 +44,31 @@ test("normalizes ARM and Thumb PC-relative operands from structured detail", asy
       0x02000000,
       "arm",
     );
+    const thumbLiteral = backend.decodeOne(
+      Uint8Array.from([0x00, 0x48]),
+      0x02000002,
+      "thumb",
+    );
+    const armAdd = backend.decodeOne(
+      Uint8Array.from([0x10, 0x00, 0x8f, 0xe2]),
+      0x02000000,
+      "arm",
+    );
+    const thumbAdr = backend.decodeOne(
+      Uint8Array.from([0x00, 0xa0]),
+      0x02000002,
+      "thumb",
+    );
+
     assert.ok(armLiteral);
+    assert.ok(thumbLiteral);
+    assert.ok(armAdd);
+    assert.ok(thumbAdr);
     console.log("ARM_LITERAL_DIAGNOSTIC", JSON.stringify(armLiteral));
+    console.log("THUMB_LITERAL_DIAGNOSTIC", JSON.stringify(thumbLiteral));
+    console.log("ARM_ADD_DIAGNOSTIC", JSON.stringify(armAdd));
+    console.log("THUMB_ADR_DIAGNOSTIC", JSON.stringify(thumbAdr));
+
     assert.deepEqual(armLiteral.pcRelative, {
       kind: "literal-load",
       displacement: 0,
@@ -58,35 +81,14 @@ test("normalizes ARM and Thumb PC-relative operands from structured detail", asy
       ),
       true,
     );
-
-    const thumbLiteral = backend.decodeOne(
-      Uint8Array.from([0x00, 0x48]),
-      0x02000002,
-      "thumb",
-    );
-    assert.ok(thumbLiteral);
     assert.deepEqual(thumbLiteral.pcRelative, {
       kind: "literal-load",
       displacement: 0,
     });
-
-    const armAdd = backend.decodeOne(
-      Uint8Array.from([0x10, 0x00, 0x8f, 0xe2]),
-      0x02000000,
-      "arm",
-    );
-    assert.ok(armAdd);
     assert.deepEqual(armAdd.pcRelative, {
       kind: "address-add",
       immediate: 0x10,
     });
-
-    const thumbAdr = backend.decodeOne(
-      Uint8Array.from([0x00, 0xa0]),
-      0x02000002,
-      "thumb",
-    );
-    assert.ok(thumbAdr);
     assert.deepEqual(thumbAdr.pcRelative, {
       kind: "address-add",
       immediate: 0,
