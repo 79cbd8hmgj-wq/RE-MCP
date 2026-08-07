@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { ServerConfig } from "../../config.js";
@@ -31,6 +31,30 @@ function applicationVersion(properties: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
+function isInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (
+    relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+async function requireContainedRealPath(
+  home: string,
+  candidate: string,
+  label: string,
+): Promise<string> {
+  const resolved = await realpath(candidate);
+  if (!isInside(home, resolved)) {
+    throw installationError(
+      "invalid-ghidra-installation",
+      `${label} resolves outside RE_MCP_GHIDRA_HOME`,
+    );
+  }
+  return resolved;
+}
+
 export async function validateGhidraInstallation(
   config: ServerConfig,
 ): Promise<ValidatedGhidraInstallation> {
@@ -42,7 +66,16 @@ export async function validateGhidraInstallation(
     );
   }
 
-  const home = path.resolve(configuredHome);
+  let home: string;
+  try {
+    home = await realpath(path.resolve(configuredHome));
+  } catch (error) {
+    throw installationError(
+      "invalid-ghidra-installation",
+      `Unable to resolve RE_MCP_GHIDRA_HOME: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   const analyzeHeadless = resolveInside(home, path.join("support", "analyzeHeadless"));
   const propertiesPath = resolveInside(home, path.join("Ghidra", "application.properties"));
   const languagePath = resolveInside(
@@ -50,15 +83,32 @@ export async function validateGhidraInstallation(
     path.join("Ghidra", "Processors", "ARM", "data", "languages", "ARM.ldefs"),
   );
 
+  let executableRealPath: string;
+  let propertiesRealPath: string;
+  let languageRealPath: string;
   try {
-    const executableInfo = await stat(analyzeHeadless);
+    [executableRealPath, propertiesRealPath, languageRealPath] = await Promise.all([
+      requireContainedRealPath(home, analyzeHeadless, "Ghidra support/analyzeHeadless"),
+      requireContainedRealPath(home, propertiesPath, "Ghidra application.properties"),
+      requireContainedRealPath(home, languagePath, "Ghidra ARM language definitions"),
+    ]);
+  } catch (error) {
+    if (error instanceof NdsError) throw error;
+    throw installationError(
+      "invalid-ghidra-installation",
+      `Ghidra installation structure is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  try {
+    const executableInfo = await stat(executableRealPath);
     if (!executableInfo.isFile()) {
       throw installationError(
         "invalid-ghidra-installation",
         "Ghidra support/analyzeHeadless is not a regular file",
       );
     }
-    await access(analyzeHeadless, fsConstants.X_OK);
+    await access(executableRealPath, fsConstants.X_OK);
   } catch (error) {
     if (error instanceof NdsError) throw error;
     throw installationError(
@@ -71,8 +121,8 @@ export async function validateGhidraInstallation(
   let languages: string;
   try {
     [properties, languages] = await Promise.all([
-      readFile(propertiesPath, "utf8"),
-      readFile(languagePath, "utf8"),
+      readFile(propertiesRealPath, "utf8"),
+      readFile(languageRealPath, "utf8"),
     ]);
   } catch (error) {
     throw installationError(
