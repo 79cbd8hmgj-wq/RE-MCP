@@ -11,6 +11,7 @@ import { OwnedProcessManager } from "./services/owned-process.js";
 import { runProcess } from "./services/process-runner.js";
 import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
+import { registerNdsTools } from "./tools/nds.js";
 import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
@@ -79,6 +80,7 @@ server.tool(
 
 registerBakuganTools(server, config);
 registerDesmumeTools(server, config, desmumeManager);
+registerNdsTools(server, config);
 registerRuntimeEvidenceTools(server, config, desmumeManager);
 
 server.tool(
@@ -96,6 +98,8 @@ server.tool(
       debuggerPolicy:
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection; no register writes, general memory writes, watchpoints, or arbitrary GDB packets",
       evidencePolicy: "Atomic raw evidence under project analysis/generated only",
+      ndsStaticAnalysisPolicy:
+        "Read-only Nintendo DS ROM parsing and address resolution with deterministic generated artifacts under analysis/generated/nds only; no ROM mutation, rebuild, arbitrary byte-range extraction, or caller-controlled output paths",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -121,6 +125,13 @@ server.tool(
         "desmume_executable_ranges_replace",
         "desmume_capture_runtime_evidence",
         "desmume_stop",
+        "nds_inspect_rom",
+        "nds_list_files",
+        "nds_list_overlays",
+        "nds_resolve_runtime_address",
+        "nds_resolve_rom_offset",
+        "nds_extract_component",
+        "nds_extract_analysis_bundle",
         "server_capabilities",
       ],
     }),
