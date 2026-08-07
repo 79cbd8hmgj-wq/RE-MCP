@@ -21,6 +21,7 @@ import ghidra.app.script.GhidraScript;
 import ghidra.framework.Application;
 import ghidra.framework.options.Options;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
 
 public class ReMcpRecordAnalysis extends GhidraScript {
     private static final String BRIDGE_FORMAT = "re-mcp-nds-ghidra";
@@ -83,6 +84,7 @@ public class ReMcpRecordAnalysis extends GhidraScript {
             JsonObject overlay = element.getAsJsonObject();
             String importStatus = requireString(overlay, "importStatus");
             if ("importable".equals(importStatus)) {
+                validateImportedOverlay(overlay);
                 importedOverlays += 1;
             }
             else if ("not-imported-compressed".equals(importStatus)) {
@@ -157,6 +159,46 @@ public class ReMcpRecordAnalysis extends GhidraScript {
             }
         }
         throw new IllegalArgumentException("manifest has no discovery record for " + processor);
+    }
+
+    private void validateImportedOverlay(JsonObject overlay) {
+        int overlayId = requireInt(overlay, "overlayId");
+        String spaceName = requireString(overlay, "spaceName");
+        long runtimeAddress = requireUint32(overlay, "runtimeAddress");
+        long ramSize = requireNonNegativeLong(overlay, "ramSize");
+        long fileBackedSize = requireNonNegativeLong(overlay, "fileBackedSize");
+        long initializedSize = Math.min(ramSize, fileBackedSize);
+        if (initializedSize <= 0) {
+            throw new IllegalStateException(
+                "importable overlay has no initialized runtime bytes: " + overlayId);
+        }
+
+        MemoryBlock block = currentProgram.getMemory().getBlock(spaceName);
+        if (block == null ||
+                !spaceName.equals(block.getName()) ||
+                !block.isOverlay() ||
+                !spaceName.equals(block.getStart().getAddressSpace().getName()) ||
+                block.getStart().getOffset() != runtimeAddress ||
+                block.getSize() != initializedSize) {
+            throw new IllegalStateException(
+                "importable overlay is missing or conflicts with canonical metadata: " + spaceName);
+        }
+
+        long bssSize = requireNonNegativeLong(overlay, "bssSize");
+        if (bssSize > 0) {
+            long bssOffset = addUint32(runtimeAddress, ramSize, "overlay BSS start");
+            String bssName = spaceName + "_BSS";
+            MemoryBlock bss = currentProgram.getMemory().getBlock(bssName);
+            if (bss == null ||
+                    !bssName.equals(bss.getName()) ||
+                    !bss.isOverlay() ||
+                    !spaceName.equals(bss.getStart().getAddressSpace().getName()) ||
+                    bss.getStart().getOffset() != bssOffset ||
+                    bss.getSize() != bssSize) {
+                throw new IllegalStateException(
+                    "overlay BSS is missing or conflicts with canonical metadata: " + bssName);
+            }
+        }
     }
 
     private Path expectedResultPath(
@@ -236,6 +278,14 @@ public class ReMcpRecordAnalysis extends GhidraScript {
         return result.toString();
     }
 
+    private long addUint32(long left, long right, String label) {
+        long value = left + right;
+        if (left < 0 || right < 0 || value < 0 || value > 0xffffffffL) {
+            throw new IllegalArgumentException(label + " exceeds 32-bit address space");
+        }
+        return value;
+    }
+
     private JsonArray requireArray(JsonObject object, String key) {
         JsonElement value = object.get(key);
         if (value == null || !value.isJsonArray()) {
@@ -266,5 +316,25 @@ public class ReMcpRecordAnalysis extends GhidraScript {
             throw new IllegalArgumentException("manifest field is missing: " + key);
         }
         return value.getAsInt();
+    }
+
+    private long requireUint32(JsonObject object, String key) {
+        long value = requireNonNegativeLong(object, key);
+        if (value > 0xffffffffL) {
+            throw new IllegalArgumentException("manifest field exceeds uint32: " + key);
+        }
+        return value;
+    }
+
+    private long requireNonNegativeLong(JsonObject object, String key) {
+        JsonElement value = object.get(key);
+        if (value == null || value.isJsonNull()) {
+            throw new IllegalArgumentException("manifest field is missing: " + key);
+        }
+        long result = value.getAsLong();
+        if (result < 0) {
+            throw new IllegalArgumentException("manifest field must be non-negative: " + key);
+        }
+        return result;
     }
 }
