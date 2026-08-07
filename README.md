@@ -31,6 +31,8 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Reverse-map ROM offsets to structural, NitroFS, executable, and overlay relationships
 - Decode bounded ARM/Thumb instruction windows from deterministic file-backed NDS code sources
 - Build bounded direct-control-flow graphs across deterministic same-processor branch targets without recursively traversing calls
+- Classify deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address references
+- Find bounded reverse cross-references through proven code seeds with explicit component coverage and truncation status
 - Extract validated ARM9, ARM7, overlay, or NitroFS components to a deterministic generated-analysis tree
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
 
@@ -56,7 +58,7 @@ RE-MCP does **not** expose register writes, general memory writes, watchpoints, 
 
 ## NDS Static Analysis
 
-The static-analysis surface consists of nine MCP tools:
+The static-analysis surface consists of eleven MCP tools:
 
 - `nds_inspect_rom`
 - `nds_list_files`
@@ -67,6 +69,8 @@ The static-analysis surface consists of nine MCP tools:
 - `nds_extract_analysis_bundle`
 - `nds_disassemble_range`
 - `nds_analyze_control_flow`
+- `nds_list_references`
+- `nds_find_xrefs`
 
 These tools are native-independent and have no DeSmuME or GDB dependency.
 
@@ -152,6 +156,58 @@ Deterministic non-call direct branches may be traversed. Conditional branches ma
 
 Static disassembly is independent of physical Catalina/DeSmuME Dynamic Debugging acceptance. Passing the Capstone.js tests or package smoke check does not constitute native emulator-debugger acceptance.
 
+### Proven reference discovery
+
+Reference discovery is deliberately narrower than generic pattern or pointer searching. RE-MCP emits only deterministic single-instruction references in four classes:
+
+- `direct-branch`
+- `direct-call`
+- `literal-pool`
+- `pc-relative-address`
+
+`literal-pool` means the architecturally computed literal-pool **slot address**. The word stored in that slot is not automatically interpreted as another pointer or reference. Ordinary immediates are not references merely because their numeric value looks like a ROM/RAM address, and this milestone performs no register-value or broader data-flow inference.
+
+`nds_list_references` is source → reference analysis. It decodes one bounded sequential ARM/Thumb window using the same source policy as `nds_disassemble_range`, classifies each decoded instruction, and does not follow branches or calls. Its bounds are therefore the same:
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Instructions | 32 | 256 |
+| Source bytes | 128 | 1,024 |
+
+`nds_find_xrefs` is target → cross-reference analysis. It scans only caller-selected static scope for one processor, using deterministic FIFO traversal from proven code seeds. Main code has one implicit ARM seed at the processor's NDS header entry point. Overlays are scanned only when the caller supplies an explicit aligned ARM/Thumb seed for that uncompressed overlay or a proven direct branch/call from already scanned code reaches it. Selecting an overlay does not imply that it is loaded at runtime.
+
+A direct call may expand **xref search coverage** because the purpose of this tool is to discover references in proven reachable code. This does not change `nds_analyze_control_flow`: the CFG tool still records direct calls without traversing their callees.
+
+Reverse-xref search bounds are:
+
+| Limit | Default | Maximum |
+| --- | ---: | ---: |
+| Components | 32 | 128 |
+| Basic blocks | 128 | 512 |
+| Instructions | 2,048 | 16,384 |
+| Decoded source bytes | 8 KiB | 64 KiB |
+| Traversal edges | 512 | 4,096 |
+| Returned xrefs | 256 | 2,048 |
+
+The result status is one of:
+
+- `complete`: all selected/considered components had proven seeds and their bounded reachable work completed;
+- `partial-coverage`: at least one selected component could not be proven/scanned, but no global scan limit truncated explored work;
+- `truncated`: one or more scan/result limits prevented complete bounded exploration.
+
+Per-component coverage is explicit:
+
+- `scanned`
+- `no-proven-seed`
+- `compressed-overlay-not-decodable`
+- `out-of-limit`
+
+A result containing zero xrefs is definitive for the selected static scope only when `status === "complete"`. A zero-result `partial-coverage` or `truncated` response is intentionally not presented as proof that no xref exists.
+
+Runtime targets may preserve `resolved`, ambiguous-overlay, BSS, compressed-overlay, or unmapped ownership metadata; reference matching still uses the exact requested runtime address. A ROM-offset target is accepted only when that offset maps to exactly one runtime address for the selected processor. Structural/NitroFS-only bytes are not reverse-xref targets in this milestone.
+
+Reference searches are on-demand only. RE-MCP does not create a persistent whole-ROM xref database or index. Generic byte signatures, string/pattern searching, heuristic pointer discovery, and arbitrary immediate-pointer inference remain deferred.
+
 ### Controlled extraction
 
 `nds_extract_component` accepts only canonical component selectors:
@@ -192,10 +248,12 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 1. Call `nds_inspect_rom` to validate the ROM and obtain the canonical structural summary.
 2. Use `nds_list_files`, `nds_list_overlays`, and the address resolvers to identify deterministic code/file relationships.
 3. Call `nds_disassemble_range` for a bounded ARM/Thumb instruction window at a validated runtime address or ROM offset.
-4. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
-5. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
+4. Call `nds_list_references` when you want deterministic references from a bounded sequential source window without traversal.
+5. Call `nds_analyze_control_flow` when deterministic non-call direct branch traversal is useful.
+6. Call `nds_find_xrefs` to search for references to one runtime target within an explicit same-processor static scope; inspect `status` and component coverage before treating a negative result as definitive.
+7. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-This milestone still does **not** implement heuristic function discovery or function-boundary claims, recursive call-target traversal, symbol recovery, generic binary disassembly, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+This milestone still does **not** implement heuristic function discovery or function-boundary claims, generic byte/string/signature pattern search, heuristic pointer discovery, persistent xref indexing, symbol recovery, generic binary disassembly, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra/radare2 integration, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Dynamic-debugging tools
 
@@ -257,7 +315,7 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, and decodes known ARM and Thumb instructions. The check requires no external disassembler or runtime asset download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, and smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference. The check requires no external disassembler or runtime asset download.
 
 After downloading and extracting the archive:
 
@@ -266,7 +324,7 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files and ARM/Thumb decoder smoke fixtures before reporting `ok: true`.
+The same self-check verifies the required package files, ARM/Thumb decoder fixtures, and packaged deterministic reference classifier before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace both absolute paths, and add the resulting configuration to your MCP host.
 
@@ -353,14 +411,20 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Runtime evidence restricted to project `analysis/generated`
 - NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
 - NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
-- NDS disassembly accepts canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
-- ARM/Thumb linear decoding is bounded to 256 instructions and 1,024 bytes per request
+- NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
+- ARM/Thumb linear decoding and source-reference listing are bounded to 256 instructions and 1,024 bytes per request
 - CFG traversal is bounded to 256 blocks, 4,096 instructions, 16 KiB decoded bytes, and 1,024 traversal edges
-- Direct calls are annotated but never recursively traversed; indirect targets are never guessed
+- Reverse-xref traversal is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 returned xrefs
+- Only deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address-construction references are emitted
+- Literal-pool contents and pointer-looking ordinary immediates are not interpreted as references
+- `nds_find_xrefs` may follow proven direct calls for search coverage, while `nds_analyze_control_flow` continues to annotate calls without traversing them
+- Reverse-xref coverage gaps and truncation are explicit; a zero-xref result is definitive for selected scope only when status is `complete`
+- No persistent xref index, generic pattern/signature search, or heuristic pointer discovery
+- Indirect targets are never guessed
 - Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
-- Static overlay selection/disassembly never claims that an overlay is loaded at runtime
-- Static operations revalidate the source ROM SHA-256 before and after decoding
+- Static overlay selection/disassembly/reference search never claims that an overlay is loaded at runtime
+- Static operations revalidate the source ROM SHA-256 before and after decoding/searching
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
 

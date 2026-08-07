@@ -10,9 +10,20 @@ export type NdsErrorCategory =
   | "output-bound-exceeded"
   | "generated-path-failure";
 
-export class NdsError extends Error {
+export type NdsReferenceErrorCategory =
+  | "ambiguous-reference-target"
+  | "reference-target-not-runtime-addressable"
+  | "invalid-reference-scope"
+  | "invalid-reference-seed"
+  | "reference-scan-limit-exceeded";
+
+export type AnyNdsErrorCategory = NdsErrorCategory | NdsReferenceErrorCategory;
+
+export class NdsError<
+  Category extends AnyNdsErrorCategory = NdsErrorCategory,
+> extends Error {
   constructor(
-    readonly category: NdsErrorCategory,
+    readonly category: Category,
     message: string,
   ) {
     super(message);
