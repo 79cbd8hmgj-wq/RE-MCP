@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -103,5 +103,24 @@ test("Ghidra installation validation rejects a missing analyzeHeadless executabl
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Ghidra installation validation rejects analyzeHeadless symlinks that escape the configured home", async () => {
+  const fixture = await fakeInstallation({ executable: false });
+  const outside = await mkdtemp(path.join(os.tmpdir(), "re-mcp-ghidra-outside-"));
+  try {
+    const outsideExecutable = path.join(outside, "analyzeHeadless");
+    await writeFile(outsideExecutable, "#!/bin/sh\nexit 0\n", "utf8");
+    await chmod(outsideExecutable, 0o755);
+    await symlink(outsideExecutable, fixture.analyzeHeadless);
+
+    await assert.rejects(
+      validateGhidraInstallation(config(fixture.root)),
+      (error: unknown) => category(error) === "invalid-ghidra-installation",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
