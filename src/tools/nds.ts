@@ -12,17 +12,24 @@ import { createCapstoneArmBackend } from "../services/disassembly/capstone.js";
 import { analyzeNdsControlFlow } from "../services/nds/control-flow.js";
 import { disassembleNdsRange } from "../services/nds/disassembly.js";
 import type { NdsDisassemblyLocation } from "../services/nds/disassembly-source.js";
-import { NdsError, type NdsErrorCategory } from "../services/nds/errors.js";
+import {
+  NdsError,
+  type AnyNdsErrorCategory,
+  type NdsErrorCategory,
+} from "../services/nds/errors.js";
 import {
   extractNdsAnalysisBundle,
   extractNdsComponent,
   type NdsExtractionRequest,
 } from "../services/nds/extraction.js";
+import { listNdsReferences } from "../services/nds/reference-list.js";
 import {
   resolveRomOffset,
   resolveRuntimeAddress,
 } from "../services/nds/resolver.js";
 import { readNdsRomMap } from "../services/nds/rom-map.js";
+import type { NdsReferenceTargetSelector } from "../services/nds/xref-source.js";
+import { findNdsXrefs } from "../services/nds/xrefs.js";
 
 const romSchema = z.string().min(1);
 const uint32Schema = z.number().int().min(0).max(0xffffffff);
@@ -37,8 +44,31 @@ const cfgBlockLimitSchema = z.number().int().min(1).max(256).default(64);
 const cfgInstructionLimitSchema = z.number().int().min(1).max(4096).default(512);
 const cfgByteLimitSchema = z.number().int().min(2).max(16384).default(2048);
 const cfgEdgeLimitSchema = z.number().int().min(1).max(1024).default(128);
+const xrefComponentLimitSchema = z.number().int().min(1).max(128).default(32);
+const xrefBlockLimitSchema = z.number().int().min(1).max(512).default(128);
+const xrefInstructionLimitSchema = z.number().int().min(1).max(16384).default(2048);
+const xrefByteLimitSchema = z.number().int().min(2).max(65536).default(8192);
+const xrefEdgeLimitSchema = z.number().int().min(1).max(4096).default(512);
+const xrefResultLimitSchema = z.number().int().min(1).max(2048).default(256);
+const referenceScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("main") }),
+  z.object({
+    kind: z.literal("overlay"),
+    overlayIds: z.array(uint32Schema).min(1).max(128),
+  }),
+  z.object({
+    kind: z.literal("main-and-overlays"),
+    overlayIds: z.array(uint32Schema).min(1).max(128),
+  }),
+  z.object({ kind: z.literal("all-executable-components") }),
+]);
+const referenceSeedSchema = z.object({
+  runtimeAddress: uint32Schema,
+  mode: z.enum(["arm", "thumb"]),
+  overlayId: uint32Schema.optional(),
+});
 
-type NdsToolErrorCategory = NdsErrorCategory | "disassembly-backend-failure";
+type NdsToolErrorCategory = AnyNdsErrorCategory | "disassembly-backend-failure";
 
 function textResultFromText(text: string, isError = false) {
   return {
@@ -67,9 +97,19 @@ function correctiveAction(category: NdsToolErrorCategory): string {
     case "unknown-overlay-id":
       return "List overlays first, then use an existing overlay ID for the selected processor.";
     case "output-bound-exceeded":
-      return "Narrow the request with prefix, processor, pagination, or smaller disassembly/CFG limits.";
+      return "Narrow the request with prefix, processor, pagination, or smaller disassembly/CFG/reference limits.";
     case "generated-path-failure":
       return "Check workspace write permissions and retry; generated NDS output is restricted to analysis/generated/nds.";
+    case "ambiguous-reference-target":
+      return "Use a runtime address or a ROM offset that maps to exactly one runtime address for the selected processor.";
+    case "reference-target-not-runtime-addressable":
+      return "Choose a runtime-mapped ARM9/ARM7 target; ordinary structural/NitroFS ROM bytes are not reverse-xref targets in this milestone.";
+    case "invalid-reference-scope":
+      return "Choose main, existing overlay IDs for the selected processor, or all executable components without duplicate overlay IDs.";
+    case "invalid-reference-seed":
+      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected uncompressed file-backed code.";
+    case "reference-scan-limit-exceeded":
+      return "Use valid positive bounded scan limits; internal reference-scan limit invariants must not be bypassed.";
     case "disassembly-backend-failure":
       return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
   }
@@ -181,6 +221,23 @@ function normalizeDisassemblyLocation(input: {
       : { romOffset: input.romOffset! }),
     ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
   };
+}
+
+function normalizeReferenceTarget(input: {
+  readonly targetRuntimeAddress?: number;
+  readonly targetRomOffset?: number;
+}): NdsReferenceTargetSelector {
+  const hasRuntimeTarget = input.targetRuntimeAddress !== undefined;
+  const hasRomTarget = input.targetRomOffset !== undefined;
+  if (hasRuntimeTarget === hasRomTarget) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Reference search requires exactly one of targetRuntimeAddress or targetRomOffset",
+    );
+  }
+  return hasRuntimeTarget
+    ? { targetRuntimeAddress: input.targetRuntimeAddress! }
+    : { targetRomOffset: input.targetRomOffset! };
 }
 
 export function registerNdsTools(server: McpServer, config: ServerConfig): void {
@@ -484,6 +541,120 @@ export function registerNdsTools(server: McpServer, config: ServerConfig): void 
             map,
             location,
             { maxBlocks, maxInstructions, maxBytes, maxEdges },
+            backend,
+          );
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
+        }
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_list_references",
+    "List bounded deterministic proven references from one uniquely mapped Nintendo DS ARM/Thumb code window.",
+    {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxInstructions: linearInstructionLimitSchema,
+      maxBytes: linearByteLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxInstructions,
+      maxBytes,
+    }) => {
+      const operation = "nds_list_references";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
+        try {
+          const result = await listNdsReferences(
+            map,
+            location,
+            { maxInstructions, maxBytes },
+            backend,
+          );
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
+        }
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_find_xrefs",
+    "Find bounded deterministic proven xrefs in caller-selected Nintendo DS static scope using explicit/proven seeds without inferring loaded overlay state.",
+    {
+      rom: romSchema,
+      processor: processorSchema,
+      targetRuntimeAddress: uint32Schema.optional(),
+      targetRomOffset: uint32Schema.optional(),
+      scope: referenceScopeSchema,
+      seeds: z.array(referenceSeedSchema).max(512).default([]),
+      maxComponents: xrefComponentLimitSchema,
+      maxBlocks: xrefBlockLimitSchema,
+      maxInstructions: xrefInstructionLimitSchema,
+      maxBytes: xrefByteLimitSchema,
+      maxEdges: xrefEdgeLimitSchema,
+      maxXrefs: xrefResultLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      targetRuntimeAddress,
+      targetRomOffset,
+      scope,
+      seeds,
+      maxComponents,
+      maxBlocks,
+      maxInstructions,
+      maxBytes,
+      maxEdges,
+      maxXrefs,
+    }) => {
+      const operation = "nds_find_xrefs";
+      try {
+        const target = normalizeReferenceTarget({
+          ...(targetRuntimeAddress === undefined ? {} : { targetRuntimeAddress }),
+          ...(targetRomOffset === undefined ? {} : { targetRomOffset }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
+        try {
+          const result = await findNdsXrefs(
+            map,
+            { processor, target, scope, seeds },
+            {
+              maxComponents,
+              maxBlocks,
+              maxInstructions,
+              maxBytes,
+              maxEdges,
+              maxXrefs,
+            },
             backend,
           );
           return boundedTextResult(config, operation, result);
