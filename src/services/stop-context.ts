@@ -25,9 +25,9 @@ export interface CaptureStopContextInput {
   readonly stop: GdbStopReply;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
-  readonly registers?: Arm9RegisterContext;
-  readonly breakpoint?: BreakpointRecord;
-  readonly additionalRegions?: readonly StopContextRegionRequest[];
+  readonly registers?: Arm9RegisterContext | undefined;
+  readonly breakpoint?: BreakpointRecord | undefined;
+  readonly additionalRegions?: readonly StopContextRegionRequest[] | undefined;
 }
 
 export interface StopContext {
