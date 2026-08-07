@@ -35,6 +35,21 @@ function hasGroup(instruction: CapstoneInstruction, group: number): boolean {
   return instruction.detail.groups?.includes(group) === true;
 }
 
+function isKnownJumpInstruction(cs: CapstoneModule, id: number): boolean {
+  return id === cs.ARM_INS_B
+    || id === cs.ARM_INS_BX
+    || id === cs.ARM_INS_BXJ
+    || id === cs.ARM_INS_BXNS
+    || id === cs.ARM_INS_CBZ
+    || id === cs.ARM_INS_CBNZ;
+}
+
+function isKnownCallInstruction(cs: CapstoneModule, id: number): boolean {
+  return id === cs.ARM_INS_BL
+    || id === cs.ARM_INS_BLX
+    || id === cs.ARM_INS_BLXNS;
+}
+
 function normalizeOperand(
   cs: CapstoneModule,
   decoder: CapstoneHandle,
@@ -83,8 +98,12 @@ function normalizeInstruction(
     operands: (instruction.detail.op ?? []).map(
       (operand) => normalizeOperand(cs, decoder, operand),
     ),
-    isJump: hasGroup(instruction, cs.GRP_JUMP),
-    isCall: hasGroup(instruction, cs.GRP_CALL),
+    isJump:
+      hasGroup(instruction, cs.GRP_JUMP)
+      || isKnownJumpInstruction(cs, instruction.id),
+    isCall:
+      hasGroup(instruction, cs.GRP_CALL)
+      || isKnownCallInstruction(cs, instruction.id),
     isReturn: hasGroup(instruction, cs.GRP_RET),
     isConditional:
       instruction.id === cs.ARM_INS_CBZ
