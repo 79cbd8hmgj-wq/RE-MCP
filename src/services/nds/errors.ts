@@ -28,11 +28,25 @@ export type NdsFunctionErrorCategory =
   | "function-entry-not-uniquely-resolved"
   | "function-discovery-limit-exceeded";
 
+export type NdsGhidraErrorCategory =
+  | "ghidra-not-configured"
+  | "invalid-ghidra-installation"
+  | "unsupported-ghidra-version"
+  | "ghidra-language-unavailable"
+  | "ghidra-project-locked"
+  | "bridge-generation-failed"
+  | "ghidra-import-failed"
+  | "ghidra-analysis-failed"
+  | "ghidra-analysis-timeout"
+  | "ghidra-output-limit"
+  | "project-state-mismatch";
+
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory;
+  | NdsFunctionErrorCategory
+  | NdsGhidraErrorCategory;
 
 export class NdsError<
   Category extends AnyNdsErrorCategory = NdsErrorCategory,
