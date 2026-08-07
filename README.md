@@ -422,3 +422,80 @@ Only remove quarantine after verifying the checksum and confirming that the arti
 Automated CI verifies packet framing, breakpoint lifecycle, execution state, timeout behavior, register decoding, context capture, lifecycle reset, and MCP validation. Final acceptance still requires the verified native DeSmuME bundle on the target Intel macOS Catalina system.
 
 Follow [`docs/dynamic-debugging-catalina-acceptance.md`](docs/dynamic-debugging-catalina-acceptance.md) to verify breakpoint installation, continue/stop, PC and CPSR capture, single stepping, pause, breakpoint removal, and debugger-state reset after emulator restart.
+
+## Build RE-MCP from source
+
+```bash
+npm install
+npm run check
+npm run build
+```
+
+Run directly:
+
+```bash
+RE_MCP_WORKSPACE_ROOT=/absolute/path/to/rom-modding \
+node dist/index.js
+```
+
+The server refuses to start without an explicit workspace root.
+
+## DeSmuME launcher contract
+
+The currently verified Linux launcher contract is:
+
+```bash
+run-desmume-debug.sh --arm9gdb=20000 /path/to/game.nds
+```
+
+The Catalina-native bundle uses:
+
+```bash
+run-desmume-debug.command /path/to/game.nds 20000
+```
+
+RE-MCP owns at most one emulator child process per server instance. It rejects duplicate starts, captures bounded logs, resets session-scoped debugger state when that process exits, and terminates the owned emulator during MCP shutdown.
+
+## Security model
+
+- No arbitrary shell tool
+- No shell interpolation
+- Fixed executable and argument construction
+- Workspace path containment
+- Process timeouts and bounded output
+- Minimal child-process environment
+- Milestone 6E installation restricted to dry-run mode
+- One server-owned DeSmuME process
+- GDB restricted to the owned localhost ARM9 port
+- Breakpoints restricted to validated executable ranges
+- Maximum 32 active breakpoints and 100 instructions per single-step request
+- Bounded continue, wait, pause, register, memory, and stop-context operations
+- Controlled GDB packets only: software breakpoint insert/remove, continue, single-step, interrupt, register read, bounded memory read, and stop-status query
+- No arbitrary GDB packet tool
+- No register writes, general memory writes, or watchpoints
+- Runtime evidence restricted to project `analysis/generated`
+- NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
+- NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
+- NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
+- `nds_search_pattern` accepts only a validated NDS ROM plus canonical component scope or explicit whole-ROM scope; no generic binary path, caller-supplied byte buffer, caller-defined start/end range, runtime-memory target, or output path
+- Pattern search is bounded to 4,096 encoded pattern bytes, 512 MiB scanned bytes, 1,000 returned hits per page, 100,000 discovered matches, and 64 context bytes per side
+- Component-scoped pattern hits require full-span containment in at least one selected canonical component; physical overlap is deduplicated and adjacent components do not authorize cross-boundary matches
+- Compressed overlays are pattern-searched only as exact stored FAT-backed bytes; pattern search performs no decompression and fabricates no compressed-runtime address mapping
+- Pattern hits remain byte-level facts and are not promoted into pointers, references, functions, or tables
+- ARM/Thumb linear decoding and source-reference listing are bounded to 256 instructions and 1,024 bytes per request
+- CFG traversal is bounded to 256 blocks, 4,096 instructions, 16 KiB decoded bytes, and 1,024 traversal edges
+- Reverse-xref traversal is bounded to 128 components, 512 blocks, 16,384 instructions, 64 KiB decoded bytes, 4,096 traversal edges, and 2,048 returned xrefs
+- Only deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address-construction references are emitted
+- Literal-pool contents and pointer-looking ordinary immediates are not interpreted as references
+- `nds_find_xrefs` may follow proven direct calls for search coverage, while `nds_analyze_control_flow` continues to annotate calls without traversing them
+- Reverse-xref coverage gaps and truncation are explicit; a zero-xref result is definitive for selected scope only when status is `complete`
+- No persistent pattern/xref index or heuristic pointer discovery
+- Indirect targets are never guessed
+- Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
+- Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
+- Static overlay selection/disassembly/reference search never claims that an overlay is loaded at runtime
+- Static operations revalidate the source ROM SHA-256 before and after decoding/searching
+- Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
+- No attachment to unrelated emulator processes
+
+Do not use your general home directory as `RE_MCP_WORKSPACE_ROOT`. Create a dedicated directory containing only the repositories and private inputs intended for RE-MCP.
