@@ -50,6 +50,11 @@ export interface StaticInstruction {
   readonly targetResolution: NdsCodeSourceResolution | null;
 }
 
+export interface DetailedStaticInstruction {
+  readonly instruction: StaticInstruction;
+  readonly decoded: DecodedArmInstruction;
+}
+
 export interface LinearDisassemblyOptions {
   readonly maxInstructions: number;
   readonly maxBytes: number;
@@ -61,6 +66,16 @@ export type LinearDisassemblyResult =
       readonly status: "complete" | "decode-stopped" | "component-boundary";
       readonly source: NdsCodeSource;
       readonly instructions: readonly StaticInstruction[];
+      readonly decodedBytes: number;
+      readonly stopAddress: number;
+    };
+
+export type DetailedLinearDisassemblyResult =
+  | Exclude<NdsCodeSourceResolution, { readonly status: "resolved" }>
+  | {
+      readonly status: "complete" | "decode-stopped" | "component-boundary";
+      readonly source: NdsCodeSource;
+      readonly instructions: readonly DetailedStaticInstruction[];
       readonly decodedBytes: number;
       readonly stopAddress: number;
     };
@@ -146,12 +161,12 @@ function normalizeFlow(
   };
 }
 
-export function decodeNdsInstruction(
+export function decodeNdsInstructionDetailed(
   map: NdsRomMap,
   source: NdsCodeSource,
   bytes: Uint8Array,
   backend: ArmDisassemblyBackend,
-): StaticInstruction | null {
+): DetailedStaticInstruction | null {
   const decoded = backend.decodeOne(bytes, source.runtimeAddress, source.mode);
   if (decoded === null) {
     return null;
@@ -178,21 +193,33 @@ export function decodeNdsInstruction(
     : null;
 
   return {
-    address: source.runtimeAddress,
-    romOffset: source.romOffset,
-    size: decoded.size,
-    bytesHex: Buffer.from(bytes.subarray(0, decoded.size)).toString("hex"),
-    mode: source.mode,
-    mnemonic: decoded.mnemonic,
-    operands: decoded.operandsText,
-    flow,
-    source: {
-      processor: source.processor,
-      component: source.component,
-      overlayId: source.overlayId,
+    instruction: {
+      address: source.runtimeAddress,
+      romOffset: source.romOffset,
+      size: decoded.size,
+      bytesHex: Buffer.from(bytes.subarray(0, decoded.size)).toString("hex"),
+      mode: source.mode,
+      mnemonic: decoded.mnemonic,
+      operands: decoded.operandsText,
+      flow,
+      source: {
+        processor: source.processor,
+        component: source.component,
+        overlayId: source.overlayId,
+      },
+      targetResolution,
     },
-    targetResolution,
+    decoded,
   };
+}
+
+export function decodeNdsInstruction(
+  map: NdsRomMap,
+  source: NdsCodeSource,
+  bytes: Uint8Array,
+  backend: ArmDisassemblyBackend,
+): StaticInstruction | null {
+  return decodeNdsInstructionDetailed(map, source, bytes, backend)?.instruction ?? null;
 }
 
 function requirePositiveSafeInteger(value: number, label: string): void {
@@ -204,12 +231,12 @@ function requirePositiveSafeInteger(value: number, label: string): void {
   }
 }
 
-function stoppedResult(
+function stoppedDetailedResult(
   status: "complete" | "decode-stopped" | "component-boundary",
   source: NdsCodeSource,
-  instructions: readonly StaticInstruction[],
+  instructions: readonly DetailedStaticInstruction[],
   decodedBytes: number,
-): Extract<LinearDisassemblyResult, { readonly status: "complete" | "decode-stopped" | "component-boundary" }> {
+): Extract<DetailedLinearDisassemblyResult, { readonly status: "complete" | "decode-stopped" | "component-boundary" }> {
   return {
     status,
     source,
@@ -219,12 +246,12 @@ function stoppedResult(
   };
 }
 
-export async function disassembleNdsRange(
+export async function disassembleNdsRangeDetailed(
   map: NdsRomMap,
   location: NdsDisassemblyLocation,
   options: LinearDisassemblyOptions,
   backend: ArmDisassemblyBackend,
-): Promise<LinearDisassemblyResult> {
+): Promise<DetailedLinearDisassemblyResult> {
   requirePositiveSafeInteger(options.maxInstructions, "Maximum instruction count");
   requirePositiveSafeInteger(options.maxBytes, "Maximum source byte count");
 
@@ -236,7 +263,7 @@ export async function disassembleNdsRange(
   return await withValidatedNdsRomReader(map, async (read) => {
     const start = resolved.source;
     const bytes = await read(start, options.maxBytes);
-    const instructions: StaticInstruction[] = [];
+    const instructions: DetailedStaticInstruction[] = [];
     let cursor = 0;
 
     while (
@@ -247,7 +274,7 @@ export async function disassembleNdsRange(
       const minimumSize = start.mode === "arm" ? 4 : 2;
       if (remaining < minimumSize) {
         const reachedBoundary = start.romOffset + bytes.length >= start.romEnd;
-        return stoppedResult(
+        return stoppedDetailedResult(
           reachedBoundary ? "component-boundary" : "complete",
           start,
           instructions,
@@ -256,14 +283,14 @@ export async function disassembleNdsRange(
       }
 
       const source = codeSourceAt(start, start.runtimeAddress + cursor);
-      const instruction = decodeNdsInstruction(
+      const detailed = decodeNdsInstructionDetailed(
         map,
         source,
         bytes.subarray(cursor),
         backend,
       );
-      if (instruction === null) {
-        return stoppedResult(
+      if (detailed === null) {
+        return stoppedDetailedResult(
           "decode-stopped",
           start,
           instructions,
@@ -271,10 +298,11 @@ export async function disassembleNdsRange(
         );
       }
 
+      const instruction = detailed.instruction;
       const crossesReadWindow = cursor + instruction.size > bytes.length;
       const crossesComponent = source.romOffset + instruction.size > source.romEnd;
       if (crossesReadWindow || crossesComponent) {
-        return stoppedResult(
+        return stoppedDetailedResult(
           crossesComponent || start.romOffset + bytes.length >= start.romEnd
             ? "component-boundary"
             : "complete",
@@ -284,16 +312,37 @@ export async function disassembleNdsRange(
         );
       }
 
-      instructions.push(instruction);
+      instructions.push(detailed);
       cursor += instruction.size;
     }
 
     const reachedBoundary = start.romOffset + cursor >= start.romEnd;
-    return stoppedResult(
+    return stoppedDetailedResult(
       reachedBoundary ? "component-boundary" : "complete",
       start,
       instructions,
       cursor,
     );
   });
+}
+
+export async function disassembleNdsRange(
+  map: NdsRomMap,
+  location: NdsDisassemblyLocation,
+  options: LinearDisassemblyOptions,
+  backend: ArmDisassemblyBackend,
+): Promise<LinearDisassemblyResult> {
+  const result = await disassembleNdsRangeDetailed(
+    map,
+    location,
+    options,
+    backend,
+  );
+  if (!("instructions" in result)) {
+    return result;
+  }
+  return {
+    ...result,
+    instructions: result.instructions.map((entry) => entry.instruction),
+  };
 }
