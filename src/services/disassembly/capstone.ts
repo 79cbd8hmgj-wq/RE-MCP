@@ -295,7 +295,7 @@ function encodedDirectControlFlowTarget(
 
     if (
       instruction.id === cs.ARM_INS_BLX
-      && (word & 0xfe000000) === 0xfa000000
+      && ((word & 0xfe000000) >>> 0) === 0xfa000000
     ) {
       const h = (word >>> 24) & 1;
       const encodedOffset = ((word & 0x00ffffff) << 2) | (h << 1);
