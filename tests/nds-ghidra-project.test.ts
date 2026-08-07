@@ -124,7 +124,7 @@ function depsFor(input: {
       bridge = await fakeBridge(input.map, input.workspaceRoot, input.bridgeSha);
       if (input.mutateBeforeRun) {
         const bytes = await readFile(input.map.romPath);
-        bytes[0x200] ^= 0xff;
+        bytes[0x200] = (bytes[0x200] ?? 0) ^ 0xff;
         await writeFile(input.map.romPath, bytes);
       }
       return bridge;
@@ -141,7 +141,7 @@ function depsFor(input: {
       await writeFile(resultPath, `${JSON.stringify(resultFor(bridge!, processor), null, 2)}\n`, "utf8");
       if (input.mutateAfterProcessor === processor) {
         const bytes = await readFile(input.map.romPath);
-        bytes[0x204] ^= 0xff;
+        bytes[0x204] = (bytes[0x204] ?? 0) ^ 0xff;
         await writeFile(input.map.romPath, bytes);
       }
       return {
