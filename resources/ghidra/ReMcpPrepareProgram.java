@@ -32,6 +32,7 @@ import ghidra.program.model.util.StringPropertyMap;
 public class ReMcpPrepareProgram extends GhidraScript {
     private static final String BRIDGE_FORMAT = "re-mcp-nds-ghidra";
     private static final int BRIDGE_FORMAT_VERSION = 1;
+    private static final String OWNED_BRIDGE_FORMAT = BRIDGE_FORMAT + ":" + BRIDGE_FORMAT_VERSION;
 
     private static final String KEY_BRIDGE_FORMAT = "re-mcp.bridge-format";
     private static final String KEY_ROM_SHA = "re-mcp.rom-sha256";
@@ -49,14 +50,14 @@ public class ReMcpPrepareProgram extends GhidraScript {
             throw new IllegalArgumentException("expected manifest path and processor");
         }
 
-        Path manifestPath = Paths.get(args[0]).toAbsolutePath().normalize();
+        Path manifestPath = Paths.get(args[0]).toRealPath();
         String processor = requireProcessor(args[1]);
         JsonObject manifest = readManifest(manifestPath);
         JsonObject processorManifest = processorManifest(manifest, processor);
         String manifestSha256 = sha256(manifestPath);
         String sourceRomSha256 = requireString(manifest, "sourceRomSha256");
         String expectedLanguage = requireString(processorManifest, "language");
-        String expectedProgramName = processor.equals("arm9") ? "RE-MCP_ARM9" : "RE-MCP_ARM7";
+        String expectedProgramName = requireString(processorManifest, "programName");
 
         String actualLanguage = currentProgram.getLanguageID().getIdAsString();
         if (!expectedLanguage.equals(actualLanguage)) {
@@ -65,10 +66,12 @@ public class ReMcpPrepareProgram extends GhidraScript {
         }
 
         Options info = currentProgram.getOptions(Program.PROGRAM_INFO);
+        validateOwnedValue(info, KEY_BRIDGE_FORMAT, OWNED_BRIDGE_FORMAT);
         validateOwnedValue(info, KEY_ROM_SHA, sourceRomSha256);
         validateOwnedValue(info, KEY_PROCESSOR, processor);
+
         currentProgram.setName(expectedProgramName);
-        info.setString(KEY_BRIDGE_FORMAT, BRIDGE_FORMAT + ":" + BRIDGE_FORMAT_VERSION);
+        info.setString(KEY_BRIDGE_FORMAT, OWNED_BRIDGE_FORMAT);
         info.setString(KEY_ROM_SHA, sourceRomSha256);
         info.setString(KEY_MANIFEST_SHA, manifestSha256);
         info.setString(KEY_PROCESSOR, processor);
@@ -136,6 +139,9 @@ public class ReMcpPrepareProgram extends GhidraScript {
         if (available < fileBackedSize) {
             throw new IllegalStateException("main executable mapping is shorter than the canonical file-backed size");
         }
+        block.setRead(true);
+        block.setWrite(true);
+        block.setExecute(true);
     }
 
     private Map<Integer, String> reconcileOverlays(
@@ -152,7 +158,6 @@ public class ReMcpPrepareProgram extends GhidraScript {
             int overlayId = requireInt(overlay, "overlayId");
             String spaceName = requireString(overlay, "spaceName");
             String importStatus = requireString(overlay, "importStatus");
-            overlaySpaces.put(overlayId, spaceName);
 
             if ("not-imported-compressed".equals(importStatus)) {
                 continue;
@@ -160,6 +165,7 @@ public class ReMcpPrepareProgram extends GhidraScript {
             if (!"importable".equals(importStatus)) {
                 throw new IllegalArgumentException("unknown overlay import status: " + importStatus);
             }
+            overlaySpaces.put(overlayId, spaceName);
 
             long runtimeAddress = requireUint32(overlay, "runtimeAddress");
             long ramSize = requireNonNegativeLong(overlay, "ramSize");
@@ -220,6 +226,9 @@ public class ReMcpPrepareProgram extends GhidraScript {
         if (!spaceName.equals(block.getName())) {
             throw new IllegalStateException("overlay block name mismatch for " + spaceName);
         }
+        if (!block.isOverlay()) {
+            throw new IllegalStateException("owned overlay block is not an overlay: " + spaceName);
+        }
         if (!spaceName.equals(block.getStart().getAddressSpace().getName())) {
             throw new IllegalStateException("overlay address-space mismatch for " + spaceName);
         }
@@ -235,6 +244,7 @@ public class ReMcpPrepareProgram extends GhidraScript {
             long expectedOffset,
             long expectedSize) {
         if (!bssName.equals(block.getName()) ||
+                !block.isOverlay() ||
                 !expectedSpace.getName().equals(block.getStart().getAddressSpace().getName()) ||
                 block.getStart().getOffset() != expectedOffset ||
                 block.getSize() != expectedSize) {
@@ -247,27 +257,30 @@ public class ReMcpPrepareProgram extends GhidraScript {
             String processor,
             Map<Integer, String> overlaySpaces) throws Exception {
         JsonObject discovery = discoveryFor(manifest, processor);
-        Register tMode = currentProgram.getRegister("TMode");
+        ProgramContext context = currentProgram.getProgramContext();
+        Register tMode = context.getRegister("TMode");
         if (tMode == null) {
             throw new IllegalStateException("Ghidra ARM language does not expose TMode context register");
         }
-        ProgramContext context = currentProgram.getProgramContext();
         for (JsonElement element : requireArray(discovery, "functions")) {
             JsonObject function = element.getAsJsonObject();
             JsonObject entry = requireObject(function, "entry");
             Address address = identityAddress(entry, overlaySpaces);
             String mode = requireString(entry, "mode");
-            BigInteger value;
+            BigInteger desired;
             if ("thumb".equals(mode)) {
-                value = BigInteger.ONE;
+                desired = BigInteger.ONE;
             }
             else if ("arm".equals(mode)) {
-                value = BigInteger.ZERO;
+                desired = BigInteger.ZERO;
             }
             else {
                 throw new IllegalArgumentException("unknown proven function mode: " + mode);
             }
-            context.setValue(tMode, address, address, value);
+            BigInteger existing = context.getValue(tMode, address, false);
+            if (!desired.equals(existing)) {
+                context.setValue(tMode, address, address, desired);
+            }
         }
     }
 
@@ -298,7 +311,7 @@ public class ReMcpPrepareProgram extends GhidraScript {
         int overlayId = overlayElement.getAsInt();
         String spaceName = overlaySpaces.get(overlayId);
         if (spaceName == null) {
-            throw new IllegalStateException("function references unknown overlay " + overlayId);
+            throw new IllegalStateException("function references unknown or compressed overlay " + overlayId);
         }
         AddressSpace space = factory.getAddressSpace(spaceName);
         if (space == null) {
@@ -308,16 +321,17 @@ public class ReMcpPrepareProgram extends GhidraScript {
     }
 
     private Path resolveGeneratedArtifact(Path manifestPath, String relativePath) throws Exception {
-        Path bridgeRoot = manifestPath.getParent();
-        if (bridgeRoot == null || bridgeRoot.getParent() == null) {
-            throw new IllegalArgumentException("manifest path has no generated-analysis parent");
-        }
-        Path generatedRoot = bridgeRoot.getParent().toAbsolutePath().normalize();
-        Path candidate = bridgeRoot.resolve(relativePath).toAbsolutePath().normalize();
+        Path bridgeRoot = manifestPath.getParent().toRealPath();
+        Path generatedRoot = bridgeRoot.getParent().toRealPath();
+        Path candidate = bridgeRoot.resolve(relativePath).normalize().toAbsolutePath();
         if (!candidate.startsWith(generatedRoot) || !Files.isRegularFile(candidate)) {
             throw new IllegalArgumentException("manifest artifact escapes generated analysis root: " + relativePath);
         }
-        return candidate;
+        Path real = candidate.toRealPath();
+        if (!real.startsWith(generatedRoot)) {
+            throw new IllegalArgumentException("manifest artifact resolves outside generated analysis root: " + relativePath);
+        }
+        return real;
     }
 
     private StringPropertyMap stringMap(String name) throws Exception {
