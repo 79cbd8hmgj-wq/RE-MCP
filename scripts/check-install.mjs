@@ -10,7 +10,10 @@ const required = [
   "dist/services/nds/disassembly.js",
   "dist/services/nds/references.js",
   "dist/services/nds/pattern-search.js",
+  "dist/services/nds/function-discovery.js",
+  "dist/services/nds/function-analysis.js",
   "dist/services/nds/rom-map.js",
+  "dist/tools/nds-functions.js",
   "package.json",
   "node_modules/@modelcontextprotocol/sdk/package.json",
   "node_modules/zod/package.json",
@@ -29,6 +32,11 @@ if (nodeMajor < 20) {
   throw new Error(`Node.js 20 or newer is required; found ${process.versions.node}`);
 }
 
+const builtIndex = await readFile(path.join(root, "dist/index.js"), "utf8");
+if (!builtIndex.includes("registerNdsFunctionTools(server, config)")) {
+  throw new Error("Packaged server does not register NDS function tools");
+}
+
 const adapterUrl = pathToFileURL(
   path.join(root, "dist/services/disassembly/capstone.js"),
 ).href;
@@ -41,6 +49,9 @@ const referencesUrl = pathToFileURL(
 const patternSearchUrl = pathToFileURL(
   path.join(root, "dist/services/nds/pattern-search.js"),
 ).href;
+const functionDiscoveryUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/function-discovery.js"),
+).href;
 const romMapUrl = pathToFileURL(
   path.join(root, "dist/services/nds/rom-map.js"),
 ).href;
@@ -48,6 +59,7 @@ const { createCapstoneArmBackend } = await import(adapterUrl);
 const { decodeNdsInstructionDetailed } = await import(disassemblyUrl);
 const { classifyNdsInstructionReferences } = await import(referencesUrl);
 const { searchNdsPattern } = await import(patternSearchUrl);
+const { discoverNdsFunctions } = await import(functionDiscoveryUrl);
 const { readNdsRomMap } = await import(romMapUrl);
 
 const arm9 = {
@@ -117,6 +129,7 @@ try {
     armRefs.length !== 1
     || armRefs[0]?.kind !== "direct-call"
     || armRefs[0]?.target.runtimeAddress !== 0x02000008
+    || armRefs[0]?.target.mode !== "arm"
   ) {
     throw new Error("Packaged ARM direct reference smoke failed");
   }
@@ -134,6 +147,7 @@ try {
     thumbRefs.length !== 1
     || thumbRefs[0]?.kind !== "literal-pool"
     || thumbRefs[0]?.target.runtimeAddress !== 0x02000004
+    || thumbRefs[0]?.target.mode !== null
   ) {
     throw new Error("Packaged Thumb PC-relative reference smoke failed");
   }
@@ -184,6 +198,70 @@ try {
   }
 } finally {
   await rm(patternTemp, { recursive: true, force: true });
+}
+
+const functionTemp = await mkdtemp(path.join(os.tmpdir(), "re-mcp-function-"));
+try {
+  const fixture = Buffer.alloc(0x1000);
+  fixture.writeUInt32LE(0x200, 0x20);
+  fixture.writeUInt32LE(0x02000000, 0x24);
+  fixture.writeUInt32LE(0x02000000, 0x28);
+  fixture.writeUInt32LE(0x20, 0x2c);
+  fixture.writeUInt32LE(0x300, 0x30);
+  fixture.writeUInt32LE(0x03800000, 0x34);
+  fixture.writeUInt32LE(0x03800000, 0x38);
+  fixture.writeUInt32LE(0x20, 0x3c);
+  fixture.writeUInt32LE(0x400, 0x40);
+  fixture.writeUInt32LE(0x500, 0x48);
+  fixture.writeUInt32LE(0x600, 0x50);
+  fixture.writeUInt32LE(0x700, 0x58);
+  fixture.writeUInt32LE(0x800, 0x68);
+
+  fixture.set([0x00, 0x00, 0x00, 0xeb], 0x200); // BL 0x02000008
+  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x204); // BX LR
+  fixture.set([0x1e, 0xff, 0x2f, 0xe1], 0x208); // BX LR
+
+  const functionRom = path.join(functionTemp, "function-smoke.nds");
+  await writeFile(functionRom, fixture);
+  const functionMap = await readNdsRomMap(functionRom);
+  const functionBackend = await createCapstoneArmBackend();
+  try {
+    const functionResult = await discoverNdsFunctions(
+      functionMap,
+      { processor: "arm9", scope: { kind: "main" }, seeds: [] },
+      {
+        maxComponents: 4,
+        maxFunctions: 8,
+        maxCallSites: 16,
+        maxTotalBlocks: 32,
+        maxTotalInstructions: 64,
+        maxTotalBytes: 256,
+        maxTotalEdges: 64,
+        perFunctionCfg: {
+          maxBlocks: 16,
+          maxInstructions: 32,
+          maxBytes: 128,
+          maxEdges: 32,
+        },
+      },
+      functionBackend,
+    );
+    const ids = functionResult.functions.map((entry) => entry.id);
+    if (
+      functionResult.status !== "complete"
+      || ids.length !== 2
+      || ids[0] !== "arm9:main:02000000:arm"
+      || ids[1] !== "arm9:main:02000008:arm"
+      || functionResult.calls.length !== 1
+      || functionResult.calls[0]?.instructionAddress !== 0x02000000
+    ) {
+      throw new Error("Packaged NDS proven-function discovery smoke failed");
+    }
+  } finally {
+    functionBackend.close();
+  }
+} finally {
+  await rm(functionTemp, { recursive: true, force: true });
 }
 
 process.stdout.write(
