@@ -27,7 +27,7 @@ export type ReferenceSearchScope =
 export interface ReferenceSearchSeed {
   readonly runtimeAddress: number;
   readonly mode: ArmMode;
-  readonly overlayId?: number;
+  readonly overlayId?: number | undefined;
 }
 
 export interface ReferenceComponentIdentity {
