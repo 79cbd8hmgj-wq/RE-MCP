@@ -4,38 +4,39 @@
 
 **Goal:** Add a canonical, safe, native-independent Nintendo DS ROM model with structure inspection, address resolution, and controlled extraction while leaving Dynamic Debugging Patch 1 behavior unchanged pending Catalina acceptance.
 
-**Architecture:** Parse each ROM into a canonical `NdsRomMap` built from strict header, FAT, FNT, and overlay services. Resolution and extraction consume only that validated model; MCP tools expose seven bounded operations and write derived artifacts only to the fixed workspace-level `analysis/generated/nds/<sha-prefix>/` tree. Existing `readArm9ExecutableRange()` becomes a compatibility adapter over the canonical parser.
+**Architecture:** Parse each ROM into a canonical `NdsRomMap` built from strict header, FAT, FNT, and overlay services. Resolution and extraction consume only validated model data. Seven bounded MCP tools expose the model; extraction writes only to the fixed workspace-level `analysis/generated/nds/<sha-prefix>/` tree. The existing debugger ARM9 helper reuses canonical header-decoding code without inheriting stricter FAT/FNT/overlay validation.
 
-**Tech Stack:** TypeScript 5.7, Node.js 20+, Node built-ins (`Buffer`, `node:fs/promises`, `node:fs`, `node:crypto`, `node:path`, `node:stream/promises`), MCP SDK, Zod, Node test runner via `node:test`/`tsx`. No new runtime dependency.
+**Tech Stack:** TypeScript 5.7, Node.js 20+, Node built-ins, MCP SDK, Zod, Node test runner through `tsx`. No new runtime dependency.
 
 ## Global Constraints
 
 - Source `.nds` files are immutable.
-- No arbitrary output path, raw offset/length extraction primitive, ROM rebuild, or ROM mutation.
+- No arbitrary output path, raw offset/length extraction tool, ROM rebuild, or ROM mutation.
 - Generated artifacts live only under `RE_MCP_WORKSPACE_ROOT/analysis/generated/nds/<first-16-sha256-hex>/`.
-- Full SHA-256 remains canonical; 16 hex characters are only a directory-name prefix.
-- All file inputs resolve through `resolveInside(config.workspaceRoot, ...)`.
-- All response serialization respects `config.maxOutputBytes`.
-- FAT is authoritative for physical file ranges; FNT is authoritative for NitroFS names/hierarchy.
-- Overlay tables are processor-specific, 32 bytes per record, with `compressedSize = packed & 0x00ffffff`, `flags = packed >>> 24`, and compression flag bit 0.
+- Full SHA-256 is canonical; 16 hex characters are only the generated-directory prefix.
+- All ROM inputs resolve with `resolveInside(config.workspaceRoot, rom)`.
+- All serialized MCP responses respect `config.maxOutputBytes`.
+- FAT is authoritative for physical file ranges; FNT is authoritative for names/hierarchy.
+- Overlay table records are exactly 32 bytes.
+- Overlay packed word: `compressedSize = packed & 0x00ffffff`, `flags = packed >>> 24`, `compressed = (flags & 1) !== 0`.
 - Never fabricate ROM byte offsets for compressed runtime overlay bytes or BSS.
 - Never fabricate runtime addresses for compressed overlay backing-file byte positions.
 - Never choose among overlapping overlay candidates heuristically.
-- `readArm9ExecutableRange()` result shape and debugger-facing validation remain compatible.
+- `readArm9ExecutableRange()` keeps its existing result shape, ARM9 main-RAM policy, and narrow validation behavior.
 - Do not change breakpoint, continue, step, pause, GDB, stop-context, or process-lifecycle behavior.
 - No new runtime dependency.
-- TypeScript stays compatible with `strict`, `noUncheckedIndexedAccess`, and `exactOptionalPropertyTypes`.
-- TDD: red test first, minimal green implementation, targeted verification, then commit.
+- Code must satisfy `strict`, `noUncheckedIndexedAccess`, and `exactOptionalPropertyTypes`.
+- Every task follows red test → minimal green → targeted verification → commit.
 
 ## Branch / PR Sequence
 
-Implement as three reviewable PRs rather than one oversized change:
+Use three reviewable PRs:
 
-1. **PR A — `feature/nds-static-structure`**: Tasks 1–5. Canonical parser and ROM map only.
-2. **PR B — `feature/nds-address-extraction`**: Tasks 6–7. Resolver and controlled extraction, based on merged PR A.
-3. **PR C — `feature/nds-static-mcp-tools`**: Tasks 8–10. Compatibility migration, MCP surface, docs/final regression, based on merged PR B.
+1. **PR A — `feature/nds-static-structure`**: Tasks 1–5. Create this branch from `design/nds-static-analysis-foundation` so the approved spec and this plan travel with the first implementation PR.
+2. **PR B — `feature/nds-address-extraction`**: Tasks 6–7. Create from `main` after PR A merges.
+3. **PR C — `feature/nds-static-mcp-tools`**: Tasks 8–10. Create from `main` after PR B merges.
 
-At execution time, create an isolated worktree/branch using `superpowers:using-git-worktrees` when local git is available. If the execution environment cannot clone the repository, use isolated GitHub feature branches and GitHub Actions exactly as the previous Dynamic Debugging work did.
+At execution time, use `superpowers:using-git-worktrees` when local git is available. If local cloning remains blocked, use isolated GitHub branches and GitHub Actions as the verification environment.
 
 ---
 
@@ -43,26 +44,26 @@ At execution time, create an isolated worktree/branch using `superpowers:using-g
 
 ### New production files
 
-- `src/services/nds/errors.ts` — stable NDS error categories and `NdsError`.
-- `src/services/nds/io.ts` — bounded exact reads, regular-file validation, streaming SHA-256.
-- `src/services/nds/header.ts` — strict NDS header parsing and ARM9/ARM7 metadata.
-- `src/services/nds/fat.ts` — FAT record parsing and range validation.
-- `src/services/nds/fnt.ts` — FNT directory-table/subtable traversal and file-path mapping.
-- `src/services/nds/overlays.ts` — ARM9/ARM7 overlay-record parsing and FAT joins.
-- `src/services/nds/rom-map.ts` — canonical `NdsRomMap` composition and executable/static ranges.
-- `src/services/nds/resolver.ts` — runtime-address and ROM-offset resolution.
-- `src/services/nds/extraction.ts` — deterministic generated paths, atomic range extraction, manifests/bundles.
-- `src/tools/nds.ts` — seven MCP NDS tools, schemas, pagination, output-bound enforcement.
+- `src/services/nds/errors.ts` — stable parser/operation error categories.
+- `src/services/nds/io.ts` — exact bounded reads and streaming SHA-256.
+- `src/services/nds/header.ts` — shared header decode, full validation, and ARM9 compatibility metadata reader.
+- `src/services/nds/fat.ts` — FAT physical-range parser.
+- `src/services/nds/fnt.ts` — FNT/NitroFS hierarchy parser.
+- `src/services/nds/overlays.ts` — ARM9/ARM7 overlay parser and FAT joins.
+- `src/services/nds/rom-map.ts` — canonical `NdsRomMap` composition.
+- `src/services/nds/resolver.ts` — runtime-address and ROM-offset resolvers.
+- `src/services/nds/extraction.ts` — deterministic atomic extraction and bundle promotion.
+- `src/tools/nds.ts` — seven public MCP tools, schemas, pagination, output bounds.
 
 ### Existing production files modified
 
-- `src/services/nds-arm9.ts` — compatibility adapter over canonical map.
-- `src/index.ts` — `registerNdsTools()` and capability list.
-- `README.md` — static NDS tool documentation and safety boundary.
+- `src/services/nds-arm9.ts` — compatibility adapter using `readArm9HeaderMetadata()`.
+- `src/index.ts` — NDS tool registration and capabilities.
+- `README.md` — NDS static-analysis documentation.
 
-### New test files
+### New tests
 
-- `tests/helpers/nds-fixture.ts` — deterministic synthetic NDS fixture builder.
+- `tests/helpers/nds-fixture.ts`
 - `tests/nds-header.test.ts`
 - `tests/nds-fat.test.ts`
 - `tests/nds-fnt.test.ts`
@@ -72,14 +73,14 @@ At execution time, create an isolated worktree/branch using `superpowers:using-g
 - `tests/nds-extraction.test.ts`
 - `tests/nds-tools.test.ts`
 
-### Existing tests retained / extended
+### Existing regression test
 
-- `tests/nds-arm9.test.ts` — compatibility regression.
-- Existing DeSmuME/debugger tests — must remain unchanged and green unless a fixture import path must be updated mechanically.
+- `tests/nds-arm9.test.ts`
+- existing debugger tests remain green without debugger behavior edits.
 
 ---
 
-### Task 1: Build the test fixture, I/O primitives, ROM identity, and full header parser
+### Task 1: Add fixture infrastructure, I/O primitives, ROM identity, and header parsing
 
 **Files:**
 - Create: `tests/helpers/nds-fixture.ts`
@@ -89,10 +90,6 @@ At execution time, create an isolated worktree/branch using `superpowers:using-g
 - Create: `tests/nds-header.test.ts`
 
 **Interfaces:**
-- Produces: `NdsError`, `NdsErrorCategory`, `hashFileSha256(path)`, `readExact(handle, offset, length, label)`, `parseNdsHeader(romPath)`.
-- Produces header types used by Tasks 2–10.
-
-Define the shared error model:
 
 ```ts
 export type NdsErrorCategory =
@@ -108,19 +105,12 @@ export type NdsErrorCategory =
   | "generated-path-failure";
 
 export class NdsError extends Error {
-  constructor(
-    readonly category: NdsErrorCategory,
-    message: string,
-  ) {
+  constructor(readonly category: NdsErrorCategory, message: string) {
     super(message);
     this.name = "NdsError";
   }
 }
-```
 
-Define header-facing types with explicit required properties so `exactOptionalPropertyTypes` does not leak `undefined` values:
-
-```ts
 export interface NdsExecutableHeader {
   readonly romOffset: number;
   readonly entryAddress: number;
@@ -159,89 +149,40 @@ export interface ParsedNdsHeader {
   readonly sha256Prefix: string;
   readonly header: NdsHeader;
 }
+
+export async function parseNdsHeader(romPath: string): Promise<ParsedNdsHeader>;
+export async function readArm9HeaderMetadata(romPath: string): Promise<NdsExecutableHeader>;
 ```
 
-Use these NDS header offsets:
+`readArm9HeaderMetadata()` and `parseNdsHeader()` must share one private header-field decoder. The ARM9 compatibility reader validates only the file/header conditions and ARM9 ROM/runtime arithmetic required by the old helper; it does **not** validate ARM7, FNT, FAT, or overlay tables and does not hash the whole ROM.
+
+Use these header offsets:
 
 ```ts
 const HEADER_BYTES = 0x6c;
 const OFFSETS = {
-  title: 0x00,
-  gameCode: 0x0c,
-  makerCode: 0x10,
-  unitCode: 0x12,
-  deviceCapacity: 0x14,
-  romVersion: 0x1e,
-  arm9Rom: 0x20,
-  arm9Entry: 0x24,
-  arm9Ram: 0x28,
-  arm9Size: 0x2c,
-  arm7Rom: 0x30,
-  arm7Entry: 0x34,
-  arm7Ram: 0x38,
-  arm7Size: 0x3c,
-  fntOffset: 0x40,
-  fntSize: 0x44,
-  fatOffset: 0x48,
-  fatSize: 0x4c,
-  arm9OverlayOffset: 0x50,
-  arm9OverlaySize: 0x54,
-  arm7OverlayOffset: 0x58,
-  arm7OverlaySize: 0x5c,
+  title: 0x00, gameCode: 0x0c, makerCode: 0x10,
+  unitCode: 0x12, deviceCapacity: 0x14, romVersion: 0x1e,
+  arm9Rom: 0x20, arm9Entry: 0x24, arm9Ram: 0x28, arm9Size: 0x2c,
+  arm7Rom: 0x30, arm7Entry: 0x34, arm7Ram: 0x38, arm7Size: 0x3c,
+  fntOffset: 0x40, fntSize: 0x44,
+  fatOffset: 0x48, fatSize: 0x4c,
+  arm9OverlayOffset: 0x50, arm9OverlaySize: 0x54,
+  arm7OverlayOffset: 0x58, arm7OverlaySize: 0x5c,
   bannerOffset: 0x68,
 } as const;
 ```
 
-- [ ] **Step 1: Add a deterministic synthetic NDS fixture builder**
+- [ ] **Step 1: Create the deterministic NDS fixture builder**
 
-Create `tests/helpers/nds-fixture.ts` with a builder that allocates a configurable ROM buffer, writes the header fields above, and exposes helpers to write arbitrary regions later without duplicating numeric offsets in every test.
+`tests/helpers/nds-fixture.ts` must create a temp ROM with configurable header fields and a mutable `Buffer` plus `write()` method. Default non-overlapping regions: ARM9 `0x200`, ARM7 `0x600`, FNT `0x800`, FAT `0x900`, ARM9 overlay table `0xa00`, ARM7 overlay table `0xb00`, file size `0x4000`.
 
-Core API:
-
-```ts
-export interface NdsFixtureOptions {
-  readonly fileSize?: number;
-  readonly arm9RomOffset?: number;
-  readonly arm9RamAddress?: number;
-  readonly arm9EntryAddress?: number;
-  readonly arm9Size?: number;
-  readonly arm7RomOffset?: number;
-  readonly arm7RamAddress?: number;
-  readonly arm7EntryAddress?: number;
-  readonly arm7Size?: number;
-  readonly fntOffset?: number;
-  readonly fntSize?: number;
-  readonly fatOffset?: number;
-  readonly fatSize?: number;
-  readonly arm9OverlayOffset?: number;
-  readonly arm9OverlaySize?: number;
-  readonly arm7OverlayOffset?: number;
-  readonly arm7OverlaySize?: number;
-}
-
-export interface NdsFixture {
-  readonly directory: string;
-  readonly romPath: string;
-  readonly buffer: Buffer;
-  write(): Promise<void>;
-}
-
-export async function createNdsFixture(
-  options: NdsFixtureOptions = {},
-): Promise<NdsFixture>;
-```
-
-Use safe defaults with non-overlapping regions, for example ARM9 at `0x200`, ARM7 at `0x600`, FNT `0x800`, FAT `0x900`, overlay tables at `0xa00`/`0xb00`, and a default ROM size large enough to hold them.
-
-- [ ] **Step 2: Write failing header/identity tests**
-
-Add tests similar to:
+- [ ] **Step 2: Write failing header tests**
 
 ```ts
 test("parses full NDS identity and executable metadata", async () => {
   const fixture = await createNdsFixture();
   const parsed = await parseNdsHeader(fixture.romPath);
-
   assert.equal(parsed.fileSize, fixture.buffer.length);
   assert.match(parsed.sha256, /^[a-f0-9]{64}$/);
   assert.equal(parsed.sha256Prefix, parsed.sha256.slice(0, 16));
@@ -249,75 +190,38 @@ test("parses full NDS identity and executable metadata", async () => {
   assert.equal(parsed.header.arm7.romOffset, 0x600);
 });
 
-test("rejects a referenced region beyond EOF", async () => {
-  const fixture = await createNdsFixture({ arm9RomOffset: 0x1f00, arm9Size: 0x400 });
-  await assert.rejects(
-    parseNdsHeader(fixture.romPath),
-    (error: unknown) => error instanceof NdsError && error.category === "range-out-of-bounds",
-  );
+test("ARM9 compatibility metadata ignores malformed FAT", async () => {
+  const fixture = await createNdsFixture({ fatOffset: 0x3ff0, fatSize: 0x100 });
+  const arm9 = await readArm9HeaderMetadata(fixture.romPath);
+  assert.equal(arm9.ramAddress, 0x02000000);
+  await assert.rejects(parseNdsHeader(fixture.romPath), /FAT|beyond/i);
 });
 ```
 
-Also cover: short header, directory instead of regular file, zero ARM9/ARM7 size, 32-bit RAM-range overflow, FNT/FAT/table range overflow, and stable full SHA-256.
+Also test short header, directory input, zero ARM9/ARM7 size for full parsing, ARM9/ARM7 runtime overflow, referenced region past EOF, empty table regions, and stable SHA-256.
 
-- [ ] **Step 3: Run the header test and verify RED**
-
-Run:
+- [ ] **Step 3: Verify RED**
 
 ```bash
 npm test -- tests/nds-header.test.ts
 ```
 
-Expected: FAIL because `src/services/nds/header.ts` and exported interfaces do not exist yet.
+Expected: module/export missing failures.
 
-- [ ] **Step 4: Implement minimal I/O and header parsing**
+- [ ] **Step 4: Implement `NdsError`, exact reads, hashing, and shared header decode**
 
-In `io.ts`, hash without loading an entire ROM into memory:
+`hashFileSha256()` uses `createReadStream()` so ROM size does not become an in-memory hash buffer. `readExact()` uses `FileHandle.read()` and rejects short reads.
 
-```ts
-export async function hashFileSha256(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  const stream = createReadStream(filePath);
-  for await (const chunk of stream) hash.update(chunk);
-  return hash.digest("hex");
-}
-```
+The full parser validates all header-referenced regions. For optional FNT/FAT/overlay tables, `size === 0` is allowed; preserve the decoded offset, set `end = offset`, and never read the table. Reject an offset greater than file size even when size is zero.
 
-Implement `readExact()` with `FileHandle.read()` and reject short reads with `NdsError("range-out-of-bounds", ...)`.
-
-In `header.ts`, `stat()` the file, read exactly `0x6c`, decode fixed ASCII fields by trimming trailing NULs, decode `u32le` numeric fields, and validate each region with one helper:
-
-```ts
-function checkedRegion(
-  offset: number,
-  size: number,
-  fileSize: number,
-  label: string,
-  allowEmpty: boolean,
-): NdsRegionHeader {
-  if ((!allowEmpty && size === 0) || offset > fileSize) {
-    throw new NdsError("malformed-header", `${label} has an invalid offset/size`);
-  }
-  const end = offset + size;
-  if (!Number.isSafeInteger(end) || end < offset || end > fileSize) {
-    throw new NdsError("range-out-of-bounds", `${label} extends beyond the ROM file`);
-  }
-  return { offset, size, end };
-}
-```
-
-For zero-size FNT/FAT/overlay tables, accept `{ offset: 0, size: 0, end: 0 }`; do not attempt to read them later.
-
-- [ ] **Step 5: Run targeted tests and typecheck**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-header.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit Task 1**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/errors.ts src/services/nds/io.ts src/services/nds/header.ts tests/helpers/nds-fixture.ts tests/nds-header.test.ts
@@ -326,7 +230,7 @@ git commit -m "feat: add canonical NDS header parser"
 
 ---
 
-### Task 2: Parse and validate FAT physical file ranges
+### Task 2: Parse FAT physical file ranges
 
 **Files:**
 - Create: `src/services/nds/fat.ts`
@@ -334,8 +238,6 @@ git commit -m "feat: add canonical NDS header parser"
 - Modify: `tests/helpers/nds-fixture.ts`
 
 **Interfaces:**
-- Consumes: `ParsedNdsHeader`, `readExact()`, `NdsError`.
-- Produces: `NdsFatEntry`, `parseNdsFat(parsedHeader)`.
 
 ```ts
 export interface NdsFatEntry {
@@ -345,14 +247,10 @@ export interface NdsFatEntry {
   readonly size: number;
 }
 
-export async function parseNdsFat(
-  parsed: ParsedNdsHeader,
-): Promise<readonly NdsFatEntry[]>;
+export async function parseNdsFat(parsed: ParsedNdsHeader): Promise<readonly NdsFatEntry[]>;
 ```
 
-- [ ] **Step 1: Extend the fixture builder with FAT helpers**
-
-Add:
+- [ ] **Step 1: Add `writeFatEntry()` fixture helper**
 
 ```ts
 export function writeFatEntry(
@@ -368,56 +266,35 @@ export function writeFatEntry(
 }
 ```
 
-- [ ] **Step 2: Write failing FAT tests**
+- [ ] **Step 2: Write RED tests**
 
-Cover valid entries, non-multiple-of-8 FAT size, `start > end`, end past EOF, and zero-length records:
+Cover valid entries, `fat.size % 8 !== 0`, `start > end`, end past EOF, and zero-length files.
 
-```ts
-test("parses FAT entries by file ID", async () => {
-  const fixture = await createNdsFixture({ fatSize: 16 });
-  writeFatEntry(fixture.buffer, 0x900, 0, 0x1000, 0x1020);
-  writeFatEntry(fixture.buffer, 0x900, 1, 0x1100, 0x1100);
-  await fixture.write();
-
-  const parsed = await parseNdsHeader(fixture.romPath);
-  assert.deepEqual(await parseNdsFat(parsed), [
-    { fileId: 0, startOffset: 0x1000, endOffset: 0x1020, size: 0x20 },
-    { fileId: 1, startOffset: 0x1100, endOffset: 0x1100, size: 0 },
-  ]);
-});
-```
-
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-fat.test.ts
 ```
 
-Expected: FAIL because `parseNdsFat` does not exist.
-
-- [ ] **Step 4: Implement FAT parsing**
-
-Rules:
+- [ ] **Step 4: Implement FAT parser**
 
 ```ts
-if (header.fat.size === 0) return [];
-if (header.fat.size % 8 !== 0) {
+if (parsed.header.fat.size === 0) return [];
+if (parsed.header.fat.size % 8 !== 0) {
   throw new NdsError("malformed-fat", "NDS FAT size must be divisible by 8");
 }
 ```
 
-Read exactly the FAT region, iterate `fileId = 0..count-1`, validate `start <= end <= fileSize`, and return frozen/plain records.
+Read exactly the FAT region and validate every `[startOffset, endOffset)` against `parsed.fileSize`.
 
-- [ ] **Step 5: Verify GREEN and regression**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-fat.test.ts tests/nds-header.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit Task 2**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/fat.ts tests/helpers/nds-fixture.ts tests/nds-fat.test.ts
@@ -426,7 +303,7 @@ git commit -m "feat: parse NDS FAT ranges"
 
 ---
 
-### Task 3: Reconstruct FNT/NitroFS hierarchy safely
+### Task 3: Reconstruct FNT/NitroFS hierarchy
 
 **Files:**
 - Create: `src/services/nds/fnt.ts`
@@ -434,8 +311,6 @@ git commit -m "feat: parse NDS FAT ranges"
 - Modify: `tests/helpers/nds-fixture.ts`
 
 **Interfaces:**
-- Consumes: `ParsedNdsHeader`, `NdsFatEntry[]`, `readExact()`, `NdsError`.
-- Produces: `NdsDirectory`, `NdsNitroFile`, `NdsFilesystem`, `parseNdsFnt(parsed, fat)`.
 
 ```ts
 export interface NdsDirectory {
@@ -453,31 +328,32 @@ export interface NdsFilesystem {
   readonly directories: readonly NdsDirectory[];
   readonly files: readonly NdsNitroFile[];
 }
+
+export async function parseNdsFnt(
+  parsed: ParsedNdsHeader,
+  fat: readonly NdsFatEntry[],
+): Promise<NdsFilesystem>;
 ```
 
-Use DS FNT rules explicitly:
+DS FNT rules used by implementation:
 
 - directory IDs start at `0xF000`;
-- main-table entry index is `directoryId & 0x0fff`;
+- main-table index is `directoryId & 0x0fff`;
 - each main-table record is 8 bytes: subtable offset `u32le`, first file ID `u16le`, parent/root metadata `u16le`;
-- root record's final `u16` is directory count;
-- each subtable entry starts with one byte; `0` terminates;
-- low 7 bits are name length; high bit means directory;
-- directory entries append a `u16le` child directory ID after name bytes;
-- file entries consume the next implicit file ID.
+- root record final `u16` is directory count;
+- subtable entry byte `0` terminates;
+- low 7 bits are name length; high bit indicates directory;
+- directory entries include a trailing child directory ID `u16le`;
+- file IDs increment implicitly from the directory's first file ID.
 
-- [ ] **Step 1: Add fixture helpers for valid root/nested FNTs**
+- [ ] **Step 1: Add FNT fixture helpers**
 
-Provide test helpers that write a root main-table entry and encoded file/directory subtable entries rather than hand-assembling bytes in each test.
+Create helpers to write main-table records plus file/directory subtable entries. Tests must not hand-code the same FNT encoding repeatedly.
 
-- [ ] **Step 2: Write failing traversal tests**
-
-Include:
+- [ ] **Step 2: Write RED tests**
 
 ```ts
-test("reconstructs nested NitroFS paths and retains unnamed FAT entries", async () => {
-  // Fixture maps file 0 -> root.bin and file 1 -> data/nested.bin;
-  // file 2 exists in FAT but has no FNT name.
+test("reconstructs nested paths and preserves unnamed FAT entries", async () => {
   const filesystem = await parseNdsFnt(parsed, fat);
   assert.equal(filesystem.files[0]?.path, "root.bin");
   assert.equal(filesystem.files[1]?.path, "data/nested.bin");
@@ -485,49 +361,28 @@ test("reconstructs nested NitroFS paths and retains unnamed FAT entries", async 
 });
 ```
 
-Also test invalid child directory ID, cycle, main-table/subtable offset outside FNT, file ID beyond FAT, unterminated subtable, and unusual non-NUL filename bytes.
+Also cover invalid directory ID, cycle, subtable past FNT end, file ID beyond FAT, unterminated subtable, and unusual one-byte filename values.
 
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-fnt.test.ts
 ```
 
-Expected: FAIL because FNT parser is missing.
+- [ ] **Step 4: Implement bounded traversal**
 
-- [ ] **Step 4: Implement bounded FNT traversal**
+Read only the FNT region. Validate root directory count before traversal. Use `visiting`/`visited` sets to detect cycles. Decode display names as Latin-1; reject path-segment values containing `/`, `\\`, NUL, or exactly `.`/`..`. File-ID arithmetic comes from FNT metadata, never from decoded names.
 
-Read the FNT region once. Parse root directory count before traversal. Validate every main-table index and subtable cursor before reading.
+After traversal, return every FAT entry as a file, using `path: null` for unnamed entries.
 
-Use a DFS helper with both `visiting` and `visited` sets:
-
-```ts
-function visitDirectory(directoryId: number, parentPath: string): void {
-  if (visiting.has(directoryId)) {
-    throw new NdsError("malformed-fnt", `FNT directory cycle at 0x${directoryId.toString(16)}`);
-  }
-  if (visited.has(directoryId)) return;
-  visiting.add(directoryId);
-  // Decode this directory's subtable with explicit bounds checks.
-  visiting.delete(directoryId);
-  visited.add(directoryId);
-}
-```
-
-Decode names as Latin-1 for one-byte display preservation; never use decoded names to calculate file IDs. Reject `/`, `\\`, NUL, `.` and `..` as path-segment values so generated resolved paths cannot become traversal primitives.
-
-After traversal, map every FAT entry to `{ ...entry, path: resolvedName ?? null }`.
-
-- [ ] **Step 5: Verify GREEN and typecheck**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-fnt.test.ts tests/nds-fat.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit Task 3**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/fnt.ts tests/helpers/nds-fixture.ts tests/nds-fnt.test.ts
@@ -536,7 +391,7 @@ git commit -m "feat: reconstruct NDS NitroFS paths"
 
 ---
 
-### Task 4: Parse ARM9/ARM7 overlay tables with compression-safe metadata
+### Task 4: Parse ARM9/ARM7 overlay tables safely
 
 **Files:**
 - Create: `src/services/nds/overlays.ts`
@@ -544,8 +399,6 @@ git commit -m "feat: reconstruct NDS NitroFS paths"
 - Modify: `tests/helpers/nds-fixture.ts`
 
 **Interfaces:**
-- Consumes: `ParsedNdsHeader`, FAT/filesystem entries, `readExact()`, `NdsError`.
-- Produces: `NdsOverlay`, `parseNdsOverlays(parsed, fat, processor)`.
 
 ```ts
 export type NdsProcessor = "arm9" | "arm7";
@@ -567,84 +420,35 @@ export interface NdsOverlay {
   readonly flags: number;
   readonly compressed: boolean;
 }
+
+export async function parseNdsOverlays(
+  parsed: ParsedNdsHeader,
+  fat: readonly NdsFatEntry[],
+  processor: NdsProcessor,
+): Promise<readonly NdsOverlay[]>;
 ```
 
-- [ ] **Step 1: Add a 32-byte overlay fixture writer**
+- [ ] **Step 1: Add `writeOverlayRecord()` fixture helper**
+
+Write eight little-endian `u32` values, packing the final word as:
 
 ```ts
-export function writeOverlayRecord(
-  buffer: Buffer,
-  tableOffset: number,
-  index: number,
-  values: {
-    overlayId: number;
-    ramAddress: number;
-    ramSize: number;
-    bssSize: number;
-    staticInitStart: number;
-    staticInitEnd: number;
-    fileId: number;
-    compressedSize: number;
-    flags: number;
-  },
-): void {
-  const base = tableOffset + index * 32;
-  // write seven scalar u32 values, then:
-  buffer.writeUInt32LE((values.compressedSize & 0x00ffffff) | ((values.flags & 0xff) << 24), base + 0x1c);
-}
+const packed = (compressedSize & 0x00ffffff) | ((flags & 0xff) << 24);
 ```
 
-- [ ] **Step 2: Write failing overlay tests**
+- [ ] **Step 2: Write RED tests**
 
-Cover ARM9 and ARM7 independently, table size not divisible by 32, invalid `fileId`, 32-bit overflow for `ramAddress + ramSize + bssSize`, compression bit decode, packed size decode, static-init range ordering, overlapping records being accepted as candidates, and physical size differing from runtime size.
+Cover ARM9/ARM7, table size not divisible by 32, invalid `fileId`, runtime overflow, compression flag/size decode, valid zero static-init range, invalid ordered/out-of-range static-init region, overlapping overlays accepted, and `romSize !== ramSize` accepted.
 
-Representative assertion:
-
-```ts
-assert.deepEqual(overlays[0], {
-  processor: "arm9",
-  overlayId: 37,
-  ramAddress: 0x02210000,
-  ramSize: 0x2000,
-  ramEnd: 0x02212000,
-  bssSize: 0x200,
-  bssEnd: 0x02212200,
-  staticInitStart: 0x02211f00,
-  staticInitEnd: 0x02211f20,
-  fileId: 3,
-  romOffset: 0x1400,
-  romSize: 0x1000,
-  compressedSize: 0x0f00,
-  flags: 1,
-  compressed: true,
-});
-```
-
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-overlays.test.ts
 ```
 
-- [ ] **Step 4: Implement overlay parsing**
+- [ ] **Step 4: Implement parser**
 
-For zero-size table return `[]`. Otherwise require `size % 32 === 0`. Decode the final packed field exactly as specified. Resolve `fileId` through FAT; missing IDs throw `NdsError("malformed-overlay-table", ...)`.
-
-Validate runtime additions with a helper:
-
-```ts
-function checkedAddressEnd(start: number, size: number, label: string): number {
-  const end = start + size;
-  if (!Number.isSafeInteger(end) || end > 0x1_0000_0000 || end < start) {
-    throw new NdsError("malformed-overlay-table", `${label} overflows 32-bit address space`);
-  }
-  return end;
-}
-```
-
-Allow `staticInitStart === staticInitEnd === 0`; otherwise require `start <= end` and both to lie inside the initialized `[ramAddress, ramEnd]` range.
-
-Do not reject an overlay merely because `romSize !== ramSize` or because it overlaps another overlay.
+Zero-size table returns `[]`. Nonzero table requires `size % 32 === 0`. Join `fileId` through FAT. Overflow-check `ramAddress + ramSize` and then `ramEnd + bssSize`. Preserve flags without interpreting bits other than compression bit 0.
 
 - [ ] **Step 5: Verify GREEN**
 
@@ -653,7 +457,7 @@ npm test -- tests/nds-overlays.test.ts tests/nds-fat.test.ts
 npm run typecheck
 ```
 
-- [ ] **Step 6: Commit Task 4**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/overlays.ts tests/helpers/nds-fixture.ts tests/nds-overlays.test.ts
@@ -662,23 +466,21 @@ git commit -m "feat: parse NDS overlay tables"
 
 ---
 
-### Task 5: Compose the canonical `NdsRomMap`
+### Task 5: Compose canonical `NdsRomMap`
 
 **Files:**
 - Create: `src/services/nds/rom-map.ts`
 - Create: `tests/nds-rom-map.test.ts`
 
 **Interfaces:**
-- Consumes: Tasks 1–4 parsers.
-- Produces: `NdsRomMap`, `readNdsRomMap(romPath)`.
 
 ```ts
 export interface NdsExecutableRange {
   readonly kind: "arm9-main" | "arm7-main" | "arm9-overlay" | "arm7-overlay";
   readonly processor: NdsProcessor;
   readonly start: number;
-  readonly end: number;
   readonly initializedEnd: number;
+  readonly end: number;
   readonly sourceId: string;
   readonly overlayId: number | null;
   readonly compressed: boolean;
@@ -692,69 +494,55 @@ export interface NdsRomMap {
   readonly header: NdsHeader;
   readonly fat: readonly NdsFatEntry[];
   readonly filesystem: NdsFilesystem;
-  readonly overlays: Readonly<{
-    arm9: readonly NdsOverlay[];
-    arm7: readonly NdsOverlay[];
-  }>;
+  readonly overlays: Readonly<{ arm9: readonly NdsOverlay[]; arm7: readonly NdsOverlay[] }>;
   readonly executableRanges: readonly NdsExecutableRange[];
 }
 
 export async function readNdsRomMap(romPath: string): Promise<NdsRomMap>;
 ```
 
-- [ ] **Step 1: Write failing composition tests**
+For main binaries, `initializedEnd === end === ramEnd`. For overlays, `initializedEnd === ramEnd` and `end === bssEnd`.
 
-Verify one parse returns the same SHA/header identity plus FAT/FNT/overlay joins. Verify executable ranges contain main ARM9/ARM7 and overlay initialized+BSS boundaries without claiming loaded state.
+- [ ] **Step 1: Write RED composition tests**
 
-Use `overlayId: null` on main ranges to avoid optional-property ambiguity under `exactOptionalPropertyTypes`.
+Assert the map preserves one ROM identity across header/FAT/FNT/overlay data and creates main+overlay ranges without loaded-state claims.
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-rom-map.test.ts
 ```
 
-- [ ] **Step 3: Implement `readNdsRomMap()`**
-
-Sequence:
+- [ ] **Step 3: Implement composition**
 
 ```ts
 const parsed = await parseNdsHeader(romPath);
 const fat = await parseNdsFat(parsed);
 const filesystem = await parseNdsFnt(parsed, fat);
-const arm9Overlays = await parseNdsOverlays(parsed, fat, "arm9");
-const arm7Overlays = await parseNdsOverlays(parsed, fat, "arm7");
+const arm9 = await parseNdsOverlays(parsed, fat, "arm9");
+const arm7 = await parseNdsOverlays(parsed, fat, "arm7");
 ```
 
-Build main ranges from header metadata and overlay ranges from validated overlay records. Do not infer loaded state or execution mode.
+Build deterministic ranges sorted main ARM9, main ARM7, ARM9 overlays by ID, ARM7 overlays by ID.
 
-- [ ] **Step 4: Run all PR-A tests**
+- [ ] **Step 4: Verify PR-A scope**
 
 ```bash
 npm test -- tests/nds-header.test.ts tests/nds-fat.test.ts tests/nds-fnt.test.ts tests/nds-overlays.test.ts tests/nds-rom-map.test.ts
-npm run typecheck
+npm run check
 npm run build
 ```
 
-Expected: PASS.
-
-- [ ] **Step 5: Commit Task 5**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/services/nds/rom-map.ts tests/nds-rom-map.test.ts
 git commit -m "feat: compose canonical NDS ROM map"
 ```
 
-- [ ] **Step 6: PR-A verification gate**
+- [ ] **Step 6: Open PR A**
 
-Run full repository verification:
-
-```bash
-npm run check
-npm run build
-```
-
-Open PR **`Add canonical NDS static structure parser`** from `feature/nds-static-structure` to `main`. Require CI and Package success before integration.
+Open **`Add canonical NDS static structure parser`** from `feature/nds-static-structure` to `main`. The PR includes the approved design and implementation plan from the design branch. Require CI and Package success before integration.
 
 ---
 
@@ -765,19 +553,8 @@ Open PR **`Add canonical NDS static structure parser`** from `feature/nds-static
 - Create: `tests/nds-resolver.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsRomMap`, `NdsProcessor`.
-- Produces: `resolveRuntimeAddress(map, address, processor)` and `resolveRomOffset(map, offset)`.
-
-Define discriminated resolution types so normal ambiguity/BSS/compression outcomes are not exceptions:
 
 ```ts
-export type RuntimeResolution =
-  | { readonly status: "unmapped"; readonly address: number; readonly processor: NdsProcessor }
-  | { readonly status: "resolved"; readonly candidate: RuntimeCandidate }
-  | { readonly status: "ambiguous-runtime-address"; readonly candidates: readonly RuntimeCandidate[] }
-  | { readonly status: "runtime-only-bss"; readonly candidate: RuntimeCandidate }
-  | { readonly status: "compressed-no-direct-rom-mapping"; readonly candidate: RuntimeCandidate };
-
 export interface RuntimeCandidate {
   readonly kind: "arm9-main" | "arm7-main" | "arm9-overlay" | "arm7-overlay" | "overlay-bss";
   readonly processor: NdsProcessor;
@@ -791,18 +568,35 @@ export interface RuntimeCandidate {
   readonly compressed: boolean;
 }
 
+export type RuntimeResolution =
+  | { readonly status: "unmapped"; readonly address: number; readonly processor: NdsProcessor }
+  | { readonly status: "resolved"; readonly candidate: RuntimeCandidate }
+  | { readonly status: "ambiguous-runtime-address"; readonly candidates: readonly RuntimeCandidate[] }
+  | { readonly status: "runtime-only-bss"; readonly candidate: RuntimeCandidate }
+  | { readonly status: "compressed-no-direct-rom-mapping"; readonly candidate: RuntimeCandidate };
+
+export interface RomOffsetMatch {
+  readonly kind: "header" | "fnt" | "fat" | "arm9-overlay-table" | "arm7-overlay-table" | "nitrofs-file" | "arm9-main" | "arm7-main" | "arm9-overlay" | "arm7-overlay";
+  readonly fileId: number | null;
+  readonly overlayId: number | null;
+  readonly runtimeAddress: number | null;
+}
+
 export interface RomOffsetResolution {
   readonly offset: number;
   readonly matches: readonly RomOffsetMatch[];
 }
+
+export function resolveRuntimeAddress(map: NdsRomMap, address: number, processor: NdsProcessor): RuntimeResolution;
+export function resolveRomOffset(map: NdsRomMap, offset: number): RomOffsetResolution;
 ```
 
-- [ ] **Step 1: Write failing runtime resolver tests**
+- [ ] **Step 1: Write RED runtime tests**
 
-Cover:
+Cover main binary, uncompressed overlay, compressed initialized overlay (`romOffset: null` with backing metadata), overlay BSS, multiple overlaps, main+overlay overlap, processor isolation, and unmapped address.
 
 ```ts
-test("does not fabricate an exact ROM byte for compressed runtime overlay data", () => {
+test("compressed runtime overlay bytes have no exact ROM offset", () => {
   const result = resolveRuntimeAddress(map, 0x02210040, "arm9");
   assert.equal(result.status, "compressed-no-direct-rom-mapping");
   if (result.status !== "compressed-no-direct-rom-mapping") assert.fail();
@@ -811,31 +605,28 @@ test("does not fabricate an exact ROM byte for compressed runtime overlay data",
 });
 ```
 
-Also main mapping, uncompressed overlay mapping, BSS, multiple overlapping overlays, processor isolation, unmapped address, and 32-bit input boundaries.
+- [ ] **Step 2: Write RED ROM-offset classification tests**
 
-- [ ] **Step 2: Write failing ROM-offset classification tests**
+Verify multi-classification for overlay+NitroFS file, structural ranges, main binaries, and no fabricated runtime address for compressed overlay backing bytes. Offset `>= map.fileSize` throws `NdsError("range-out-of-bounds", ...)`.
 
-Verify a byte may return both `nitrofs-file` and `arm9-overlay` classifications. Verify compressed overlay backing bytes get no runtime address. Verify header/FNT/FAT/overlay-table structural classifications.
-
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-resolver.test.ts
 ```
 
-- [ ] **Step 4: Implement resolver logic with no heuristics**
+- [ ] **Step 4: Implement resolver without heuristics**
 
-Runtime algorithm:
+Runtime order:
 
-1. Collect main-range candidate for requested processor.
-2. Collect every overlay initialized/BSS candidate for requested processor.
-3. If no candidate: `unmapped`.
-4. If more than one candidate: `ambiguous-runtime-address` with all candidates, even if one is main and one is overlay.
-5. For a single BSS candidate: `runtime-only-bss`.
-6. For a single compressed initialized overlay: `compressed-no-direct-rom-mapping`.
-7. Otherwise: `resolved` with direct ROM mapping.
+1. collect every main/overlay candidate for requested processor;
+2. zero candidates → `unmapped`;
+3. more than one → `ambiguous-runtime-address` with all candidates;
+4. one BSS candidate → `runtime-only-bss`;
+5. one compressed initialized overlay → `compressed-no-direct-rom-mapping`;
+6. otherwise → `resolved`.
 
-ROM-offset algorithm returns all matching classifications; do not deduplicate away meaningful file+overlay relationships.
+ROM-offset resolver returns all valid matches and only includes runtime addresses when byte mapping is deterministic.
 
 - [ ] **Step 5: Verify GREEN**
 
@@ -844,7 +635,7 @@ npm test -- tests/nds-resolver.test.ts tests/nds-rom-map.test.ts
 npm run typecheck
 ```
 
-- [ ] **Step 6: Commit Task 6**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/resolver.ts tests/nds-resolver.test.ts
@@ -853,15 +644,13 @@ git commit -m "feat: resolve NDS runtime and ROM addresses"
 
 ---
 
-### Task 7: Add controlled component extraction and transactional analysis bundles
+### Task 7: Add controlled extraction and transactional analysis bundles
 
 **Files:**
 - Create: `src/services/nds/extraction.ts`
 - Create: `tests/nds-extraction.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsRomMap`, validated component selectors, `resolveInside()`.
-- Produces: `extractNdsComponent()` and `extractNdsAnalysisBundle()`.
 
 ```ts
 export type NdsExtractionRequest =
@@ -886,76 +675,51 @@ export interface NdsExtractedArtifact {
   readonly compressed: boolean;
   readonly compressedSize: number | null;
 }
+
+export async function extractNdsComponent(
+  map: NdsRomMap,
+  workspaceRoot: string,
+  request: NdsExtractionRequest,
+): Promise<NdsExtractedArtifact>;
+
+export async function extractNdsAnalysisBundle(
+  map: NdsRomMap,
+  workspaceRoot: string,
+): Promise<{ readonly outputRoot: string; readonly manifestPath: string }>;
 ```
 
-Output root is fixed, not caller-supplied:
+Fixed output root:
 
 ```ts
-const relativeRoot = path.join("analysis", "generated", "nds", map.sha256Prefix);
-const outputRoot = resolveInside(workspaceRoot, relativeRoot);
+resolveInside(
+  workspaceRoot,
+  path.join("analysis", "generated", "nds", map.sha256Prefix),
+);
 ```
 
-- [ ] **Step 1: Write failing extraction tests**
+- [ ] **Step 1: Write RED component tests**
 
-Test ARM9, ARM7, uncompressed/compressed overlay stored bytes, NitroFS by ID/path, unknown IDs, deterministic output names, source/artifact hashes, and source ROM hash before/after equality.
+Cover ARM9/ARM7, uncompressed/compressed overlay stored bytes, NitroFS by ID/path, unknown IDs, deterministic names, source/output hashes, and unchanged source hash before/after. `nitrofs-path` must match a parsed FNT path exactly; it is not a host-filesystem path.
 
-Also test that a `filePath` must exactly match a parsed FNT path; it is not resolved as a filesystem path.
+- [ ] **Step 2: Write RED transaction tests**
 
-- [ ] **Step 2: Write failing atomic-bundle tests**
+Inject a narrow filesystem adapter for tests and force failure during a bundle build. Assert no new final directory appears, or an existing complete bundle is restored.
 
-Inject a narrow file-operation adapter into extraction for tests:
-
-```ts
-export interface NdsExtractionFs {
-  mkdir: typeof mkdir;
-  rename: typeof rename;
-  rm: typeof rm;
-}
-```
-
-Keep the default adapter internal/exported-for-test. Force a failure after some temporary bundle files are written and assert the final deterministic bundle directory is absent or the previous complete bundle is restored.
-
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-extraction.test.ts
 ```
 
-- [ ] **Step 4: Implement atomic range copy**
+- [ ] **Step 4: Implement streaming atomic range copy**
 
-Use streaming copy so large ROM components are not loaded wholesale:
+Use `createReadStream({ start, end })`, `createWriteStream({ flags: "wx" })`, `pipeline()`, then `FileHandle.sync()` and `rename()`. Zero-length files use an empty exclusive temp file. Best-effort remove temp files on error and throw `generated-path-failure`.
 
-```ts
-async function copyRangeAtomic(
-  sourcePath: string,
-  start: number,
-  length: number,
-  outputPath: string,
-): Promise<string> {
-  const temporary = `${outputPath}.tmp-${process.pid}-${Date.now()}`;
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  if (length === 0) {
-    await writeFile(temporary, Buffer.alloc(0), { flag: "wx" });
-  } else {
-    await pipeline(
-      createReadStream(sourcePath, { start, end: start + length - 1 }),
-      createWriteStream(temporary, { flags: "wx" }),
-    );
-  }
-  const handle = await open(temporary, "r+");
-  try { await handle.sync(); } finally { await handle.close(); }
-  await rename(temporary, outputPath);
-  return await hashFileSha256(outputPath);
-}
-```
+Hash the completed artifact with the streaming `hashFileSha256()` helper.
 
-On error, best-effort remove temporary files and throw `NdsError("generated-path-failure", ...)`.
+- [ ] **Step 5: Implement deterministic manifest/bundle promotion**
 
-Do not expose `copyRangeAtomic()` through MCP.
-
-- [ ] **Step 5: Implement manifest and transactional bundle promotion**
-
-Bundle metadata files:
+Bundle contents:
 
 ```text
 manifest.json
@@ -968,11 +732,11 @@ overlays/arm9/overlay_<id>.bin
 overlays/arm7/overlay_<id>.bin
 ```
 
-Build under sibling `<shaPrefix>.tmp-<pid>-<timestamp>`. If final already exists, rename it to a backup sibling, rename completed temp to final, then remove backup. On promotion failure restore backup before rethrowing.
+Build in sibling `<shaPrefix>.tmp-<pid>-<timestamp>`. If final exists, rename it to a backup sibling, promote the complete temp directory, then remove backup. On promotion failure, restore backup before throwing.
 
-Manifests must explicitly mark compressed overlays as stored/compressed bytes.
+Compressed overlay artifacts remain stored/compressed and are marked as such in manifest metadata.
 
-- [ ] **Step 6: Verify GREEN and PR-B regression**
+- [ ] **Step 6: Verify PR-B**
 
 ```bash
 npm test -- tests/nds-resolver.test.ts tests/nds-extraction.test.ts
@@ -980,30 +744,26 @@ npm run check
 npm run build
 ```
 
-Expected: PASS.
-
-- [ ] **Step 7: Commit Task 7**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/services/nds/extraction.ts tests/nds-extraction.test.ts
 git commit -m "feat: extract validated NDS analysis artifacts"
 ```
 
-- [ ] **Step 8: PR-B verification gate**
+- [ ] **Step 8: Open PR B**
 
-Open PR **`Add NDS address resolution and controlled extraction`** from `feature/nds-address-extraction` to `main`. Require CI and Package success before integration.
+Open **`Add NDS address resolution and controlled extraction`** from `feature/nds-address-extraction` to `main`. Require CI and Package success before integration.
 
 ---
 
-### Task 8: Migrate `readArm9ExecutableRange()` to the canonical parser without debugger behavior changes
+### Task 8: Migrate debugger ARM9 range helper without broadening validation
 
 **Files:**
 - Modify: `src/services/nds-arm9.ts`
 - Modify: `tests/nds-arm9.test.ts`
 
-**Interfaces:**
-- Consumes: `readNdsRomMap()` or the canonical header parser.
-- Preserves exactly:
+**Preserved interface:**
 
 ```ts
 export interface Arm9ExecutableRange {
@@ -1014,75 +774,75 @@ export interface Arm9ExecutableRange {
   readonly label: "ARM9 main";
 }
 
-export async function readArm9ExecutableRange(
-  romPath: string,
-): Promise<Arm9ExecutableRange>;
+export async function readArm9ExecutableRange(romPath: string): Promise<Arm9ExecutableRange>;
 ```
 
-- [ ] **Step 1: Add compatibility regression tests before refactor**
+- [ ] **Step 1: Add compatibility tests**
 
-Retain existing expected shape and add cases proving the old debugger-specific ARM9 main-RAM policy remains enforced:
+Keep all existing tests. Add a regression proving malformed unrelated static structures do not make `readArm9ExecutableRange()` fail when the ARM9 header/range is otherwise valid.
 
 ```ts
-test("compatibility adapter still rejects ARM9 outside DS main RAM", async () => {
-  const fixture = await createNdsFixture({ arm9RamAddress: 0x01000000 });
-  await assert.rejects(readArm9ExecutableRange(fixture.romPath), /outside DS main RAM/);
+test("ARM9 compatibility helper does not validate unrelated FAT metadata", async () => {
+  const fixture = await createNdsFixture({ fatOffset: 0x3ff0, fatSize: 0x100 });
+  assert.deepEqual(await readArm9ExecutableRange(fixture.romPath), {
+    start: 0x02000000,
+    end: 0x02000200,
+    size: 0x200,
+    source: "arm9-header",
+    label: "ARM9 main",
+  });
 });
 ```
 
-The canonical parser itself may parse broader 32-bit metadata; this adapter preserves the existing `0x02000000 <= ARM9 < 0x02400000` debugger constraint.
+Also preserve rejection outside `0x02000000..0x02400000`, zero size, 32-bit overflow, and ARM9 bytes beyond EOF.
 
-- [ ] **Step 2: Run existing compatibility tests before code change**
+- [ ] **Step 2: Verify pre-refactor behavior**
 
 ```bash
 npm test -- tests/nds-arm9.test.ts
 ```
 
-Expected: PASS on current implementation.
-
-- [ ] **Step 3: Refactor to canonical source**
-
-Replace independent header file reads with canonical metadata:
+- [ ] **Step 3: Refactor to `readArm9HeaderMetadata()`**
 
 ```ts
-const map = await readNdsRomMap(romPath);
-const { ramAddress: start, size, ramEnd: end } = map.header.arm9;
+const arm9 = await readArm9HeaderMetadata(romPath);
+const start = arm9.ramAddress;
+const end = arm9.ramEnd;
+const size = arm9.size;
 ```
 
-Then apply the existing DS main-RAM validation and return the exact old shape.
+Apply the existing main-RAM check in `nds-arm9.ts` and return the exact old shape. Do **not** call `readNdsRomMap()` here because that would inherit FAT/FNT/overlay failures that the old debugger helper never enforced.
 
-Do not modify `src/tools/desmume.ts` behavior in this task.
-
-- [ ] **Step 4: Verify compatibility and debugger regression**
+- [ ] **Step 4: Run compatibility/debugger regression**
 
 ```bash
 npm test -- tests/nds-arm9.test.ts tests/desmume-debug-tools.test.ts tests/desmume-start-race.test.ts tests/desmume-debug-lifecycle.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
-- [ ] **Step 5: Commit Task 8**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/services/nds-arm9.ts tests/nds-arm9.test.ts
-git commit -m "refactor: source ARM9 range from canonical NDS map"
+git commit -m "refactor: share canonical ARM9 header decoding"
 ```
 
 ---
 
-### Task 9: Expose the seven bounded MCP NDS tools
+### Task 9: Expose exactly seven bounded MCP NDS tools
 
 **Files:**
 - Create: `src/tools/nds.ts`
 - Create: `tests/nds-tools.test.ts`
 - Modify: `src/index.ts`
 
-**Interfaces:**
-- Consumes: `readNdsRomMap`, both resolvers, both extraction functions, `resolveInside`, `ServerConfig`.
-- Produces: `registerNdsTools(server, config): void`.
+**Interface:**
 
-Public tool names:
+```ts
+export function registerNdsTools(server: McpServer, config: ServerConfig): void;
+```
+
+Tool names:
 
 ```text
 nds_inspect_rom
@@ -1094,7 +854,7 @@ nds_extract_component
 nds_extract_analysis_bundle
 ```
 
-Common schemas:
+Schemas:
 
 ```ts
 const uint32Schema = z.number().int().min(0).max(0xffffffff);
@@ -1105,28 +865,11 @@ const listLimitSchema = z.number().int().min(1).max(200).default(100);
 const listOffsetSchema = z.number().int().min(0).default(0);
 ```
 
-Use workspace-level generated output exactly as approved. No `project` or `output` field is added to extraction schemas.
+- [ ] **Step 1: Write RED registration/schema tests**
 
-- [ ] **Step 1: Create a fake MCP server test harness and write registration RED tests**
+Capture `server.tool()` calls using the existing fake-server pattern. Assert these seven names and no extra NDS tool. Cover workspace containment, uint32 bounds, pagination defaults/max, processor filters, prefix filtering, and absence of any `output` extraction parameter.
 
-Follow the existing tool-test pattern by capturing `server.tool(name, description, schema, handler)` calls. Assert exactly the seven new names are registered by `registerNdsTools()`.
-
-- [ ] **Step 2: Write schema/handler RED tests**
-
-Cover:
-
-- ROM path containment;
-- list default/max limit and pagination offset;
-- prefix filtering on parsed NitroFS paths while retaining stable `total`, `offset`, `limit`, and `nextOffset` fields;
-- overlay processor filtering and pagination;
-- uint32 bounds;
-- normal runtime statuses are returned with `isError !== true`;
-- parser/extraction errors return `isError: true` with `operation`, `category`, and `correctiveAction`;
-- extraction selector validation rejects missing/wrong selector fields;
-- no arbitrary output field exists;
-- serialized response exceeding `maxOutputBytes` becomes `output-bound-exceeded`.
-
-Define the extraction MCP schema as one object plus handler-level discriminant validation because `McpServer.tool()` currently receives a Zod raw shape:
+Extraction schema:
 
 ```ts
 {
@@ -1138,72 +881,51 @@ Define the extraction MCP schema as one object plus handler-level discriminant v
 }
 ```
 
-Normalize with an exhaustive helper that requires:
+Handler normalization requires no selector for main binaries, `overlayId` only for overlay components, and exactly one of `fileId`/`filePath` for `nitrofs-file`.
 
-- no selector for `arm9`/`arm7`;
-- `overlayId` only for overlay components;
-- exactly one of `fileId` or `filePath` for `nitrofs-file`.
+- [ ] **Step 2: Write RED behavior/error tests**
 
-- [ ] **Step 3: Verify RED**
+Assert ambiguity/BSS/compression statuses are normal successful results. For a thrown `NdsError`, response has:
+
+```json
+{
+  "error": "...",
+  "operation": "nds_...",
+  "category": "...",
+  "correctiveAction": "..."
+}
+```
+
+Map non-`NdsError` failures deterministically: ROM inspection/list/resolver handlers use category `invalid-rom`; extraction handlers use `generated-path-failure`. Never expose stack traces.
+
+Test `maxOutputBytes` overflow returns category `output-bound-exceeded` and tells caller to narrow prefix/processor/limit/offset.
+
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-tools.test.ts
 ```
 
-Expected: FAIL because `registerNdsTools()` does not exist.
+- [ ] **Step 4: Implement bounded result helper and seven handlers**
 
-- [ ] **Step 4: Implement bounded result/error helpers**
-
-```ts
-function boundedTextResult(
-  config: ServerConfig,
-  operation: string,
-  value: unknown,
-  isError = false,
-) {
-  const text = JSON.stringify(value, null, 2);
-  if (Buffer.byteLength(text, "utf8") > config.maxOutputBytes) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          error: "Serialized NDS result exceeds RE_MCP_MAX_OUTPUT_BYTES",
-          operation,
-          category: "output-bound-exceeded",
-          correctiveAction: "Narrow the request with prefix, processor, limit, or pagination offset.",
-        }, null, 2),
-      }],
-      isError: true,
-    };
-  }
-  return { content: [{ type: "text" as const, text }], isError };
-}
-```
-
-Create `ndsErrorResult()` that maps `NdsError.category`; unknown errors use `invalid-rom` only when they arise during ROM open/stat, otherwise preserve a generic safe message without stack trace.
-
-- [ ] **Step 5: Implement the seven handlers**
-
-For every handler:
+Every handler begins:
 
 ```ts
 const romPath = resolveInside(config.workspaceRoot, rom);
 const map = await readNdsRomMap(romPath);
 ```
 
-`nds_inspect_rom` returns summary/counts and executable ranges.
+`nds_list_files`: include unnamed entries when prefix is empty; when prefix is non-empty, only named paths that start with prefix match. Sort by file ID, then paginate. Return `{ total, offset, limit, nextOffset, files }`.
 
-`nds_list_files` filters named paths by `prefix`, sorts by `fileId`, slices `[offset, offset + limit)`, and returns pagination metadata.
+`nds_list_overlays`: filter processor first, sort processor then overlay ID, paginate, return matching metadata.
 
-`nds_list_overlays` filters processor first, sorts by `(processor, overlayId)`, then paginates.
+`nds_inspect_rom`: return identity/header/counts/executable ranges but not raw ROM bytes.
 
-Resolvers return their structured normal status without converting ambiguity/BSS/compression to an MCP error.
+Resolvers return structured statuses unchanged.
 
-Extraction calls use `config.workspaceRoot` so service-computed destination remains fixed below `analysis/generated/nds`.
+Extraction passes only `config.workspaceRoot`; callers never choose generated destination.
 
-- [ ] **Step 6: Register tools in `src/index.ts` and capability list**
-
-Add:
+- [ ] **Step 5: Register in `src/index.ts`**
 
 ```ts
 import { registerNdsTools } from "./tools/nds.js";
@@ -1211,9 +933,9 @@ import { registerNdsTools } from "./tools/nds.js";
 registerNdsTools(server, config);
 ```
 
-Append all seven names to `server_capabilities.tools`. Do not alter `debuggerPolicy` except, if necessary, add a separate `ndsStaticAnalysisPolicy` field describing read-only ROM parsing plus controlled generated artifacts.
+Append all seven names to `server_capabilities.tools`. Add `ndsStaticAnalysisPolicy` stating read-only ROM parsing plus controlled generated artifacts. Do not change the debugger policy semantics.
 
-- [ ] **Step 7: Verify GREEN**
+- [ ] **Step 6: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-tools.test.ts
@@ -1221,7 +943,7 @@ npm run typecheck
 npm run build
 ```
 
-- [ ] **Step 8: Commit Task 9**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/tools/nds.ts src/index.ts tests/nds-tools.test.ts
@@ -1230,40 +952,31 @@ git commit -m "feat: expose NDS static analysis MCP tools"
 
 ---
 
-### Task 10: Document the feature and run final cross-layer verification
+### Task 10: Document and verify the completed milestone
 
 **Files:**
 - Modify: `README.md`
-- Modify if necessary: `docs/superpowers/specs/2026-08-07-nds-static-analysis-foundation-design.md` only for factual implementation drift discovered during review; do not weaken approved constraints.
 
-**Interfaces:**
-- No new production interface.
-- Produces user-facing documentation and final evidence that static tooling did not regress debugger behavior.
+- [ ] **Step 1: Document the seven tools and workflow**
 
-- [ ] **Step 1: Add README documentation**
-
-Add an **NDS Static Analysis** section listing the seven tools and explaining:
-
-```text
-- ROM inputs stay read-only.
-- Generated outputs go only to analysis/generated/nds/<sha-prefix>/.
-- ARM9/ARM7, FAT/FNT, and overlays are parsed into one canonical map.
-- Overlapping overlay candidates are reported, never guessed.
-- BSS has no ROM bytes.
-- Compressed overlay runtime bytes intentionally have no direct ROM-byte mapping until decompression support exists.
-- The analysis bundle extracts stored overlay bytes; compressed overlays stay compressed.
-```
-
-Add a short workflow example:
+Add an **NDS Static Analysis** section explaining:
 
 ```text
 nds_inspect_rom
-→ nds_list_overlays / nds_list_files
-→ nds_resolve_runtime_address or nds_resolve_rom_offset
-→ nds_extract_component or nds_extract_analysis_bundle
+→ nds_list_files / nds_list_overlays
+→ nds_resolve_runtime_address / nds_resolve_rom_offset
+→ nds_extract_component / nds_extract_analysis_bundle
 ```
 
-Do not document disassembly/Ghidra/watchpoints as implemented.
+State explicitly:
+
+- source ROM is read-only;
+- output is fixed to `analysis/generated/nds/<sha-prefix>/`;
+- overlapping overlays are reported, never guessed;
+- BSS has no ROM bytes;
+- compressed overlay runtime bytes intentionally have no exact ROM-byte mapping;
+- compressed overlay extraction returns stored compressed bytes;
+- disassembly, Ghidra, watchpoints, and ROM mutation are not part of this milestone.
 
 - [ ] **Step 2: Run focused NDS suite**
 
@@ -1271,15 +984,11 @@ Do not document disassembly/Ghidra/watchpoints as implemented.
 npm test -- tests/nds-header.test.ts tests/nds-fat.test.ts tests/nds-fnt.test.ts tests/nds-overlays.test.ts tests/nds-rom-map.test.ts tests/nds-resolver.test.ts tests/nds-extraction.test.ts tests/nds-tools.test.ts tests/nds-arm9.test.ts
 ```
 
-Expected: PASS.
-
 - [ ] **Step 3: Run debugger regression suite**
 
 ```bash
 npm test -- tests/desmume-debug-tools.test.ts tests/desmume-debug-lifecycle.test.ts tests/desmume-start-race.test.ts tests/debug-controller-context.test.ts tests/arm9-registers.test.ts tests/stop-context.test.ts
 ```
-
-Expected: PASS with no required behavior changes.
 
 - [ ] **Step 4: Run full verification**
 
@@ -1288,76 +997,44 @@ npm run check
 npm run build
 ```
 
-Expected: typecheck PASS, full tests PASS, build PASS.
-
-- [ ] **Step 5: Review the diff for forbidden scope expansion**
-
-Run:
+- [ ] **Step 5: Inspect forbidden-scope diff**
 
 ```bash
 git diff main...HEAD -- src/services src/tools src/index.ts README.md package.json package-lock.json
 ```
 
-Confirm:
+Confirm no new runtime dependency, watchpoint/register-write/memory-write/arbitrary-GDB tool, debugger execution behavior change, source-ROM write path, arbitrary extraction output path, or raw offset/length MCP extraction primitive.
 
-```text
-package.json / package-lock.json have no new runtime dependency
-no register write or memory write tool
-no watchpoint tool
-no arbitrary GDB packet tool
-no new breakpoint/continue/step/pause behavior
-no source-ROM write path
-no caller-selected extraction output path
-```
-
-- [ ] **Step 6: Commit documentation**
+- [ ] **Step 6: Commit docs**
 
 ```bash
 git add README.md
 git commit -m "docs: document NDS static analysis tools"
 ```
 
-- [ ] **Step 7: PR-C verification gate**
+- [ ] **Step 7: Open PR C**
 
-Open PR **`Expose NDS static analysis foundation tools`** from `feature/nds-static-mcp-tools` to `main`.
-
-PR body must summarize:
-
-- seven tools;
-- canonical parser/model;
-- compressed/BSS mapping safety;
-- deterministic controlled extraction;
-- no new dependencies;
-- no Dynamic Debugging behavior changes;
-- exact CI evidence.
-
-Require CI and Package success before integration.
+Open **`Expose NDS static analysis foundation tools`** from `feature/nds-static-mcp-tools` to `main`. Require CI and Package success before integration. PR body must enumerate the seven tools, compression/BSS ambiguity rules, controlled extraction, no new dependencies, no debugger behavior changes, and final workflow evidence.
 
 ---
 
 ## Final Acceptance Checklist
 
-Before marking **NDS Static Analysis Foundation** complete, verify all of the following from the final PR head:
-
-- [ ] `nds_inspect_rom` implemented and bounded.
-- [ ] `nds_list_files` implemented with prefix + pagination.
-- [ ] `nds_list_overlays` implemented with processor + pagination.
-- [ ] `nds_resolve_runtime_address` reports main, overlay, BSS, compression, ambiguity, and unmapped states correctly.
-- [ ] `nds_resolve_rom_offset` returns all valid classifications.
-- [ ] `nds_extract_component` accepts only canonical selectors and no arbitrary output path.
-- [ ] `nds_extract_analysis_bundle` produces deterministic complete bundles and does not dump all NitroFS assets.
+- [ ] All seven NDS tools are implemented and documented.
+- [ ] Header, FAT, FNT, overlay, map, resolver, extraction, tool, and ARM9 compatibility tests pass.
 - [ ] Source ROM SHA-256 is unchanged after extraction tests.
-- [ ] Every artifact records source/output SHA-256.
-- [ ] FAT/FNT/overlay malformed-fixture tests pass.
-- [ ] Compressed overlay runtime bytes have `romOffset: null`.
+- [ ] Every extracted artifact records source and output SHA-256.
+- [ ] Generated output is fixed below workspace `analysis/generated/nds/<sha-prefix>/`.
+- [ ] No public arbitrary offset/length extraction primitive exists.
+- [ ] Compressed runtime overlay bytes have no fabricated direct ROM offset.
 - [ ] Compressed overlay backing bytes have no fabricated runtime address.
 - [ ] BSS has no ROM offset.
-- [ ] Overlapping overlays are never guessed.
-- [ ] `readArm9ExecutableRange()` preserves existing public result shape and main-RAM policy.
+- [ ] Overlapping overlay candidates are never guessed.
+- [ ] `readArm9ExecutableRange()` preserves old result shape, main-RAM policy, and narrow validation behavior.
 - [ ] Existing DeSmuME debugger regression tests pass.
-- [ ] `package.json` has no new runtime dependency.
+- [ ] `package.json`/`package-lock.json` add no runtime dependency.
 - [ ] `npm run check` passes.
 - [ ] `npm run build` passes.
-- [ ] GitHub CI passes on the final head.
-- [ ] GitHub Package workflow passes on the final head.
-- [ ] Physical Catalina Dynamic Debugging acceptance remains a separate pending gate; do not falsely mark it complete because this static milestone passes.
+- [ ] GitHub CI passes on each final PR head.
+- [ ] GitHub Package workflow passes on each final PR head.
+- [ ] Physical Catalina Dynamic Debugging acceptance remains a separate pending gate and is not marked complete by this static milestone.
