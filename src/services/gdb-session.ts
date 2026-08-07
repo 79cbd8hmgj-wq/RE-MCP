@@ -152,6 +152,40 @@ export class GdbSession {
     return result;
   }
 
+  async insertSoftwareBreakpoint(
+    address: number,
+    kind: 2 | 4,
+    timeoutMs: number,
+  ): Promise<void> {
+    await this.#softwareBreakpoint("insert", "Z", address, kind, timeoutMs);
+  }
+
+  async removeSoftwareBreakpoint(
+    address: number,
+    kind: 2 | 4,
+    timeoutMs: number,
+  ): Promise<void> {
+    await this.#softwareBreakpoint("remove", "z", address, kind, timeoutMs);
+  }
+
+  async #softwareBreakpoint(
+    operation: "insert" | "remove",
+    command: "Z" | "z",
+    address: number,
+    kind: 2 | 4,
+    timeoutMs: number,
+  ): Promise<void> {
+    const reply = await this.sendStoppedCommand(
+      `${command}0,${address.toString(16)},${kind}`,
+      timeoutMs,
+    );
+    if (reply === "OK") return;
+    if (reply.startsWith("E")) {
+      throw new Error(`GDB software breakpoint ${operation} failed: ${reply}`);
+    }
+    throw new Error(`Unsupported GDB software breakpoint ${operation} reply: ${reply}`);
+  }
+
   #handleData(chunk: Buffer): void {
     this.#buffer += chunk.toString("ascii");
     if (Buffer.byteLength(this.#buffer, "ascii") > this.#options.maxReplyBytes) {
