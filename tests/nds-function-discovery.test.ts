@@ -222,7 +222,7 @@ test("indirect calls and returns never create proven functions", async () => {
 
   assert.deepEqual(functionIds(result), ["arm9:main:02000000:arm"]);
   assert.equal(result.calls.length, 0);
-  assert.equal(result.functions[0]?.cfg.unresolvedEdges >= 2, true);
+  assert.equal((result.functions[0]?.cfg.unresolvedEdges ?? 0) >= 2, true);
 });
 
 test("mode-switching direct calls preserve a distinct Thumb function identity", async () => {
