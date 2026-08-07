@@ -547,6 +547,7 @@ export async function bootstrapNdsGhidraProject(
   let activeProcessor: NdsProcessor | null = null;
   let stateStarted = false;
 
+  await mkdir(ghidraProjectRoot(map, workspaceRoot), { recursive: true });
   await writeJsonAtomic(
     stateRoot,
     "latest-run.json",
