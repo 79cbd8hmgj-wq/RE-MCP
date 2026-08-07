@@ -224,6 +224,15 @@ function readThumbHalfword(bytes: readonly number[]): number | null {
   return first | (second << 8);
 }
 
+function readThumbSecondHalfword(bytes: readonly number[]): number | null {
+  const third = bytes[2];
+  const fourth = bytes[3];
+  if (third === undefined || fourth === undefined) {
+    return null;
+  }
+  return third | (fourth << 8);
+}
+
 function readArmWord(bytes: readonly number[]): number | null {
   const first = bytes[0];
   const second = bytes[1];
@@ -256,6 +265,104 @@ function rotateRight32(value: number, amount: number): number {
 function armImmediateOperand(word: number): number {
   const rotate = ((word >>> 8) & 0x0f) * 2;
   return rotateRight32(word & 0xff, rotate);
+}
+
+function signExtend(value: number, bits: number): number {
+  const shift = 32 - bits;
+  return (value << shift) >> shift;
+}
+
+function encodedDirectControlFlowTarget(
+  cs: CapstoneModule,
+  instruction: CapstoneInstruction,
+  address: number,
+  mode: ArmMode,
+): number | null {
+  if (mode === "arm") {
+    const word = readArmWord(instruction.bytes);
+    if (word === null) {
+      return null;
+    }
+
+    if (instruction.id === cs.ARM_INS_B || instruction.id === cs.ARM_INS_BL) {
+      const condition = word >>> 28;
+      if ((word & 0x0e000000) !== 0x0a000000 || condition === 0x0f) {
+        return null;
+      }
+      const offset = signExtend((word & 0x00ffffff) << 2, 26);
+      return (address + 8 + offset) >>> 0;
+    }
+
+    if (
+      instruction.id === cs.ARM_INS_BLX
+      && (word & 0xfe000000) === 0xfa000000
+    ) {
+      const h = (word >>> 24) & 1;
+      const encodedOffset = ((word & 0x00ffffff) << 2) | (h << 1);
+      const offset = signExtend(encodedOffset, 26);
+      return (address + 8 + offset) >>> 0;
+    }
+    return null;
+  }
+
+  const first = readThumbHalfword(instruction.bytes);
+  if (first === null) {
+    return null;
+  }
+
+  if (instruction.id === cs.ARM_INS_B) {
+    const condition = (first >>> 8) & 0x0f;
+    if ((first & 0xf000) === 0xd000 && condition < 0x0e) {
+      const offset = signExtend((first & 0x00ff) << 1, 9);
+      return (address + 4 + offset) >>> 0;
+    }
+    if ((first & 0xf800) === 0xe000) {
+      const offset = signExtend((first & 0x07ff) << 1, 12);
+      return (address + 4 + offset) >>> 0;
+    }
+    return null;
+  }
+
+  if (instruction.id === cs.ARM_INS_BL || instruction.id === cs.ARM_INS_BLX) {
+    const second = readThumbSecondHalfword(instruction.bytes);
+    if (second === null || (first & 0xf800) !== 0xf000) {
+      return null;
+    }
+    const isBl = instruction.id === cs.ARM_INS_BL
+      && (second & 0xf800) === 0xf800;
+    const isBlx = instruction.id === cs.ARM_INS_BLX
+      && (second & 0xf800) === 0xe800;
+    if (!isBl && !isBlx) {
+      return null;
+    }
+    const encodedOffset = ((first & 0x07ff) << 12) | ((second & 0x07ff) << 1);
+    const offset = signExtend(encodedOffset, 23);
+    const target = (address + 4 + offset) >>> 0;
+    return isBlx ? (target & ~3) >>> 0 : target;
+  }
+
+  return null;
+}
+
+function fallbackOperandsForDirectControlFlow(
+  cs: CapstoneModule,
+  instruction: CapstoneInstruction,
+  address: number,
+  mode: ArmMode,
+  operands: readonly DecodedArmOperand[],
+): readonly DecodedArmOperand[] {
+  if (operands.length > 0) {
+    return operands;
+  }
+  const target = encodedDirectControlFlowTarget(
+    cs,
+    instruction,
+    address,
+    mode,
+  );
+  return target === null
+    ? operands
+    : [{ kind: "immediate", value: target }];
 }
 
 function encodedPcRelative(
@@ -358,15 +465,25 @@ function normalizeInstruction(
     instruction,
     decodedOperands,
   );
-  const structured = structuredPcRelative(
+  const directControlFlowOperands = fallbackOperandsForDirectControlFlow(
     cs,
     instruction,
     address,
     mode,
     controlFlowOperands,
   );
+  const structured = structuredPcRelative(
+    cs,
+    instruction,
+    address,
+    mode,
+    directControlFlowOperands,
+  );
   const pcRelative = structured ?? encodedPcRelative(instruction.bytes, mode);
-  const operands = fallbackOperandsForPcRelative(controlFlowOperands, pcRelative);
+  const operands = fallbackOperandsForPcRelative(
+    directControlFlowOperands,
+    pcRelative,
+  );
   const cc = instruction.detail.cc;
   return {
     address,
