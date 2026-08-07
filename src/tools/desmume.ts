@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { ServerConfig } from "../config.js";
 import { resolveInside } from "../security/paths.js";
 import { DebugController } from "../services/debug-controller.js";
+import type { ExecutableRangeInput } from "../services/executable-ranges.js";
 import { GdbSession } from "../services/gdb-session.js";
 import { validateMemoryRead } from "../services/gdb-rsp.js";
 import { readArm9ExecutableRange } from "../services/nds-arm9.js";
@@ -104,6 +105,21 @@ function debuggerErrorResult(
     },
     true,
   );
+}
+
+function normalizeExecutableRanges(
+  ranges: readonly z.infer<typeof executableRangeSchema>[],
+): readonly ExecutableRangeInput[] {
+  return ranges.map((range) => ({
+    id: range.id,
+    label: range.label,
+    start: range.start,
+    end: range.end,
+    source: range.source,
+    ...(range.overlayId === undefined ? {} : { overlayId: range.overlayId }),
+    ...(range.defaultMode === undefined ? {} : { defaultMode: range.defaultMode }),
+    ...(range.symbolModes === undefined ? {} : { symbolModes: range.symbolModes }),
+  }));
 }
 
 export function createDesmumeDebugController(
@@ -429,7 +445,7 @@ export function registerDesmumeTools(
     async ({ ranges }) => {
       try {
         ownedGdbPort(manager);
-        debuggerController.replaceAdditionalRanges(ranges);
+        debuggerController.replaceAdditionalRanges(normalizeExecutableRanges(ranges));
         return textResult({ ranges: debuggerController.listExecutableRanges() });
       } catch (error) {
         return debuggerErrorResult(
