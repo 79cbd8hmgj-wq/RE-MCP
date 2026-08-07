@@ -2,63 +2,63 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add bounded, read-only Nintendo DS ARM/Thumb linear disassembly and direct-control-flow analysis backed by `@alexaltea/capstone-js` 5.0.9, while preserving the canonical NDS mapping and ambiguity rules.
+**Goal:** Add bounded, read-only Nintendo DS ARM/Thumb linear disassembly and direct-control-flow analysis backed by `@alexaltea/capstone-js` 5.0.9 while preserving RE-MCP's canonical NDS mapping, ambiguity, and packaging guarantees.
 
-**Architecture:** Keep Capstone behind a narrow generic ARM decoder adapter, then layer NDS code-source resolution, canonical instruction normalization, and CFG traversal above it. Read bytes only from uniquely mapped ARM9/ARM7 main code or uncompressed overlays in the validated `.nds`; record but do not traverse calls, never guess indirect targets or ambiguous overlay state, and keep the public surface to exactly two NDS-aware MCP tools.
+**Architecture:** Keep Capstone behind one narrow RE-MCP-owned decoder interface. Build a separate NDS code-source policy layer over the existing canonical resolver, normalize decoder output into canonical instructions, then reuse that instruction normalizer for both bounded linear decoding and a FIFO basic-block worklist. All code bytes come from uniquely mapped ARM9/ARM7 main code or uncompressed overlays in the validated `.nds`; calls are annotated but not traversed, indirect targets are never guessed, and compressed overlays/BSS remain non-decodable.
 
-**Tech Stack:** TypeScript ES2022/NodeNext on Node.js >=20, Node `node:test`, Zod, existing RE-MCP NDS parser/resolver, `@alexaltea/capstone-js` 5.0.9 (JavaScript + WebAssembly), GitHub Actions package workflow.
+**Tech Stack:** TypeScript ES2022 + NodeNext, Node.js >=20, `node:test`, Zod, existing RE-MCP NDS parser/resolver, `@alexaltea/capstone-js` 5.0.9, GitHub Actions package workflow.
 
 ## Global Constraints
 
 - Pin `@alexaltea/capstone-js` exactly at `5.0.9`.
 - Node.js runtime floor remains `>=20`; CI/package verification continues on Node 20.
 - Public tools added by this milestone are exactly `nds_disassemble_range` and `nds_analyze_control_flow`.
-- Inputs are NDS-aware only: no generic binary path, caller-provided byte buffer, arbitrary base address, arbitrary raw byte-range extraction, or caller-controlled output path.
+- No generic binary path, caller-provided bytes, arbitrary base address, arbitrary raw byte-range extraction, or caller-controlled output path.
 - Decode sources are ARM9 main, ARM7 main, uncompressed ARM9 overlays, and uncompressed ARM7 overlays only.
 - Compressed overlays return `compressed-overlay-not-decodable`; do not decompress or decode stored compressed bytes.
-- BSS returns `runtime-only-bss`; it has no ROM bytes to decode.
-- Ambiguous mappings are returned as `ambiguous-code-source`; never guess overlay loaded state.
-- Initial `auto` mode is accepted only at the matching ARM9/ARM7 header entry point, which is an ARM seed. CFG-propagated mode must come from a deterministic decoded edge.
-- ARM starts require 4-byte alignment; Thumb starts require 2-byte alignment; never round or silently adjust.
-- Linear limits: default/max instructions `32/256`; default/max source bytes `128/1024`.
-- CFG limits: default/max blocks `64/256`; total instructions `512/4096`; total decoded bytes `2048/16384`; traversal edges `128/1024`.
-- CFG follows deterministic non-call direct branches and conditional fall-through. Direct calls are annotated but not traversed. Indirect branches/calls are never guessed.
+- BSS returns `runtime-only-bss`; it has no ROM source bytes.
+- Ambiguous mappings return `ambiguous-code-source`; never infer runtime overlay loaded state.
+- Initial `auto` mode succeeds only when the resolved runtime address equals the matching ARM9/ARM7 header entry point, which is an ARM seed. CFG-propagated mode comes only from a deterministic decoded edge.
+- ARM starts require 4-byte alignment; Thumb starts require 2-byte alignment. Never round or silently adjust.
+- Linear limits: instructions default/max `32/256`; source bytes default/max `128/1024`.
+- CFG limits: blocks default/max `64/256`; total instructions `512/4096`; total bytes `2048/16384`; traversal edges `128/1024`.
+- CFG follows deterministic non-call direct branches and conditional fall-through. Direct calls are annotated but not traversed. Indirect branch/call targets are never guessed.
 - Cross-component traversal is same-processor only and requires a unique, uncompressed, file-backed target with proven mode.
-- ROM SHA-256 identity is checked before and after each top-level static disassembly operation.
-- WebAssembly/backend initialization failures are operational `disassembly-backend-failure` errors, not malformed-ROM results.
-- Package acceptance must initialize the decoder and decode known ARM and Thumb fixtures from the assembled production bundle with no network or external disassembler.
+- ROM SHA-256 identity is checked immediately before and after each top-level static disassembly operation.
+- WebAssembly/decoder initialization failures are operational `disassembly-backend-failure` errors, not malformed-ROM results.
+- The assembled production bundle must initialize Capstone.js and decode known ARM and Thumb fixtures without runtime network access or an external disassembler.
 - Physical Catalina/DeSmuME dynamic-debugging acceptance remains separate and is not claimed by this milestone.
 
 ---
 
-## File Map and Responsibilities
+## File Map
 
 ### New files
 
-- `src/types/alexaltea-capstone-js.d.ts` — minimal local type declaration for the untyped Capstone.js package surface RE-MCP actually uses.
-- `src/services/disassembly/backend.ts` — RE-MCP-owned ARM decoder interface and normalized decoder metadata; contains no NDS logic.
-- `src/services/disassembly/capstone.ts` — async Capstone.js/WASM loader and ARM/Thumb adapter; the only production file importing `@alexaltea/capstone-js`.
-- `src/services/nds/disassembly-source.ts` — converts runtime addresses/ROM offsets into one deterministic file-backed NDS code source, enforces mode/alignment/compression/BSS/ambiguity policy, and provides SHA-validated bounded ROM reads.
-- `src/services/nds/disassembly.ts` — canonical NDS instruction/flow model, direct-target annotation, and bounded linear disassembly.
-- `src/services/nds/control-flow.ts` — bounded basic-block worklist traversal over canonical instructions.
-- `tests/disassembly-backend.test.ts` — real Capstone.js adapter contract tests with known ARM/Thumb bytes.
-- `tests/nds-disassembly-source.test.ts` — NDS source/mode/alignment/identity policy tests.
-- `tests/nds-disassembly.test.ts` — canonical flow classification and bounded linear disassembly tests.
-- `tests/nds-control-flow.test.ts` — CFG branch/call/cycle/cross-component/limit tests.
+- `src/types/alexaltea-capstone-js.d.ts` — minimal declaration of only the Capstone.js 5.0.9 API used by RE-MCP.
+- `src/services/disassembly/backend.ts` — RE-MCP-owned ARM decoder types and backend error.
+- `src/services/disassembly/capstone.ts` — sole production import of `@alexaltea/capstone-js`; WASM loader + ARM/Thumb adapter.
+- `src/services/nds/disassembly-source.ts` — deterministic NDS code-source resolution, mode/alignment policy, exact file-backed ranges, and SHA-validated reads.
+- `src/services/nds/disassembly.ts` — canonical instruction model, semantic control-flow normalization, target annotation, bounded linear decoding.
+- `src/services/nds/control-flow.ts` — bounded FIFO basic-block traversal.
+- `tests/disassembly-backend.test.ts` — real Capstone adapter tests.
+- `tests/nds-disassembly-source.test.ts` — NDS source/mode/identity tests.
+- `tests/nds-disassembly.test.ts` — canonical instruction + linear decoding tests.
+- `tests/nds-control-flow.test.ts` — CFG traversal tests.
 
 ### Existing files modified
 
 - `package.json`, `package-lock.json` — exact Capstone.js production dependency.
-- `src/tools/nds.ts` — register the two tools, schemas, request normalization, output bounding, and backend-error mapping.
-- `tests/nds-tools.test.ts` — tool-registration/schema/handler/security assertions.
-- `src/index.ts` — advertise both tool names and the static-disassembly safety policy.
-- `scripts/check-install.mjs` — require Capstone package/WASM assets and run packaged ARM/Thumb decoder smoke tests.
-- `.github/workflows/package.yml` — keep the isolated production install and make the decoder smoke check an explicit named package acceptance step.
-- `README.md` — document tool workflow, limits, mode semantics, ambiguity/BSS/compression behavior, call traversal, and separation from native debugger acceptance.
+- `src/tools/nds.ts` — two schemas/handlers and backend-error mapping.
+- `tests/nds-tools.test.ts` — registration/schema/security/handler tests.
+- `src/index.ts` — capability names and static-analysis policy.
+- `scripts/check-install.mjs` — packaged Capstone asset + ARM/Thumb smoke verification.
+- `.github/workflows/package.yml` — explicit isolated decoder smoke acceptance.
+- `README.md` — user-facing workflow and limits.
 
 ---
 
-### Task 1: Pin Capstone.js and establish the isolated decoder adapter
+### Task 1: Pin Capstone.js and establish the decoder adapter
 
 **Files:**
 - Modify: `package.json`
@@ -69,8 +69,8 @@
 - Create/Test: `tests/disassembly-backend.test.ts`
 
 **Interfaces:**
-- Consumes: `@alexaltea/capstone-js` factory `MCapstone(): Promise<CapstoneModule>`, `Capstone`, `ARCH_ARM`, `MODE_ARM`, `MODE_THUMB`, `OPT_DETAIL`, `OPT_ON`, architecture-agnostic instruction groups, ARM operands/condition codes, `disasm_iter()`, and `close()`.
-- Produces:
+
+Produces:
 
 ```ts
 export type ArmMode = "arm" | "thumb";
@@ -101,6 +101,7 @@ export interface ArmDisassemblyBackend {
 
 export class DisassemblyBackendError extends Error {
   readonly category = "disassembly-backend-failure" as const;
+  constructor(message: string, readonly causeValue?: unknown);
 }
 
 export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend>;
@@ -114,9 +115,9 @@ Run:
 npm install --save-exact @alexaltea/capstone-js@5.0.9
 ```
 
-Expected: `package.json` contains `"@alexaltea/capstone-js": "5.0.9"` and `package-lock.json` records the package including its `dist/capstone.js`/`dist/capstone.wasm` package payload.
+Expected: `package.json` contains exactly `"@alexaltea/capstone-js": "5.0.9"`; lockfile records the same version.
 
-- [ ] **Step 2: Write the failing real-backend test**
+- [ ] **Step 2: Write the failing real-backend tests**
 
 Create `tests/disassembly-backend.test.ts`:
 
@@ -130,7 +131,7 @@ test("Capstone adapter decodes known ARM and Thumb instructions", async () => {
   const backend = await createCapstoneArmBackend();
   try {
     const arm = backend.decodeOne(
-      Uint8Array.from([0x1e, 0xff, 0x2f, 0xe1]), // bx lr
+      Uint8Array.from([0x1e, 0xff, 0x2f, 0xe1]), // ARM: bx lr
       0x02000000,
       "arm",
     );
@@ -144,14 +145,16 @@ test("Capstone adapter decodes known ARM and Thumb instructions", async () => {
     assert.deepEqual(arm.operands[0], { kind: "register", name: "lr" });
 
     const thumb = backend.decodeOne(
-      Uint8Array.from([0x70, 0x47]), // bx lr
+      Uint8Array.from([0x70, 0x47]), // Thumb: bx lr
       0x02000010,
       "thumb",
     );
     assert.ok(thumb);
+    assert.equal(thumb.address, 0x02000010);
     assert.equal(thumb.size, 2);
+    assert.deepEqual(thumb.bytes, [0x70, 0x47]);
     assert.equal(thumb.mnemonic, "bx");
-    assert.equal(thumb.isJump, true);
+    assert.equal(thumb.operandsText, "lr");
   } finally {
     backend.close();
   }
@@ -167,7 +170,7 @@ test("Capstone adapter returns null for an incomplete instruction", async () => 
 });
 ```
 
-- [ ] **Step 3: Run the test to verify RED**
+- [ ] **Step 3: Run the tests to prove RED**
 
 Run:
 
@@ -177,9 +180,9 @@ node --test --import tsx tests/disassembly-backend.test.ts
 
 Expected: FAIL because `src/services/disassembly/capstone.ts` does not exist.
 
-- [ ] **Step 4: Add the minimal package declaration and backend-owned types**
+- [ ] **Step 4: Add the local Capstone.js declaration and backend-owned types**
 
-Create `src/types/alexaltea-capstone-js.d.ts` with only the fields used by the adapter:
+Create `src/types/alexaltea-capstone-js.d.ts`:
 
 ```ts
 declare module "@alexaltea/capstone-js" {
@@ -239,7 +242,7 @@ declare module "@alexaltea/capstone-js" {
 }
 ```
 
-Create `src/services/disassembly/backend.ts` with the exact interfaces from the **Produces** block and:
+Create `src/services/disassembly/backend.ts` with the interfaces above plus:
 
 ```ts
 export class DisassemblyBackendError extends Error {
@@ -252,13 +255,14 @@ export class DisassemblyBackendError extends Error {
 }
 ```
 
-- [ ] **Step 5: Implement the Capstone adapter with detail mode and `disasm_iter`**
+- [ ] **Step 5: Implement the Capstone adapter**
 
-Create `src/services/disassembly/capstone.ts`:
+Create `src/services/disassembly/capstone.ts` using the 5.0.9 default factory, detail mode, and `disasm_iter()`:
 
 ```ts
 import type {
   CapstoneFactory,
+  CapstoneHandle,
   CapstoneInstruction,
   CapstoneModule,
   CapstoneOperand,
@@ -277,10 +281,7 @@ let modulePromise: Promise<CapstoneModule> | null = null;
 async function loadCapstone(): Promise<CapstoneModule> {
   if (modulePromise === null) {
     modulePromise = import("@alexaltea/capstone-js")
-      .then((loaded) => {
-        const factory = loaded.default as CapstoneFactory;
-        return factory();
-      })
+      .then(async (loaded) => await (loaded.default as CapstoneFactory)())
       .catch((error: unknown) => {
         modulePromise = null;
         throw new DisassemblyBackendError(
@@ -298,7 +299,7 @@ function hasGroup(instruction: CapstoneInstruction, group: number): boolean {
 
 function normalizeOperand(
   cs: CapstoneModule,
-  decoder: { reg_name(registerId: number): string },
+  decoder: CapstoneHandle,
   operand: CapstoneOperand,
 ): DecodedArmOperand {
   if (operand.type === cs.ARM_OP_IMM && operand.imm !== undefined) {
@@ -312,20 +313,16 @@ function normalizeOperand(
 
 function normalizeInstruction(
   cs: CapstoneModule,
-  decoder: { reg_name(registerId: number): string },
+  decoder: CapstoneHandle,
   instruction: CapstoneInstruction,
 ): DecodedArmInstruction {
-  const size = instruction.size;
-  if (size !== 2 && size !== 4) {
-    throw new DisassemblyBackendError(`Unexpected ARM instruction size ${size}`);
+  if (instruction.size !== 2 && instruction.size !== 4) {
+    throw new DisassemblyBackendError(`Unexpected ARM instruction size ${instruction.size}`);
   }
   const cc = instruction.detail.cc;
-  const isConditional = instruction.id === cs.ARM_INS_CBZ
-    || instruction.id === cs.ARM_INS_CBNZ
-    || (cc !== undefined && cc !== cs.ARM_CC_INVALID && cc !== cs.ARM_CC_AL);
   return {
     address: instruction.address >>> 0,
-    size,
+    size: instruction.size,
     bytes: [...instruction.bytes],
     mnemonic: instruction.mnemonic,
     operandsText: instruction.op_str,
@@ -333,15 +330,18 @@ function normalizeInstruction(
     isJump: hasGroup(instruction, cs.GRP_JUMP),
     isCall: hasGroup(instruction, cs.GRP_CALL),
     isReturn: hasGroup(instruction, cs.GRP_RET),
-    isConditional,
+    isConditional:
+      instruction.id === cs.ARM_INS_CBZ
+      || instruction.id === cs.ARM_INS_CBNZ
+      || (cc !== undefined && cc !== cs.ARM_CC_INVALID && cc !== cs.ARM_CC_AL),
     switchesMode: instruction.id === cs.ARM_INS_BLX,
   };
 }
 
 export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend> {
   const cs = await loadCapstone();
-  let arm;
-  let thumb;
+  let arm: CapstoneHandle | undefined;
+  let thumb: CapstoneHandle | undefined;
   try {
     arm = new cs.Capstone(cs.ARCH_ARM, cs.MODE_ARM);
     thumb = new cs.Capstone(cs.ARCH_ARM, cs.MODE_THUMB);
@@ -356,9 +356,11 @@ export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend>
     );
   }
 
+  const armDecoder = arm;
+  const thumbDecoder = thumb;
   return {
     decodeOne(bytes: Uint8Array, address: number, mode: ArmMode) {
-      const decoder = mode === "arm" ? arm : thumb;
+      const decoder = mode === "arm" ? armDecoder : thumbDecoder;
       let decoded: DecodedArmInstruction | null = null;
       try {
         decoder.disasm_iter(bytes, address, (instruction) => {
@@ -375,8 +377,8 @@ export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend>
     },
     close() {
       try {
-        arm.close();
-        thumb.close();
+        armDecoder.close();
+        thumbDecoder.close();
       } catch (error) {
         throw new DisassemblyBackendError(
           `Unable to close Capstone ARM decoders: ${error instanceof Error ? error.message : String(error)}`,
@@ -388,7 +390,7 @@ export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend>
 }
 ```
 
-- [ ] **Step 6: Run adapter test and typecheck**
+- [ ] **Step 6: Verify adapter + typecheck**
 
 Run:
 
@@ -397,7 +399,7 @@ node --test --import tsx tests/disassembly-backend.test.ts
 npm run typecheck
 ```
 
-Expected: both PASS. If the package's Node ESM/CJS interop differs from the declared default factory, adjust only `loadCapstone()` and the declaration to the observed 5.0.9 runtime export; do not leak package-specific handling into later tasks.
+Expected: PASS. Any mismatch between the local declaration and actual 5.0.9 runtime API is a Task 1 failure and must be corrected inside `alexaltea-capstone-js.d.ts` / `capstone.ts` before continuing; later layers must not depend directly on package-specific types.
 
 - [ ] **Step 7: Commit**
 
@@ -413,11 +415,11 @@ git commit -m "feat: add ARM Thumb disassembly backend"
 **Files:**
 - Create: `src/services/nds/disassembly-source.ts`
 - Create/Test: `tests/nds-disassembly-source.test.ts`
-- Reuse: `src/services/nds/resolver.ts`, `src/services/nds/rom-map.ts`, `src/services/nds/io.ts`, `src/services/nds/overlays.ts`
+- Reuse unchanged: `src/services/nds/resolver.ts`, `src/services/nds/rom-map.ts`, `src/services/nds/io.ts`, `src/services/nds/overlays.ts`
 
 **Interfaces:**
-- Consumes: `resolveRuntimeAddress(map, address, processor)`, `resolveRomOffset(map, offset)`, `hashFileSha256(path)`, `readExact(handle, offset, length, label)`, `NdsRomMap`, `NdsProcessor`, `ArmMode`.
-- Produces:
+
+Produces:
 
 ```ts
 export type NdsDisassemblyMode = ArmMode | "auto";
@@ -430,22 +432,38 @@ export interface NdsDisassemblyLocation {
   readonly overlayId?: number;
 }
 
+export interface NdsCodeSourceCandidate {
+  readonly processor: NdsProcessor;
+  readonly component: "main" | "overlay";
+  readonly overlayId: number | null;
+  readonly runtimeAddress: number | null;
+  readonly romOffset: number | null;
+  readonly runtimeStart: number;
+  readonly runtimeEnd: number;
+  readonly romStart: number;
+  readonly romEnd: number;
+  readonly compressed: boolean;
+  readonly bss: boolean;
+}
+
 export interface NdsCodeSource {
   readonly processor: NdsProcessor;
   readonly component: "main" | "overlay";
   readonly overlayId: number | null;
   readonly runtimeAddress: number;
   readonly romOffset: number;
+  readonly runtimeStart: number;
   readonly runtimeEnd: number;
+  readonly romStart: number;
   readonly romEnd: number;
   readonly mode: ArmMode;
 }
 
 export type NdsCodeSourceResolution =
   | { readonly status: "resolved"; readonly source: NdsCodeSource }
-  | { readonly status: "ambiguous-code-source"; readonly candidates: readonly unknown[] }
-  | { readonly status: "compressed-overlay-not-decodable"; readonly candidate: unknown }
-  | { readonly status: "runtime-only-bss"; readonly candidate: unknown }
+  | { readonly status: "ambiguous-code-source"; readonly candidates: readonly NdsCodeSourceCandidate[] }
+  | { readonly status: "compressed-overlay-not-decodable"; readonly candidate: NdsCodeSourceCandidate }
+  | { readonly status: "runtime-only-bss"; readonly candidate: NdsCodeSourceCandidate }
   | { readonly status: "unmapped-address"; readonly address: number; readonly processor: NdsProcessor }
   | { readonly status: "mode-ambiguous"; readonly address: number; readonly processor: NdsProcessor };
 
@@ -461,15 +479,19 @@ export function resolveNdsControlFlowTarget(
   mode: ArmMode,
 ): NdsCodeSourceResolution;
 
+export function codeSourceAt(source: NdsCodeSource, runtimeAddress: number): NdsCodeSource;
+
 export async function withValidatedNdsRomReader<T>(
   map: NdsRomMap,
-  callback: (read: (source: NdsCodeSource, maxBytes: number) => Promise<Buffer>) => Promise<T>,
+  callback: (
+    read: (source: NdsCodeSource, maxBytes: number) => Promise<Buffer>,
+  ) => Promise<T>,
 ): Promise<T>;
 ```
 
 - [ ] **Step 1: Write failing source-policy tests**
 
-Create `tests/nds-disassembly-source.test.ts` using `createNdsFixture`, `writeFatEntry`, and `writeOverlayRecord`. Include these tests with concrete fixture values:
+Create `tests/nds-disassembly-source.test.ts`. At minimum include these concrete tests:
 
 ```ts
 test("resolves ARM9 header entry in conservative auto mode", async () => {
@@ -494,7 +516,30 @@ test("rejects auto mode away from a trusted header entry", async () => {
   }).status, "mode-ambiguous");
 });
 
-test("preserves overlapping overlay ambiguity unless overlayId disambiguates", async () => {
+test("ROM-offset auto mode resolves runtime identity before testing the header seed", async () => {
+  const fixture = await createNdsFixture({
+    arm9RomOffset: 0x200,
+    arm9RamAddress: 0x02000000,
+    arm9EntryAddress: 0x02000020,
+  });
+  const map = await readNdsRomMap(fixture.romPath);
+  const result = resolveNdsCodeSource(map, {
+    processor: "arm9",
+    romOffset: 0x220,
+    mode: "auto",
+  });
+  assert.equal(result.status, "resolved");
+  if (result.status === "resolved") {
+    assert.equal(result.source.runtimeAddress, 0x02000020);
+    assert.equal(result.source.mode, "arm");
+  }
+});
+```
+
+Add overlapping overlays:
+
+```ts
+test("preserves overlap ambiguity unless overlayId selects one static source", async () => {
   const fixture = await createNdsFixture({ fatSize: 16, arm9OverlaySize: 64 });
   writeFatEntry(fixture.buffer, 0x900, 0, 0x1000, 0x1080);
   writeFatEntry(fixture.buffer, 0x900, 1, 0x1100, 0x1180);
@@ -513,9 +558,11 @@ test("preserves overlapping overlay ambiguity unless overlayId disambiguates", a
   }
   await fixture.write();
   const map = await readNdsRomMap(fixture.romPath);
+
   assert.equal(resolveNdsCodeSource(map, {
     processor: "arm9", runtimeAddress: 0x02200010, mode: "arm",
   }).status, "ambiguous-code-source");
+
   const chosen = resolveNdsCodeSource(map, {
     processor: "arm9", runtimeAddress: 0x02200010, mode: "arm", overlayId: 7,
   });
@@ -524,9 +571,21 @@ test("preserves overlapping overlay ambiguity unless overlayId disambiguates", a
 });
 ```
 
-Also add explicit tests for: ARM/Thumb alignment, ARM7 main, ROM-offset entry, compressed overlay, overlay BSS, overlay physical-size shorter than `ramSize`, processor mismatch, same-component target preservation, cross-component ambiguity, and SHA mismatch before/after `withValidatedNdsRomReader`.
+Also cover: ARM7 main, explicit ARM and Thumb, bad ARM/Thumb alignment, compressed overlay, BSS, uncompressed overlay with `romSize < ramSize`, ROM offset matching the wrong processor, ambiguous ROM offset, SHA mismatch before callback, SHA mutation during callback, and `codeSourceAt()` bounds.
 
-- [ ] **Step 2: Run source tests to verify RED**
+Add this regression for the self-review issue that must not be reintroduced:
+
+```ts
+test("a backward branch inside the selected overlapping overlay preserves that overlay identity", async () => {
+  // Build overlapping overlays 7 and 8 covering 0x02200000..0x02200080.
+  // Resolve entry 0x02200040 with overlayId 7, then target 0x02200010.
+  const target = resolveNdsControlFlowTarget(map, sourceForOverlay7, 0x02200010, "arm");
+  assert.equal(target.status, "resolved");
+  if (target.status === "resolved") assert.equal(target.source.overlayId, 7);
+});
+```
+
+- [ ] **Step 2: Run source tests to prove RED**
 
 Run:
 
@@ -536,67 +595,137 @@ node --test --import tsx tests/nds-disassembly-source.test.ts
 
 Expected: FAIL because `disassembly-source.ts` does not exist.
 
-- [ ] **Step 3: Implement source resolution without duplicating the parser**
+- [ ] **Step 3: Implement candidate construction and exactly-one-location validation**
 
-Implement `src/services/nds/disassembly-source.ts` around the existing resolver. Core policies must be explicit:
+Use existing `resolveRuntimeAddress()` / `resolveRomOffset()` as the structural truth. Do not duplicate header/FAT/overlay parsing.
+
+Use:
 
 ```ts
 function requireOneLocation(location: NdsDisassemblyLocation): "runtime" | "rom" {
   const hasRuntime = location.runtimeAddress !== undefined;
   const hasRom = location.romOffset !== undefined;
   if (hasRuntime === hasRom) {
-    throw new NdsError("range-out-of-bounds", "Disassembly requires exactly one of runtimeAddress or romOffset");
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Disassembly requires exactly one of runtimeAddress or romOffset",
+    );
   }
   return hasRuntime ? "runtime" : "rom";
 }
+```
 
+For main code candidate ranges:
+
+```ts
+runtimeStart = executable.ramAddress;
+runtimeEnd = executable.ramEnd;
+romStart = executable.romOffset;
+romEnd = executable.romEnd;
+```
+
+For an uncompressed overlay, only file-backed initialized bytes are eligible:
+
+```ts
+const fileBackedSize = Math.min(overlay.ramSize, overlay.romSize);
+runtimeStart = overlay.ramAddress;
+runtimeEnd = overlay.ramAddress + fileBackedSize;
+romStart = overlay.romOffset;
+romEnd = overlay.romOffset + fileBackedSize;
+```
+
+A compressed overlay candidate retains its backing metadata but never becomes `resolved`.
+
+- [ ] **Step 4: Resolve runtime/ROM location first, then resolve mode**
+
+The ordering is mandatory:
+
+1. resolve runtime or ROM selector into one canonical code candidate/runtime address;
+2. apply `overlayId` only as a static candidate filter;
+3. reject ambiguous/compressed/BSS/unmapped conditions;
+4. only then resolve `arm`/`thumb`/`auto` against the resolved runtime address;
+5. enforce alignment for the resolved mode.
+
+Use:
+
+```ts
 function resolveMode(
   map: NdsRomMap,
   processor: NdsProcessor,
-  address: number,
+  resolvedRuntimeAddress: number,
   requested: NdsDisassemblyMode,
 ): ArmMode | null {
   if (requested !== "auto") return requested;
   const executable = processor === "arm9" ? map.header.arm9 : map.header.arm7;
-  return address === executable.entryAddress ? "arm" : null;
+  return resolvedRuntimeAddress === executable.entryAddress ? "arm" : null;
 }
 
 function requireAlignment(address: number, mode: ArmMode): void {
   const alignment = mode === "arm" ? 4 : 2;
   if (address % alignment !== 0) {
-    throw new NdsError("range-out-of-bounds", `${mode.toUpperCase()} disassembly address must be ${alignment}-byte aligned`);
+    throw new NdsError(
+      "range-out-of-bounds",
+      `${mode.toUpperCase()} disassembly address must be ${alignment}-byte aligned`,
+    );
   }
 }
 ```
 
-For an uncompressed overlay, compute the file-backed initialized end from `Math.min(overlay.ramSize, overlay.romSize)`. Never include BSS or the unbacked runtime suffix.
+Do not compare a raw ROM offset to a runtime entry address.
 
-When a runtime address is ambiguous and `overlayId` is supplied, select only the matching overlay candidate; otherwise return all candidates as `ambiguous-code-source`.
+- [ ] **Step 5: Implement same-component target preservation correctly**
 
-When resolving a control-flow target, preserve `current.overlayId` only if the target lies inside `current.runtimeAddress..current.runtimeEnd` after translating from the component base; otherwise resolve with no overlay hint so cross-component overlap remains ambiguous.
+`NdsCodeSource.runtimeStart/runtimeEnd` describe the full file-backed range of its chosen component, not merely the original request window.
 
-- [ ] **Step 4: Implement SHA-validated bounded reads**
+Implement:
 
-Use the existing streaming hash and exact-read helper:
+```ts
+export function codeSourceAt(source: NdsCodeSource, runtimeAddress: number): NdsCodeSource {
+  if (runtimeAddress < source.runtimeStart || runtimeAddress >= source.runtimeEnd) {
+    throw new NdsError("range-out-of-bounds", "Runtime address lies outside the selected code source");
+  }
+  const relative = runtimeAddress - source.runtimeStart;
+  return {
+    ...source,
+    runtimeAddress,
+    romOffset: source.romStart + relative,
+  };
+}
+```
+
+`resolveNdsControlFlowTarget()` must first test whether `runtimeAddress` lies inside `current.runtimeStart <= target < current.runtimeEnd`. If yes, preserve `current.component` and `current.overlayId` with `codeSourceAt(current, target)` even if another static overlay overlaps that address. This is deterministic continuation within the caller-selected static source and is **not** a loaded-overlay claim.
+
+If the target is outside the current component's full file-backed range, call normal runtime resolution with no overlay hint. Cross-component overlap must remain ambiguous.
+
+- [ ] **Step 6: Implement SHA-validated bounded ROM reads**
+
+Use `open` from `node:fs/promises`, existing `hashFileSha256`, and `readExact`:
 
 ```ts
 export async function withValidatedNdsRomReader<T>(
   map: NdsRomMap,
-  callback: (read: (source: NdsCodeSource, maxBytes: number) => Promise<Buffer>) => Promise<T>,
+  callback: (
+    read: (source: NdsCodeSource, maxBytes: number) => Promise<Buffer>,
+  ) => Promise<T>,
 ): Promise<T> {
   if (await hashFileSha256(map.romPath) !== map.sha256) {
     throw new NdsError("invalid-rom", "Source ROM no longer matches the canonical map identity");
   }
+
   const handle = await open(map.romPath, "r");
   let result: T;
   try {
     result = await callback(async (source, maxBytes) => {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+        throw new NdsError("range-out-of-bounds", "Disassembly read size is invalid");
+      }
       const length = Math.min(maxBytes, source.romEnd - source.romOffset);
       return await readExact(handle, source.romOffset, length, "NDS disassembly source");
     });
   } finally {
     await handle.close();
   }
+
   if (await hashFileSha256(map.romPath) !== map.sha256) {
     throw new NdsError("invalid-rom", "Source ROM changed during disassembly");
   }
@@ -604,7 +733,7 @@ export async function withValidatedNdsRomReader<T>(
 }
 ```
 
-- [ ] **Step 5: Run source tests and NDS resolver regression**
+- [ ] **Step 7: Run source + resolver regression**
 
 Run:
 
@@ -615,7 +744,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/services/nds/disassembly-source.ts tests/nds-disassembly-source.test.ts
@@ -624,16 +753,15 @@ git commit -m "feat: resolve NDS disassembly sources"
 
 ---
 
-### Task 3: Build canonical instruction flow and bounded linear disassembly
+### Task 3: Build canonical instruction semantics and bounded linear disassembly
 
 **Files:**
 - Create: `src/services/nds/disassembly.ts`
 - Create/Test: `tests/nds-disassembly.test.ts`
-- Reuse: `src/services/disassembly/backend.ts`, `src/services/nds/disassembly-source.ts`
 
 **Interfaces:**
-- Consumes: `ArmDisassemblyBackend.decodeOne()`, `NdsCodeSource`, `resolveNdsControlFlowTarget()`, `withValidatedNdsRomReader()`.
-- Produces:
+
+Produces:
 
 ```ts
 export type StaticFlowKind =
@@ -682,6 +810,13 @@ export type LinearDisassemblyResult =
       readonly stopAddress: number;
     };
 
+export function decodeNdsInstruction(
+  map: NdsRomMap,
+  source: NdsCodeSource,
+  bytes: Uint8Array,
+  backend: ArmDisassemblyBackend,
+): StaticInstruction | null;
+
 export async function disassembleNdsRange(
   map: NdsRomMap,
   location: NdsDisassemblyLocation,
@@ -690,9 +825,11 @@ export async function disassembleNdsRange(
 ): Promise<LinearDisassemblyResult>;
 ```
 
-- [ ] **Step 1: Write failing canonical-flow tests with a fake backend**
+Task 4 consumes `decodeNdsInstruction()` exactly; do not create a second CFG-specific instruction classifier.
 
-In `tests/nds-disassembly.test.ts`, define a tiny deterministic fake:
+- [ ] **Step 1: Write failing flow-normalization tests with a fake backend**
+
+Create `tests/nds-disassembly.test.ts`:
 
 ```ts
 class FakeBackend implements ArmDisassemblyBackend {
@@ -704,7 +841,9 @@ class FakeBackend implements ArmDisassemblyBackend {
 }
 ```
 
-Add cases for ordinary fall-through, conditional direct branch, unconditional direct branch, direct call, indirect call, indirect branch, `bx lr` return semantics, mode-preserving targets, and `switchesMode` targets. Example direct-call fixture:
+Use explicit `DecodedArmInstruction` fixtures for: fall-through, conditional direct branch, unconditional direct branch, direct call, indirect call, indirect branch, return, mode-preserving target, and mode-switching immediate target.
+
+Example direct call:
 
 ```ts
 const call: DecodedArmInstruction = {
@@ -722,9 +861,9 @@ const call: DecodedArmInstruction = {
 };
 ```
 
-Assert that a call has `kind: "call"`, `directTarget: 0x02000008`, `targetMode: "arm"`, and `fallthrough: 0x02000004`.
+Assert `kind === "call"`, direct target `0x02000008`, target mode `arm`, and fall-through `0x02000004`.
 
-- [ ] **Step 2: Run linear tests to verify RED**
+- [ ] **Step 2: Run linear tests to prove RED**
 
 Run:
 
@@ -734,9 +873,9 @@ node --test --import tsx tests/nds-disassembly.test.ts
 
 Expected: FAIL because `src/services/nds/disassembly.ts` does not exist.
 
-- [ ] **Step 3: Implement semantic flow normalization**
+- [ ] **Step 3: Implement one canonical instruction normalizer**
 
-Use backend metadata first; do not parse branch targets from operand text:
+Use typed operands for targets, never parse target addresses from `operandsText`:
 
 ```ts
 function firstImmediate(decoded: DecodedArmInstruction): number | null {
@@ -748,16 +887,22 @@ function firstImmediate(decoded: DecodedArmInstruction): number | null {
 
 function isLinkRegisterReturn(decoded: DecodedArmInstruction): boolean {
   return decoded.mnemonic.toLowerCase() === "bx"
-    && decoded.operands.some((operand) => operand.kind === "register" && operand.name === "lr");
+    && decoded.operands.some(
+      (operand) => operand.kind === "register" && operand.name === "lr",
+    );
 }
 
 function opposite(mode: ArmMode): ArmMode {
   return mode === "arm" ? "thumb" : "arm";
 }
 
-function normalizeFlow(decoded: DecodedArmInstruction, mode: ArmMode): StaticInstruction["flow"] {
+function normalizeFlow(
+  decoded: DecodedArmInstruction,
+  mode: ArmMode,
+): StaticInstruction["flow"] {
   const next = (decoded.address + decoded.size) >>> 0;
   const immediate = firstImmediate(decoded);
+
   if (decoded.isReturn || isLinkRegisterReturn(decoded)) {
     return { kind: "return", directTarget: null, targetMode: null, fallthrough: null };
   }
@@ -784,27 +929,75 @@ function normalizeFlow(decoded: DecodedArmInstruction, mode: ArmMode): StaticIns
 }
 ```
 
-`isLinkRegisterReturn` is the narrow semantic fallback for `BX LR`; branch/call classification and immediate targets still come from Capstone groups/typed operands, not mnemonic text.
+`decodeNdsInstruction()` must:
 
-- [ ] **Step 4: Implement bounded linear decoding**
+1. call `backend.decodeOne(bytes, source.runtimeAddress, source.mode)`;
+2. return `null` if the backend decodes nothing;
+3. reject an instruction whose reported size would exceed `source.romEnd`;
+4. normalize bytes to lowercase two-digit hex;
+5. call `resolveNdsControlFlowTarget()` for a direct target with known target mode;
+6. populate the canonical `source` identity.
 
-Resolve the source once, read no more than `options.maxBytes`, and decode from offset zero until instruction count, byte budget, component end, or decode stop. Before accepting an instruction, verify `cursor + decoded.size <= bytes.length` and `source.romOffset + cursor + decoded.size <= source.romEnd`.
+- [ ] **Step 4: Implement bounded linear decoding with one SHA lifecycle**
 
-For every direct target with a known mode, annotate `targetResolution` with `resolveNdsControlFlowTarget(map, currentSourceAtInstruction, target, targetMode)`. Do not traverse it in this function.
-
-Use lowercase two-digit hex bytes:
+`disassembleNdsRange()` sequence:
 
 ```ts
-const bytesHex = decoded.bytes.map((value) => value.toString(16).padStart(2, "0")).join("");
+const resolved = resolveNdsCodeSource(map, location);
+if (resolved.status !== "resolved") return resolved;
+
+return await withValidatedNdsRomReader(map, async (read) => {
+  const bytes = await read(resolved.source, options.maxBytes);
+  const instructions: StaticInstruction[] = [];
+  let cursor = 0;
+
+  while (instructions.length < options.maxInstructions && cursor < bytes.length) {
+    const source = codeSourceAt(resolved.source, resolved.source.runtimeAddress + cursor);
+    const instruction = decodeNdsInstruction(map, source, bytes.subarray(cursor), backend);
+    if (instruction === null) {
+      return {
+        status: "decode-stopped" as const,
+        source: resolved.source,
+        instructions,
+        decodedBytes: cursor,
+        stopAddress: source.runtimeAddress,
+      };
+    }
+    if (cursor + instruction.size > bytes.length || source.romOffset + instruction.size > source.romEnd) {
+      return {
+        status: "component-boundary" as const,
+        source: resolved.source,
+        instructions,
+        decodedBytes: cursor,
+        stopAddress: source.runtimeAddress,
+      };
+    }
+    instructions.push(instruction);
+    cursor += instruction.size;
+  }
+
+  const atBoundary = resolved.source.romOffset + cursor >= resolved.source.romEnd;
+  return {
+    status: atBoundary ? "component-boundary" as const : "complete" as const,
+    source: resolved.source,
+    instructions,
+    decodedBytes: cursor,
+    stopAddress: (resolved.source.runtimeAddress + cursor) >>> 0,
+  };
+});
 ```
 
-A zero-instruction decoder result returns `status: "decode-stopped"` with the successfully decoded prefix. Reaching the exact file-backed end returns `status: "component-boundary"`. Reaching the requested instruction/byte bound returns `status: "complete"`; the bound is the requested window, not a claim that the containing function is complete.
+The `complete` status means the requested bounded window completed; it does not claim a function or component is fully decoded.
 
-- [ ] **Step 5: Add real-backend ARM/Thumb integration cases**
+- [ ] **Step 5: Add real Capstone + NDS integration tests**
 
-Write one tiny fixture with ARM `BX LR` at ARM9 entry and one with Thumb `BX LR` at an explicitly Thumb address. Assert exact runtime address, ROM offset, bytes, mnemonic, mode, source identity, and return classification.
+Create an ARM9 fixture containing ARM `BX LR` at its header entry and assert exact runtime address, ROM offset, `1eff2fe1`, mnemonic, `arm`, main source, and `return` flow.
 
-- [ ] **Step 6: Run linear, backend, and source tests**
+Create a second fixture with Thumb `BX LR` at a 2-byte-aligned explicit Thumb address and assert `7047`, `thumb`, and `return` flow.
+
+Add decode-stop and component-boundary tests.
+
+- [ ] **Step 6: Run adapter/source/linear tests**
 
 Run:
 
@@ -829,11 +1022,11 @@ git commit -m "feat: add bounded NDS linear disassembly"
 **Files:**
 - Create: `src/services/nds/control-flow.ts`
 - Create/Test: `tests/nds-control-flow.test.ts`
-- Reuse: `src/services/nds/disassembly.ts`, `src/services/nds/disassembly-source.ts`
+- Reuse: `decodeNdsInstruction()` from Task 3 and the source-reader helpers from Task 2.
 
 **Interfaces:**
-- Consumes: canonical `StaticInstruction`, source resolution, and the same backend/ROM reader used by linear disassembly.
-- Produces:
+
+Produces:
 
 ```ts
 export interface ControlFlowLimits {
@@ -849,7 +1042,13 @@ export interface StaticBasicBlock {
   readonly startAddress: number;
   readonly mode: ArmMode;
   readonly instructions: readonly StaticInstruction[];
-  readonly stopReason: "branch" | "return" | "indirect" | "decode-stopped" | "component-boundary" | "limit";
+  readonly stopReason:
+    | "branch"
+    | "return"
+    | "indirect"
+    | "decode-stopped"
+    | "component-boundary"
+    | "limit";
 }
 
 export interface StaticControlFlowEdge {
@@ -871,18 +1070,35 @@ export interface StaticCallEdge {
 export interface StaticUnresolvedEdge {
   readonly fromBlockId: string;
   readonly instructionAddress: number;
-  readonly kind: "indirect-branch" | "indirect-call" | "return" | "ambiguous-code-source" | "compressed-overlay-not-decodable" | "runtime-only-bss" | "unmapped-address";
+  readonly kind:
+    | "indirect-branch"
+    | "indirect-call"
+    | "return"
+    | "ambiguous-code-source"
+    | "compressed-overlay-not-decodable"
+    | "runtime-only-bss"
+    | "unmapped-address";
 }
 
 export interface StaticControlFlowGraph {
   readonly entry: NdsCodeSource;
   readonly status: "complete" | "truncated";
-  readonly truncationReasons: readonly ("block-limit" | "instruction-limit" | "byte-limit" | "edge-limit")[];
+  readonly truncationReasons: readonly (
+    | "block-limit"
+    | "instruction-limit"
+    | "byte-limit"
+    | "edge-limit"
+  )[];
   readonly blocks: readonly StaticBasicBlock[];
   readonly edges: readonly StaticControlFlowEdge[];
   readonly calls: readonly StaticCallEdge[];
   readonly unresolvedEdges: readonly StaticUnresolvedEdge[];
-  readonly totals: { readonly blocks: number; readonly instructions: number; readonly bytes: number; readonly edges: number };
+  readonly totals: {
+    readonly blocks: number;
+    readonly instructions: number;
+    readonly bytes: number;
+    readonly edges: number;
+  };
 }
 
 export async function analyzeNdsControlFlow(
@@ -895,31 +1111,41 @@ export async function analyzeNdsControlFlow(
 
 - [ ] **Step 1: Write failing CFG tests**
 
-Create `tests/nds-control-flow.test.ts` with fake-backend graphs covering:
+Create `tests/nds-control-flow.test.ts` with deterministic fake-backend graphs covering all of these:
 
-1. conditional branch creates taken + fall-through blocks;
-2. unconditional branch creates only branch target;
-3. direct call is added to `calls` but the callee is never queued and decoding continues after the call;
-4. indirect call is recorded and decoding continues through its fall-through;
+1. conditional branch creates taken and fall-through blocks;
+2. unconditional branch creates only its branch target;
+3. direct call is added to `calls`, callee is not queued, and decoding continues at call fall-through in the same block;
+4. indirect call is recorded and decoding continues at fall-through;
 5. indirect branch terminates the block;
 6. return terminates the block;
-7. branch cycle produces each block once;
-8. deterministic same-component overlay branch preserves overlay identity;
-9. unique cross-component same-processor branch is traversed;
-10. ambiguous/compressed/BSS/unmapped target becomes `unresolvedEdges` and is not queued;
-11. ARM↔Thumb immediate switch uses the propagated target mode;
-12. each of the four limits independently returns `status: "truncated"` with the exact reason;
-13. simultaneous cap hits produce a deduplicated deterministic reason list.
+7. a cycle discovers each block once;
+8. a backward branch inside a selected overlapping overlay preserves that overlay identity;
+9. a unique cross-component same-processor branch is traversed;
+10. ambiguous/compressed/BSS/unmapped branch targets are recorded and not queued;
+11. a deterministic mode-switching immediate edge queues the opposite mode;
+12. block limit returns only `block-limit`;
+13. instruction limit returns only `instruction-limit`;
+14. byte limit returns only `byte-limit`;
+15. edge limit returns only `edge-limit`;
+16. simultaneous caps yield a deduplicated fixed-order reason list;
+17. decode failure terminates only its block while already queued blocks continue.
 
-Use a fixed block ID function in assertions:
+Use the exact identity function:
 
 ```ts
 function blockKey(source: NdsCodeSource): string {
-  return [source.processor, source.component, source.overlayId ?? "main", source.runtimeAddress.toString(16), source.mode].join(":");
+  return [
+    source.processor,
+    source.component,
+    source.overlayId ?? "main",
+    source.runtimeAddress.toString(16),
+    source.mode,
+  ].join(":");
 }
 ```
 
-- [ ] **Step 2: Run CFG tests to verify RED**
+- [ ] **Step 2: Run CFG tests to prove RED**
 
 Run:
 
@@ -929,23 +1155,55 @@ node --test --import tsx tests/nds-control-flow.test.ts
 
 Expected: FAIL because `control-flow.ts` does not exist.
 
-- [ ] **Step 3: Implement deterministic worklist traversal**
+- [ ] **Step 3: Implement FIFO worklist and one-reader lifecycle**
 
-Use FIFO traversal for stable output. The visited/worklist identity is exactly processor + component + overlay ID/main + runtime address + mode.
+Resolve the entry once. If unresolved, return the structured source result. Otherwise wrap the entire traversal in one `withValidatedNdsRomReader()` call.
 
-Block decode rules:
+Use:
 
-- ordinary instruction: stay in the same block;
-- direct call: append call metadata, then continue at call fall-through in the same block;
-- indirect call: append unresolved call metadata, then continue at its fall-through in the same block;
-- conditional direct branch: terminate block, emit taken and fall-through edges, queue each resolved target;
-- unconditional direct branch: terminate block, emit one branch edge, queue resolved target;
-- indirect branch/return: terminate block and record unresolved/terminal event;
-- decode failure/component end: terminate only that block; continue other queued blocks.
+```ts
+const queue: NdsCodeSource[] = [entry];
+const queued = new Set<string>([blockKey(entry)]);
+const visited = new Set<string>();
+```
 
-Do not call `disassembleNdsRange()` recursively because its per-window SHA/read lifecycle would be wasteful. Factor the one-instruction normalization helper from Task 3 as a package-private/exported helper if needed, and wrap the whole CFG operation in one `withValidatedNdsRomReader()` call.
+For each dequeued source:
 
-- [ ] **Step 4: Enforce all four global traversal counters before queue/decode growth**
+- skip if already visited;
+- refuse to create another block when `blocks.length >= maxBlocks`, add `block-limit`;
+- read at most the bytes still available under both source boundary and global byte budget;
+- decode sequentially with **Task 3's `decodeNdsInstruction()`**;
+- increment global instruction/byte counters only after accepting an instruction;
+- keep calls inside the current block and continue to their fall-through;
+- terminate blocks on conditional branch, unconditional branch, indirect branch, return, decode stop, component boundary, or a global limit.
+
+- [ ] **Step 4: Implement branch/call edge policy exactly**
+
+For `call`:
+
+```ts
+calls.push({
+  fromBlockId,
+  instructionAddress: instruction.address,
+  targetAddress: instruction.flow.directTarget,
+  targetMode: instruction.flow.targetMode,
+  resolution: instruction.targetResolution,
+});
+```
+
+Do **not** enqueue the call target. Continue at `instruction.flow.fallthrough` in the same block.
+
+For `indirect-call`, record both a `calls` entry with null target and an `unresolvedEdges` entry of `indirect-call`; continue at fall-through.
+
+For conditional branch, terminate the block and attempt two edges: `conditional-taken` and `conditional-fallthrough`.
+
+For unconditional branch, terminate and attempt one `branch` edge.
+
+For indirect branch/return, terminate and add the corresponding unresolved/terminal event.
+
+A target source resolution with `status: "resolved"` may be queued. Any other static status is recorded in `unresolvedEdges`; it is never guessed through.
+
+- [ ] **Step 5: Enforce all four caps before growth**
 
 Maintain:
 
@@ -953,14 +1211,29 @@ Maintain:
 let totalInstructions = 0;
 let totalBytes = 0;
 let totalEdges = 0;
-const reasons = new Set<"block-limit" | "instruction-limit" | "byte-limit" | "edge-limit">();
+const reasons = new Set<
+  "block-limit" | "instruction-limit" | "byte-limit" | "edge-limit"
+>();
 ```
 
-Never exceed the configured maximum. When additional work would cross a cap, add the corresponding reason, skip that work, keep already produced data, and finish processing only work that can still be represented without violating another cap. Final status is `reasons.size === 0 ? "complete" : "truncated"`.
+Rules:
 
-Sort `truncationReasons` in fixed order: block, instruction, byte, edge. Preserve FIFO block order and instruction order for deterministic JSON.
+- never append instruction `N+1` when it would exceed `maxInstructions`;
+- never read/accept bytes that would exceed `maxBytes`;
+- never append edge `N+1` when it would exceed `maxEdges`;
+- never append block `N+1` when it would exceed `maxBlocks`;
+- each refused growth adds exactly its corresponding reason;
+- no counter may exceed the configured cap.
 
-- [ ] **Step 5: Run CFG + linear regression tests**
+Final reason order is always:
+
+```ts
+["block-limit", "instruction-limit", "byte-limit", "edge-limit"]
+```
+
+filtered to reasons present. Final status is `complete` only when no reason was recorded.
+
+- [ ] **Step 6: Run CFG + linear regression**
 
 Run:
 
@@ -971,10 +1244,10 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/nds/control-flow.ts tests/nds-control-flow.test.ts src/services/nds/disassembly.ts
+git add src/services/nds/control-flow.ts tests/nds-control-flow.test.ts
 git commit -m "feat: add bounded NDS control flow analysis"
 ```
 
@@ -988,16 +1261,24 @@ git commit -m "feat: add bounded NDS control flow analysis"
 - Modify: `src/index.ts`
 
 **Interfaces:**
-- Consumes: `createCapstoneArmBackend()`, `disassembleNdsRange()`, `analyzeNdsControlFlow()`, existing `readNdsRomMap()`, `resolveInside()`, `boundedTextResult()`.
-- Produces public tools:
-  - `nds_disassemble_range`
-  - `nds_analyze_control_flow`
 
-- [ ] **Step 1: Extend the failing MCP registration/schema tests**
+Public tools added:
 
-Update `EXPECTED_TOOLS` in `tests/nds-tools.test.ts` to contain all nine NDS tools, including the two new names, and rename the registration test to `registers exactly the nine approved NDS static-analysis tools`.
+1. `nds_disassemble_range`
+2. `nds_analyze_control_flow`
 
-Add schema assertions:
+- [ ] **Step 1: Extend failing registration/schema tests**
+
+Update `EXPECTED_TOOLS` in `tests/nds-tools.test.ts` to exactly nine total NDS tools and rename the existing test to:
+
+```ts
+test("registers exactly the nine approved NDS static-analysis tools", () => {
+  const server = register("/workspace");
+  assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
+});
+```
+
+Add default assertions:
 
 ```ts
 assert.deepEqual(server.parse("nds_disassemble_range", {
@@ -1029,11 +1310,20 @@ assert.deepEqual(server.parse("nds_analyze_control_flow", {
 });
 ```
 
-Assert rejection above every approved maximum and assert both schemas lack `binary`, `bytes`, `baseAddress`, `output`, `path`, `offset`, and generic `length` fields. `romOffset` is the only ROM-offset field; `runtimeAddress` is the only runtime-address field.
+Assert rejection above each approved maximum.
 
-Add a handler test asserting supplying neither or both `runtimeAddress`/`romOffset` returns a structured error rather than guessing.
+Assert both schemas lack these fields:
 
-- [ ] **Step 2: Run MCP test to verify RED**
+```ts
+for (const forbidden of ["binary", "bytes", "baseAddress", "output", "path", "length"]) {
+  assert.equal(Object.hasOwn(server.schema("nds_disassemble_range"), forbidden), false);
+  assert.equal(Object.hasOwn(server.schema("nds_analyze_control_flow"), forbidden), false);
+}
+```
+
+`romOffset` and `runtimeAddress` are the only location selectors.
+
+- [ ] **Step 2: Run MCP tests to prove RED**
 
 Run:
 
@@ -1041,11 +1331,11 @@ Run:
 node --test --import tsx tests/nds-tools.test.ts
 ```
 
-Expected: FAIL because only the existing seven NDS tools are registered.
+Expected: FAIL because only seven NDS tools exist.
 
-- [ ] **Step 3: Add exact schemas and request normalization**
+- [ ] **Step 3: Add exact schemas and one-location normalization**
 
-In `src/tools/nds.ts` add:
+Add to `src/tools/nds.ts`:
 
 ```ts
 const disassemblyModeSchema = z.enum(["arm", "thumb", "auto"]);
@@ -1057,7 +1347,7 @@ const cfgByteLimitSchema = z.number().int().min(2).max(16384).default(2048);
 const cfgEdgeLimitSchema = z.number().int().min(1).max(1024).default(128);
 ```
 
-Normalize exactly one location selector:
+Normalize handler input with:
 
 ```ts
 function normalizeDisassemblyLocation(input: {
@@ -1067,44 +1357,76 @@ function normalizeDisassemblyLocation(input: {
   readonly romOffset?: number;
   readonly overlayId?: number;
 }): NdsDisassemblyLocation {
-  const runtime = input.runtimeAddress !== undefined;
-  const rom = input.romOffset !== undefined;
-  if (runtime === rom) {
-    throw new NdsError("range-out-of-bounds", "Disassembly requires exactly one of runtimeAddress or romOffset");
+  const hasRuntime = input.runtimeAddress !== undefined;
+  const hasRom = input.romOffset !== undefined;
+  if (hasRuntime === hasRom) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Disassembly requires exactly one of runtimeAddress or romOffset",
+    );
   }
   return {
     processor: input.processor,
     mode: input.mode,
-    ...(runtime ? { runtimeAddress: input.runtimeAddress! } : { romOffset: input.romOffset! }),
+    ...(hasRuntime
+      ? { runtimeAddress: input.runtimeAddress! }
+      : { romOffset: input.romOffset! }),
     ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
   };
 }
 ```
 
-- [ ] **Step 4: Add backend-aware structured error mapping**
+Add handler tests proving neither/both selectors return a structured `range-out-of-bounds` error.
 
-Define a local tool error category union rather than pretending the backend is an NDS parser error:
+- [ ] **Step 4: Add backend-aware operational error category**
+
+Use:
 
 ```ts
 type NdsToolErrorCategory = NdsErrorCategory | "disassembly-backend-failure";
 ```
 
-Add a corrective action:
+Change `correctiveAction` to accept `NdsToolErrorCategory` and add:
 
 ```ts
 case "disassembly-backend-failure":
   return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
 ```
 
-In `ndsErrorResult`, prefer `DisassemblyBackendError.category`, then `NdsError.category`, then the supplied fallback.
+Change `ndsErrorResult` category selection to:
+
+```ts
+const category: NdsToolErrorCategory = error instanceof DisassemblyBackendError
+  ? error.category
+  : error instanceof NdsError
+    ? error.category
+    : fallbackCategory;
+```
 
 - [ ] **Step 5: Register `nds_disassemble_range`**
 
-Handler sequence:
+Schema:
+
+```ts
+{
+  rom: romSchema,
+  processor: processorSchema,
+  runtimeAddress: uint32Schema.optional(),
+  romOffset: uint32Schema.optional(),
+  overlayId: uint32Schema.optional(),
+  mode: disassemblyModeSchema.default("auto"),
+  maxInstructions: linearInstructionLimitSchema,
+  maxBytes: linearByteLimitSchema,
+}
+```
+
+Handler lifecycle:
 
 ```ts
 const map = await readNdsRomMap(resolveRom(config, rom));
-const location = normalizeDisassemblyLocation({ processor, mode, runtimeAddress, romOffset, overlayId });
+const location = normalizeDisassemblyLocation({
+  processor, mode, runtimeAddress, romOffset, overlayId,
+});
 const backend = await createCapstoneArmBackend();
 try {
   const result = await disassembleNdsRange(
@@ -1119,28 +1441,37 @@ try {
 }
 ```
 
-Static statuses such as ambiguity, BSS, compression, mode ambiguity, decode stop, and component boundary are returned with `isError: false`. Operational exceptions use `ndsErrorResult`.
+Ambiguity/BSS/compression/mode ambiguity/decode stop/component boundary are successful structured results. Thrown parser/backend failures use `ndsErrorResult`.
 
 - [ ] **Step 6: Register `nds_analyze_control_flow`**
 
-Use the same location/backend lifecycle and call:
+Schema uses the same location/mode fields plus:
 
 ```ts
-await analyzeNdsControlFlow(map, location, {
-  maxBlocks,
-  maxInstructions,
-  maxBytes,
-  maxEdges,
-}, backend);
+maxBlocks: cfgBlockLimitSchema,
+maxInstructions: cfgInstructionLimitSchema,
+maxBytes: cfgByteLimitSchema,
+maxEdges: cfgEdgeLimitSchema,
 ```
 
-A truncated CFG is a successful structured result with `status: "truncated"` and explicit reasons.
+Handler calls:
 
-- [ ] **Step 7: Update capability metadata**
+```ts
+await analyzeNdsControlFlow(
+  map,
+  location,
+  { maxBlocks, maxInstructions, maxBytes, maxEdges },
+  backend,
+);
+```
 
-In `src/index.ts` add both tool names after the existing seven NDS names and update `ndsStaticAnalysisPolicy` to state that bounded ARM/Thumb disassembly and direct-control-flow analysis are read-only, NDS-mapped, and do not infer runtime overlay state or mutate ROMs.
+A `truncated` CFG is `isError: false`.
 
-- [ ] **Step 8: Run MCP and full static-analysis tests**
+- [ ] **Step 7: Update `src/index.ts` capability metadata**
+
+Add both tool names immediately after the existing seven NDS static tools. Update `ndsStaticAnalysisPolicy` to state that bounded ARM/Thumb disassembly and direct-control-flow analysis are NDS-mapped, read-only, do not infer overlay loaded state, and do not mutate/rebuild ROMs.
+
+- [ ] **Step 8: Run MCP + static suite**
 
 Run:
 
@@ -1160,20 +1491,19 @@ git commit -m "feat: expose NDS static disassembly tools"
 
 ---
 
-### Task 6: Prove the Capstone WASM backend survives self-contained packaging
+### Task 6: Prove Capstone WASM survives self-contained packaging
 
 **Files:**
 - Modify: `scripts/check-install.mjs`
 - Modify: `.github/workflows/package.yml`
-- Test indirectly: package workflow plus local `npm run build && node scripts/check-install.mjs .`
 
 **Interfaces:**
-- Consumes packaged `dist/services/disassembly/capstone.js`, production `node_modules/@alexaltea/capstone-js/dist/capstone.js`, and `capstone.wasm`.
-- Produces a package-install contract that fails if either WASM loading or known ARM/Thumb decoding fails in the isolated production bundle.
 
-- [ ] **Step 1: Make install verification fail until Capstone assets and smoke decoding are checked**
+Consumes the assembled production tree where `dist/src/.` has already been copied to bundle `dist/`, so the built adapter path is `dist/services/disassembly/capstone.js`.
 
-Extend the `required` list in `scripts/check-install.mjs`:
+- [ ] **Step 1: Require Capstone package/WASM assets in install verification**
+
+Extend `required` in `scripts/check-install.mjs` with:
 
 ```js
 "node_modules/@alexaltea/capstone-js/package.json",
@@ -1181,16 +1511,33 @@ Extend the `required` list in `scripts/check-install.mjs`:
 "node_modules/@alexaltea/capstone-js/dist/capstone.wasm",
 ```
 
-Then add, after the Node-version check:
+Also import:
 
 ```js
-const { createCapstoneArmBackend } = await import(
-  new URL("./dist/services/disassembly/capstone.js", `file://${root.replaceAll("\\", "/")}/`).href
-);
+import { pathToFileURL } from "node:url";
+```
+
+- [ ] **Step 2: Add exact packaged decoder smoke test**
+
+After the Node-major check and before printing `{ ok: true }`:
+
+```js
+const adapterUrl = pathToFileURL(
+  path.join(root, "dist/services/disassembly/capstone.js"),
+).href;
+const { createCapstoneArmBackend } = await import(adapterUrl);
 const backend = await createCapstoneArmBackend();
 try {
-  const arm = backend.decodeOne(Uint8Array.from([0x1e, 0xff, 0x2f, 0xe1]), 0x02000000, "arm");
-  const thumb = backend.decodeOne(Uint8Array.from([0x70, 0x47]), 0x02000010, "thumb");
+  const arm = backend.decodeOne(
+    Uint8Array.from([0x1e, 0xff, 0x2f, 0xe1]),
+    0x02000000,
+    "arm",
+  );
+  const thumb = backend.decodeOne(
+    Uint8Array.from([0x70, 0x47]),
+    0x02000010,
+    "thumb",
+  );
   if (arm?.mnemonic !== "bx" || arm.size !== 4) {
     throw new Error("Packaged Capstone ARM smoke decode failed");
   }
@@ -1202,9 +1549,9 @@ try {
 }
 ```
 
-Prefer `pathToFileURL(path.join(root, "dist/services/disassembly/capstone.js"))` from `node:url` over hand-building the URL when implementing; the required behavior is an import from the supplied install root, not the source checkout.
+The existing success JSON is printed only after both decodes succeed.
 
-- [ ] **Step 2: Run source-root check to expose any path assumptions**
+- [ ] **Step 3: Verify source-root install check**
 
 Run:
 
@@ -1213,19 +1560,25 @@ npm run build
 node scripts/check-install.mjs .
 ```
 
-Expected before the script/path adjustments are correct: FAIL if it imports from the wrong location or cannot locate WASM. After the minimal fix: PASS and print the existing `{ ok: true, ... }` JSON only after both decodes succeed.
+Expected: PASS and `ok: true` after both decoder smoke checks.
 
-- [ ] **Step 3: Make package workflow expose decoder smoke verification explicitly**
+- [ ] **Step 4: Keep the package workflow isolated and make smoke acceptance explicit**
 
-Keep the existing isolated `npm install --omit=dev --ignore-scripts` inside `/tmp/re-mcp-${version}`. Rename that portion of `.github/workflows/package.yml` or split it so the log has an explicit step/command showing:
+In `.github/workflows/package.yml`, retain:
+
+```bash
+npm install --omit=dev --ignore-scripts
+```
+
+inside `/tmp/re-mcp-${version}`. Add a separately visible command/step from that assembled root:
 
 ```bash
 node scripts/check-install.mjs .
 ```
 
-executed from the assembled bundle after production dependency installation. Do not add network fetches after production installation and do not copy Capstone artifacts manually from the source checkout; they must arrive through the pinned production dependency.
+Do not copy Capstone assets manually from the source checkout and do not fetch runtime artifacts from the network. Production `npm install` must provide all required JS/WASM files.
 
-- [ ] **Step 4: Reproduce the package assembly locally**
+- [ ] **Step 5: Reproduce the exact production bundle locally**
 
 Run:
 
@@ -1248,9 +1601,9 @@ cp -R dist/src/. "$root/dist/"
 )
 ```
 
-Expected: PASS; production bundle initializes WebAssembly and decodes ARM + Thumb without an external executable.
+Expected: PASS; packaged production dependency initializes WebAssembly and decodes both fixtures with no external executable.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/check-install.mjs .github/workflows/package.yml
@@ -1259,20 +1612,15 @@ git commit -m "test: verify packaged Capstone WASM decoder"
 
 ---
 
-### Task 7: Document the static-disassembly workflow and run final regression
+### Task 7: Document the workflow and run final regression
 
 **Files:**
 - Modify: `README.md`
-- Test: all `tests/*.test.ts`
-- Verify: `package.json`, `.github/workflows/package.yml`, `src/index.ts`
+- Verify: all tests, build, package smoke, capability/security surface.
 
-**Interfaces:**
-- Consumes all previous tasks.
-- Produces user-facing documentation matching the implemented two-tool contract and a fully verified branch suitable for PR review.
+- [ ] **Step 1: Document the user workflow**
 
-- [ ] **Step 1: Add README documentation matching the implemented contract**
-
-Document this sequence:
+Add:
 
 ```text
 nds_inspect_rom
@@ -1281,24 +1629,24 @@ nds_inspect_rom
   -> nds_analyze_control_flow
 ```
 
-State explicitly:
+README must state all of these exact semantics:
 
-- `arm`, `thumb`, and conservative `auto` are accepted;
-- initial `auto` only trusts ARM9/ARM7 header entry points;
-- direct CFG edges propagate proven ARM/Thumb mode;
-- ambiguity is returned, not guessed;
-- `overlayId` disambiguates a static source but never means the overlay is loaded;
+- modes are `arm`, `thumb`, conservative `auto`;
+- initial `auto` trusts only resolved ARM9/ARM7 header entry points;
+- direct CFG edges propagate deterministic target mode;
+- ambiguity is returned, never guessed;
+- `overlayId` selects a static source but never means it is loaded;
 - BSS has no ROM bytes;
-- compressed overlays are rejected until a separate decompression milestone;
+- compressed overlays are rejected pending a separate decompression milestone;
 - linear limits are 32/256 instructions and 128/1024 bytes default/max;
-- CFG limits are 64/256 blocks, 512/4096 instructions, 2/16 KiB bytes, and 128/1024 edges default/max;
+- CFG limits are 64/256 blocks, 512/4096 instructions, 2/16 KiB bytes, 128/1024 edges default/max;
 - calls are annotated but not traversed;
 - indirect targets are never guessed;
-- `truncated` CFG output is partial and names the exhausted limits;
+- `truncated` means a valid partial graph and lists exhausted limits;
 - static disassembly is independent of pending physical Catalina/DeSmuME acceptance;
-- no generic binary disassembly, ROM mutation, rebuild, or patch generation is added.
+- generic binary disassembly, ROM mutation, rebuild, and patch generation remain out of scope.
 
-- [ ] **Step 2: Run focused disassembly suite**
+- [ ] **Step 2: Run focused static-disassembly suite**
 
 Run:
 
@@ -1324,27 +1672,28 @@ npm run build
 
 Expected: typecheck PASS, all tests PASS, build PASS.
 
-- [ ] **Step 4: Run production-install smoke check again**
+- [ ] **Step 4: Repeat the isolated production-install smoke sequence from Task 6**
 
-Run the same isolated bundle sequence from Task 6. Expected: `scripts/check-install.mjs` reports `ok: true` only after ARM and Thumb fixture decoding succeeds.
+Run the Task 6 production bundle commands exactly. Expected: `scripts/check-install.mjs` prints `ok: true` only after known ARM and Thumb decodes succeed.
 
-- [ ] **Step 5: Audit public/security surface**
+- [ ] **Step 5: Audit the public/security surface**
 
 Run:
 
 ```bash
 grep -R "nds_disassemble_range\|nds_analyze_control_flow" -n src README.md tests
-grep -R "baseAddress\|caller-controlled\|generic binary" -n src/services/nds src/tools/nds.ts README.md || true
+grep -R "baseAddress\|generic binary" -n src/services/nds src/tools/nds.ts README.md || true
+git diff --name-only main...HEAD
 ```
 
-Manually verify:
+Verify from the diff:
 
-- exactly nine NDS tools are registered total, exactly two of them new;
-- neither new schema accepts a generic binary path, bytes, base address, raw range, or output path;
-- no DeSmuME GDB transport/controller/runtime files changed;
+- exactly nine NDS tools total, exactly two new;
+- neither new schema accepts generic binary input, raw caller bytes, arbitrary base address, arbitrary raw range, or output path;
+- no DeSmuME GDB transport/controller/runtime source file changed;
 - no ROM write/rebuild capability was introduced;
 - no static result claims an overlay is loaded;
-- package dependency is exactly `5.0.9`.
+- `@alexaltea/capstone-js` is exactly `5.0.9`.
 
 - [ ] **Step 6: Commit documentation**
 
@@ -1364,16 +1713,14 @@ npm run check
 npm run build
 ```
 
-Expected: clean worktree, all verification PASS. Push the implementation branch and use GitHub Actions CI + Package as the authoritative remote regression gate. Do not claim Catalina/DeSmuME native acceptance from these jobs.
+Expected: clean worktree, all verification PASS. Push the branch and use GitHub Actions CI + Package as the authoritative remote regression gate. These jobs do not constitute physical Catalina/DeSmuME acceptance.
 
 ---
 
-## Recommended Review / PR Boundaries
+## Recommended PR Boundaries
 
-Keep reviewer scope small while preserving runnable increments:
+1. **PR A — Decoder + NDS linear disassembly:** Tasks 1–3. Proves the pinned WASM backend, deterministic code-source policy, and bounded canonical linear output.
+2. **PR B — Direct CFG analysis:** Task 4. Adds only basic-block traversal over the already reviewed decoder/source layer.
+3. **PR C — MCP surface + package acceptance + docs:** Tasks 5–7. Adds the two public tools, isolated packaged WASM smoke check, capability metadata, and README.
 
-1. **PR A — Decoder + NDS linear disassembly:** Tasks 1–3. Proves the pinned WASM backend, canonical source policy, and bounded linear output.
-2. **PR B — Direct CFG analysis:** Task 4. Adds only basic-block traversal on top of the already reviewed canonical decoder/source layer.
-3. **PR C — MCP surface + packaging + docs:** Tasks 5–7. Adds the two public tools, isolated package smoke acceptance, capability metadata, and README.
-
-Each PR must pass `npm run check` and `npm run build`; PR C must additionally pass the Package workflow's isolated production/WASM smoke check before merge.
+Each PR must pass `npm run check` and `npm run build`. PR C must also pass the Package workflow's isolated production/WASM smoke check before merge.
