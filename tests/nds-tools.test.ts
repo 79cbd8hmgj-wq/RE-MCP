@@ -7,6 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { ServerConfig } from "../src/config.js";
+import { registerNdsPatternTools } from "../src/tools/nds-pattern.js";
 import { registerNdsTools } from "../src/tools/nds.js";
 import {
   createNdsFixture,
@@ -65,10 +66,10 @@ function config(workspaceRoot: string, maxOutputBytes = 64 * 1024): ServerConfig
 
 function register(workspaceRoot: string, maxOutputBytes = 64 * 1024): FakeMcpServer {
   const server = new FakeMcpServer();
-  registerNdsTools(
-    server as unknown as McpServer,
-    config(workspaceRoot, maxOutputBytes),
-  );
+  const mcp = server as unknown as McpServer;
+  const serverConfig = config(workspaceRoot, maxOutputBytes);
+  registerNdsTools(mcp, serverConfig);
+  registerNdsPatternTools(mcp, serverConfig);
   return server;
 }
 
