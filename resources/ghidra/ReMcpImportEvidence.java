@@ -144,13 +144,13 @@ public class ReMcpImportEvidence extends GhidraScript {
                     break;
                 }
             }
-            if (!exact) {
+            if (!exact && !references.hasReferencesFrom(from, 0)) {
                 references.addMemoryReference(
                     from,
                     to,
                     RefType.UNCONDITIONAL_CALL,
                     SourceType.IMPORTED,
-                    Reference.MNEMONIC);
+                    0);
             }
         }
     }
