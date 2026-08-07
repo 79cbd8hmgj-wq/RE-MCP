@@ -1,9 +1,11 @@
 // @category RE-MCP
 
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -15,9 +17,11 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import ghidra.app.script.GhidraScript;
+import ghidra.framework.options.Options;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressFactory;
 import ghidra.program.model.address.AddressSpace;
+import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceManager;
@@ -28,6 +32,10 @@ import ghidra.program.model.util.StringPropertyMap;
 public class ReMcpImportEvidence extends GhidraScript {
     private static final String BRIDGE_FORMAT = "re-mcp-nds-ghidra";
     private static final int BRIDGE_FORMAT_VERSION = 1;
+
+    private static final String KEY_ROM_SHA = "re-mcp.rom-sha256";
+    private static final String KEY_MANIFEST_SHA = "re-mcp.manifest-sha256";
+    private static final String KEY_PROCESSOR = "re-mcp.processor";
 
     private static final String MAP_FUNCTION_ID = "re-mcp.function-id";
     private static final String MAP_FUNCTION_PROOF = "re-mcp.function-proof";
@@ -44,11 +52,13 @@ public class ReMcpImportEvidence extends GhidraScript {
             throw new IllegalArgumentException("expected manifest path and processor");
         }
 
-        Path manifestPath = Paths.get(args[0]).toAbsolutePath().normalize();
+        Path manifestPath = Paths.get(args[0]).toRealPath();
         String processor = requireProcessor(args[1]);
         JsonObject manifest = readManifest(manifestPath);
         JsonObject processorManifest = processorManifest(manifest, processor);
         JsonObject discovery = discoveryFor(manifest, processor);
+        String manifestSha256 = sha256(manifestPath);
+        validateProgramOwnership(manifest, processorManifest, processor, manifestSha256);
         Map<Integer, String> overlaySpaces = overlaySpaces(processorManifest);
 
         PropertyMapManager maps = currentProgram.getUsrPropertyManager();
@@ -78,6 +88,28 @@ public class ReMcpImportEvidence extends GhidraScript {
         importDirectCalls(discovery, functionsById, overlaySpaces, callEvidence);
     }
 
+    private void validateProgramOwnership(
+            JsonObject manifest,
+            JsonObject processorManifest,
+            String processor,
+            String manifestSha256) {
+        Options info = currentProgram.getOptions(Program.PROGRAM_INFO);
+        requireOwnedValue(info, KEY_ROM_SHA, requireString(manifest, "sourceRomSha256"));
+        requireOwnedValue(info, KEY_MANIFEST_SHA, manifestSha256);
+        requireOwnedValue(info, KEY_PROCESSOR, processor);
+        String expectedName = requireString(processorManifest, "programName");
+        if (!expectedName.equals(currentProgram.getName())) {
+            throw new IllegalStateException("current Ghidra program does not have the canonical RE-MCP name");
+        }
+    }
+
+    private void requireOwnedValue(Options info, String key, String expected) {
+        String actual = info.getString(key, null);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("current Ghidra program lacks matching RE-MCP ownership metadata: " + key);
+        }
+    }
+
     private void importDirectCalls(
             JsonObject discovery,
             Map<String, JsonObject> functionsById,
@@ -101,21 +133,24 @@ public class ReMcpImportEvidence extends GhidraScript {
             Address to = identityAddress(calleeEntry, overlaySpaces);
             callEvidence.add(from, gson.toJson(call));
 
-            Reference[] existing = references.getReferencesFrom(from, ReferenceManager.MNEMONIC);
             boolean exact = false;
-            for (Reference reference : existing) {
-                if (reference.getToAddress().equals(to)) {
+            for (Reference reference : references.getReferencesFrom(from)) {
+                if (
+                    reference.isMemoryReference()
+                    && reference.getToAddress().equals(to)
+                    && reference.getReferenceType().isCall()
+                ) {
                     exact = true;
                     break;
                 }
             }
-            if (!exact && existing.length == 0) {
+            if (!exact) {
                 references.addMemoryReference(
                     from,
                     to,
                     RefType.UNCONDITIONAL_CALL,
                     SourceType.IMPORTED,
-                    ReferenceManager.MNEMONIC);
+                    Reference.OTHER);
             }
         }
     }
@@ -251,5 +286,22 @@ public class ReMcpImportEvidence extends GhidraScript {
             throw new IllegalArgumentException("manifest field is not uint32: " + key);
         }
         return result;
+    }
+
+    private String sha256(Path path) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream input = Files.newInputStream(path)) {
+            byte[] buffer = new byte[8192];
+            for (int count = input.read(buffer); count >= 0; count = input.read(buffer)) {
+                if (count > 0) {
+                    digest.update(buffer, 0, count);
+                }
+            }
+        }
+        StringBuilder result = new StringBuilder(64);
+        for (byte value : digest.digest()) {
+            result.append(String.format("%02x", value & 0xff));
+        }
+        return result.toString();
     }
 }
