@@ -24,6 +24,7 @@ import {
   ghidraGeneratedBridgeRoot,
   type GhidraBridgeArtifact,
   type GhidraBridgeManifest,
+  type GhidraProcessorManifest,
 } from "./ghidra-model.js";
 import { NdsError } from "./errors.js";
 import { hashFileSha256 } from "./io.js";
@@ -137,6 +138,20 @@ function staticArtifactPaths(manifest: GhidraBridgeManifest): string[] {
   return paths;
 }
 
+async function copyMainImportArtifacts(
+  temporaryRoot: string,
+  processors: readonly GhidraProcessorManifest[],
+): Promise<void> {
+  const generatedRoot = path.dirname(temporaryRoot);
+  for (const processor of processors) {
+    const source = resolveInside(generatedRoot, `${processor.processor}.bin`);
+    const destination = resolveArtifactPath(temporaryRoot, processor.main.artifactPath);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(source, destination);
+    await syncFile(destination);
+  }
+}
+
 async function copyScriptResources(temporaryRoot: string): Promise<string[]> {
   const resourceRoot = resolveGhidraBridgeResourceRoot();
   const scriptRoot = resolveInside(temporaryRoot, "scripts");
@@ -207,6 +222,7 @@ async function buildTemporaryBridge(
       artifacts: [],
     });
 
+    await copyMainImportArtifacts(temporaryRoot, canonical.processors);
     const functionsPath = resolveInside(temporaryRoot, path.join("evidence", "functions.json"));
     const callsPath = resolveInside(temporaryRoot, path.join("evidence", "calls.json"));
     await writeJson(functionsPath, functionsEvidence(canonical));
