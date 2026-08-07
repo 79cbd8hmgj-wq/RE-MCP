@@ -25,6 +25,7 @@ test("Ghidra resource contract never deletes or overwrites analyst-owned objects
     const source = loaded[name];
     assert.doesNotMatch(source, /clearListing|removeFunction|removeSymbol|deleteAll|clearAll/);
     assert.doesNotMatch(source, /createFunction\s*\(/);
+    assert.doesNotMatch(source, /Runtime\.getRuntime|ProcessBuilder|java\.net\.|Socket\s*\(/);
   }
 });
 
@@ -58,14 +59,22 @@ test("Ghidra resource contract contains every RE-MCP-owned metadata key", async 
   }
 });
 
-test("Ghidra preparation contract creates only manifest-backed overlay and BSS blocks", async () => {
+test("Ghidra preparation contract owns exact program identity, manifest-backed overlays and proven mode context", async () => {
   const source = (await sources())["ReMcpPrepareProgram.java"];
+  assert.match(source, /Program\.PROGRAM_INFO/);
+  assert.match(source, /currentProgram\.setName\s*\(/);
+  assert.match(source, /RE-MCP_ARM9/);
+  assert.match(source, /RE-MCP_ARM7/);
   assert.match(source, /createInitializedBlock\s*\(/);
   assert.match(source, /createUninitializedBlock\s*\(/);
   assert.match(source, /not-imported-compressed/);
   assert.match(source, /spaceName/);
   assert.match(source, /bssSize/);
   assert.match(source, /setExecute\(true\)/);
+  assert.match(source, /getProgramContext\s*\(\)/);
+  assert.match(source, /getRegister\s*\(\s*"TMode"\s*\)/);
+  assert.match(source, /setValue\s*\(/);
+  assert.match(source, /BigInteger\.ONE|BigInteger\.ZERO/);
 });
 
 test("Ghidra evidence contract records exact entry, mode, overlay, and call evidence", async () => {
@@ -80,14 +89,24 @@ test("Ghidra evidence contract records exact entry, mode, overlay, and call evid
     assert.equal(source.includes(key), true, key);
   }
   assert.match(source, /StringPropertyMap/);
-  assert.match(source, /addMemoryReference|addMnemonicReference/);
+  assert.match(source, /getAddressSpace\s*\(/);
+  assert.match(source, /addMemoryReference\s*\(/);
+  assert.match(source, /RefType\.UNCONDITIONAL_CALL/);
+  assert.match(source, /SourceType\.IMPORTED/);
+  assert.doesNotMatch(source, /setBody\s*\(/);
 });
 
-test("Ghidra analysis-record contract writes only the declared processor result", async () => {
+test("Ghidra analysis-record contract validates the declared result and writes generated state atomically", async () => {
   const source = (await sources())["ReMcpRecordAnalysis.java"];
   assert.match(source, /analysisStatus/);
   assert.match(source, /"complete"/);
   assert.match(source, /generatedResultPaths/);
   assert.match(source, /manifestSha256/);
+  assert.match(source, /sourceRomSha256/);
+  assert.match(source, /programName/);
+  assert.match(source, /ghidraVersion/);
+  assert.match(source, /normalize\s*\(\)/);
   assert.match(source, /Files\.writeString/);
+  assert.match(source, /Files\.move/);
+  assert.doesNotMatch(source, /analysis\/ghidra\/nds/);
 });
