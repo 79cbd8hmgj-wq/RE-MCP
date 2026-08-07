@@ -61,6 +61,15 @@ export interface CaptureCurrentStopContextRequest {
   readonly additionalRegions?: readonly StopContextRegionRequest[] | undefined;
 }
 
+export interface DebugControllerStatus {
+  readonly initialized: boolean;
+  readonly state: DebuggerState;
+  readonly breakpoints: readonly BreakpointRecord[];
+  readonly maximumBreakpoints: number;
+  readonly executableRanges: readonly ExecutableRangeRecord[];
+  readonly hasStop: boolean;
+}
+
 export type DebugExecutionResult =
   | {
       readonly kind: "timeout";
@@ -108,6 +117,20 @@ export class DebugController {
 
   state(): DebuggerState {
     return this.#session?.state() ?? "unavailable";
+  }
+
+  status(): DebugControllerStatus {
+    return {
+      initialized:
+        this.#sessionIdentity !== null
+        && this.#session !== null
+        && this.#ranges !== null,
+      state: this.state(),
+      breakpoints: this.#breakpoints.list(),
+      maximumBreakpoints: this.#breakpoints.maximum(),
+      executableRanges: this.#ranges?.list() ?? [],
+      hasStop: this.#lastStop !== null,
+    };
   }
 
   listBreakpoints(): readonly BreakpointRecord[] {
@@ -273,6 +296,9 @@ export class DebugController {
     input: CaptureCurrentStopContextRequest,
   ): Promise<StopContext> {
     const session = this.#requireSession();
+    if (session.state() === "unavailable") {
+      await session.connect();
+    }
     if (session.state() !== "stopped") {
       throw new Error(`Stop context requires stopped state; current state is ${session.state()}`);
     }
