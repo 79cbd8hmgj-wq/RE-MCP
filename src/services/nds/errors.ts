@@ -8,7 +8,12 @@ export type NdsErrorCategory =
   | "unknown-file-id"
   | "unknown-overlay-id"
   | "output-bound-exceeded"
-  | "generated-path-failure";
+  | "generated-path-failure"
+  | "ambiguous-reference-target"
+  | "reference-target-not-runtime-addressable"
+  | "invalid-reference-scope"
+  | "invalid-reference-seed"
+  | "reference-scan-limit-exceeded";
 
 export class NdsError extends Error {
   constructor(
