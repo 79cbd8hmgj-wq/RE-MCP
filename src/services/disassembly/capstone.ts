@@ -12,6 +12,7 @@ import {
   type ArmMode,
   type DecodedArmInstruction,
   type DecodedArmOperand,
+  type DecodedArmPcRelativeSemantics,
 } from "./backend.js";
 
 let modulePromise: Promise<CapstoneModule> | null = null;
@@ -50,6 +51,17 @@ function isKnownCallInstruction(cs: CapstoneModule, id: number): boolean {
     || id === cs.ARM_INS_BLXNS;
 }
 
+function registerName(
+  decoder: CapstoneHandle,
+  registerId: number | undefined,
+): string | null {
+  if (registerId === undefined || registerId === 0) {
+    return null;
+  }
+  const name = decoder.reg_name(registerId).toLowerCase();
+  return name.length === 0 ? null : name;
+}
+
 function normalizeOperand(
   cs: CapstoneModule,
   decoder: CapstoneHandle,
@@ -62,6 +74,16 @@ function normalizeOperand(
     return {
       kind: "register",
       name: decoder.reg_name(operand.reg).toLowerCase(),
+    };
+  }
+  if (operand.type === cs.ARM_OP_MEM && operand.mem !== undefined) {
+    return {
+      kind: "memory",
+      value: {
+        baseRegister: registerName(decoder, operand.mem.base),
+        indexRegister: registerName(decoder, operand.mem.index),
+        displacement: operand.mem.disp ?? 0,
+      },
     };
   }
   return { kind: "other" };
@@ -105,10 +127,99 @@ function normalizeAddress(value: number | bigint): number {
   return address;
 }
 
+function architecturalPc(address: number, mode: ArmMode): number {
+  return mode === "arm"
+    ? (address + 8) >>> 0
+    : ((address + 4) & ~3) >>> 0;
+}
+
+function immediateOperand(
+  operands: readonly DecodedArmOperand[],
+  index: number,
+): number | null {
+  const operand = operands[index];
+  return operand?.kind === "immediate" ? operand.value >>> 0 : null;
+}
+
+function registerOperand(
+  operands: readonly DecodedArmOperand[],
+  index: number,
+): string | null {
+  const operand = operands[index];
+  return operand?.kind === "register" ? operand.name : null;
+}
+
+function normalizePcRelative(
+  cs: CapstoneModule,
+  instruction: CapstoneInstruction,
+  address: number,
+  mode: ArmMode,
+  operands: readonly DecodedArmOperand[],
+): DecodedArmPcRelativeSemantics {
+  if (instruction.id === cs.ARM_INS_LDR) {
+    const memory = operands.find(
+      (operand) => operand.kind === "memory",
+    );
+    if (
+      memory?.kind === "memory"
+      && memory.value.baseRegister === "pc"
+      && memory.value.indexRegister === null
+    ) {
+      return {
+        kind: "literal-load",
+        displacement: memory.value.displacement,
+      };
+    }
+  }
+
+  if (
+    instruction.id === cs.ARM_INS_ADD
+    && registerOperand(operands, 1) === "pc"
+  ) {
+    const immediate = immediateOperand(operands, 2);
+    if (immediate !== null) {
+      return { kind: "address-add", immediate };
+    }
+  }
+
+  if (
+    instruction.id === cs.ARM_INS_SUB
+    && registerOperand(operands, 1) === "pc"
+  ) {
+    const immediate = immediateOperand(operands, 2);
+    if (immediate !== null) {
+      return { kind: "address-sub", immediate };
+    }
+  }
+
+  if (instruction.id === cs.ARM_INS_ADR) {
+    const target = operands.find(
+      (operand) => operand.kind === "immediate",
+    );
+    if (target?.kind === "immediate") {
+      const pc = architecturalPc(address, mode);
+      const targetAddress = target.value >>> 0;
+      if (targetAddress >= pc) {
+        return {
+          kind: "address-add",
+          immediate: targetAddress - pc,
+        };
+      }
+      return {
+        kind: "address-sub",
+        immediate: pc - targetAddress,
+      };
+    }
+  }
+
+  return null;
+}
+
 function normalizeInstruction(
   cs: CapstoneModule,
   decoder: CapstoneHandle,
   instruction: CapstoneInstruction,
+  mode: ArmMode,
 ): DecodedArmInstruction {
   if (instruction.size !== 2 && instruction.size !== 4) {
     throw new DisassemblyBackendError(
@@ -116,6 +227,7 @@ function normalizeInstruction(
     );
   }
 
+  const address = normalizeAddress(instruction.address);
   const decodedOperands = (instruction.detail.op ?? []).map(
     (operand) => normalizeOperand(cs, decoder, operand),
   );
@@ -126,7 +238,7 @@ function normalizeInstruction(
   );
   const cc = instruction.detail.cc;
   return {
-    address: normalizeAddress(instruction.address),
+    address,
     size: instruction.size,
     bytes: [...instruction.bytes],
     mnemonic: instruction.mnemonic,
@@ -148,6 +260,7 @@ function normalizeInstruction(
         && cc !== cs.ARM_CC_AL
       ),
     switchesMode: instruction.id === cs.ARM_INS_BLX,
+    pcRelative: normalizePcRelative(cs, instruction, address, mode, operands),
   };
 }
 
@@ -186,7 +299,7 @@ export async function createCapstoneArmBackend(): Promise<ArmDisassemblyBackend>
       let decoded: DecodedArmInstruction | null = null;
       try {
         decoder.disasm_iter(bytes, address, (instruction) => {
-          decoded = normalizeInstruction(cs, decoder, instruction);
+          decoded = normalizeInstruction(cs, decoder, instruction, mode);
           return false;
         });
         return decoded;
