@@ -64,15 +64,13 @@ async function buildFunctionSourceFixture() {
   return { fixture, map: await readNdsRomMap(fixture.romPath) };
 }
 
-async function expectCategory(
-  action: () => unknown | Promise<unknown>,
-  category: string,
-): Promise<void> {
-  await assert.rejects(action, (error: unknown) => {
-    assert.ok(error instanceof NdsError);
-    assert.equal(error.category, category);
-    return true;
-  });
+function categoryOf(action: () => unknown): string | null {
+  try {
+    action();
+    return null;
+  } catch (error) {
+    return error instanceof NdsError ? error.category : null;
+  }
 }
 
 test("function search scope expands deterministically and marks compressed overlays", async () => {
@@ -132,23 +130,23 @@ test("function search deduplicates canonical explicit seeds without proving them
 test("function search rejects duplicate and unknown overlay scope selectors", async () => {
   const { map } = await buildFunctionSourceFixture();
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "overlay", overlayIds: [7, 7] },
       [],
-    ),
+    )),
     "invalid-function-scope",
   );
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "overlay", overlayIds: [99] },
       [],
-    ),
+    )),
     "invalid-function-scope",
   );
 });
@@ -156,43 +154,43 @@ test("function search rejects duplicate and unknown overlay scope selectors", as
 test("function search rejects invalid coverage seeds conservatively", async () => {
   const { map } = await buildFunctionSourceFixture();
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "overlay", overlayIds: [7] },
       [{ runtimeAddress: 0x02200001, mode: "thumb", overlayId: 7 }],
-    ),
+    )),
     "invalid-function-seed",
   );
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "main" },
       [{ runtimeAddress: 0x02200000, mode: "arm", overlayId: 7 }],
-    ),
+    )),
     "invalid-function-seed",
   );
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "overlay", overlayIds: [9] },
       [{ runtimeAddress: 0x02210000, mode: "arm", overlayId: 9 }],
-    ),
+    )),
     "invalid-function-seed",
   );
 
-  await expectCategory(
-    () => prepareFunctionSearch(
+  assert.equal(
+    categoryOf(() => prepareFunctionSearch(
       map,
       "arm9",
       { kind: "overlay", overlayIds: [7] },
       [{ runtimeAddress: 0x02200080, mode: "arm", overlayId: 7 }],
-    ),
+    )),
     "invalid-function-seed",
   );
 });
