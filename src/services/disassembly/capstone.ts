@@ -67,6 +67,34 @@ function normalizeOperand(
   return { kind: "other" };
 }
 
+const CONTROL_FLOW_REGISTER = /^(?:r(?:1[0-5]|[0-9])|sp|lr|pc|ip|fp|sl|sb)$/u;
+
+function normalizeControlFlowOperands(
+  cs: CapstoneModule,
+  instruction: CapstoneInstruction,
+  operands: readonly DecodedArmOperand[],
+): readonly DecodedArmOperand[] {
+  if (operands.length > 0) {
+    return operands;
+  }
+
+  const register = instruction.op_str.trim().toLowerCase();
+  if (!CONTROL_FLOW_REGISTER.test(register)) {
+    return operands;
+  }
+
+  const registerControlFlow = instruction.id === cs.ARM_INS_BX
+    || instruction.id === cs.ARM_INS_BXJ
+    || instruction.id === cs.ARM_INS_BXNS
+    || instruction.id === cs.ARM_INS_BLX
+    || instruction.id === cs.ARM_INS_BLXNS;
+  if (!registerControlFlow) {
+    return operands;
+  }
+
+  return [{ kind: "register", name: register }];
+}
+
 function normalizeAddress(value: number | bigint): number {
   const address = Number(value);
   if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) {
@@ -88,6 +116,14 @@ function normalizeInstruction(
     );
   }
 
+  const decodedOperands = (instruction.detail.op ?? []).map(
+    (operand) => normalizeOperand(cs, decoder, operand),
+  );
+  const operands = normalizeControlFlowOperands(
+    cs,
+    instruction,
+    decodedOperands,
+  );
   const cc = instruction.detail.cc;
   return {
     address: normalizeAddress(instruction.address),
@@ -95,9 +131,7 @@ function normalizeInstruction(
     bytes: [...instruction.bytes],
     mnemonic: instruction.mnemonic,
     operandsText: instruction.op_str,
-    operands: (instruction.detail.op ?? []).map(
-      (operand) => normalizeOperand(cs, decoder, operand),
-    ),
+    operands,
     isJump:
       hasGroup(instruction, cs.GRP_JUMP)
       || isKnownJumpInstruction(cs, instruction.id),
