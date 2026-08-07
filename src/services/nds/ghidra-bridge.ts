@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -80,8 +81,23 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await syncFile(filePath);
 }
 
-function sourceResourceRoot(): string {
-  return fileURLToPath(new URL("../../../resources/ghidra/", import.meta.url));
+function candidateResourceRoots(): readonly string[] {
+  return [
+    fileURLToPath(new URL("../../../resources/ghidra/", import.meta.url)),
+    fileURLToPath(new URL("../../../../resources/ghidra/", import.meta.url)),
+  ];
+}
+
+export function resolveGhidraBridgeResourceRoot(): string {
+  for (const candidate of candidateResourceRoots()) {
+    if (existsSync(candidate)) {
+      return path.resolve(candidate);
+    }
+  }
+  throw new NdsError(
+    "bridge-generation-failed",
+    "RE-MCP packaged Ghidra bridge resources are missing",
+  );
 }
 
 function resolveArtifactPath(bridgeRoot: string, relativePath: string): string {
@@ -122,7 +138,7 @@ function staticArtifactPaths(manifest: GhidraBridgeManifest): string[] {
 }
 
 async function copyScriptResources(temporaryRoot: string): Promise<string[]> {
-  const resourceRoot = sourceResourceRoot();
+  const resourceRoot = resolveGhidraBridgeResourceRoot();
   const scriptRoot = resolveInside(temporaryRoot, "scripts");
   await mkdir(scriptRoot, { recursive: true });
   const relativePaths: string[] = [];
