@@ -187,6 +187,8 @@ Rules:
 - no alternate encoding is attempted;
 - alignment is `1`.
 
+All pattern kinds must encode to at least one byte and at most 4096 bytes.
+
 ## Search scope
 
 The tool supports either whole-ROM search or a bounded canonical component set.
@@ -219,9 +221,16 @@ A `components` scope must select at least one component.
 
 Selected components may physically overlap because an overlay is FAT-backed and can also have a NitroFS file relationship.
 
-The resolver therefore constructs physical search domains with provenance. Bytes covered by multiple selected relationships are scanned once, and one physical hit is returned once with all valid owners attached.
+The resolver retains each selected canonical component's physical `[start, end)` interval and provenance, while the streaming layer normalizes the union of those intervals so each physical ROM byte is read/scanned at most once per request.
 
-Adjacent but semantically distinct component ranges are not merged into one matching domain. A pattern may not begin in one component and finish in another merely because the physical ranges are adjacent.
+A component-scoped candidate is eligible only if its complete `[matchStart, matchEnd)` span is contained inside **at least one selected canonical component interval**. This preserves valid matches across an overlap-provenance boundary while still preventing a signature from bridging two merely adjacent components.
+
+Therefore:
+
+- overlapping selected components do not duplicate physical scanning or hits;
+- a hit that is wholly inside either overlapping component remains valid;
+- a pattern cannot begin in component A and finish in adjacent component B unless one selected component itself contains the entire span;
+- one physical hit is emitted once with all deterministic owners attached.
 
 `whole-rom` is the explicit exception: the ROM is one physical search domain, so a pattern may cross structural/component boundaries.
 
@@ -256,7 +265,7 @@ pattern: AA AA
 bytes:   AA AA AA
 ```
 
-returns starts at offsets `0` and `1` relative to that search domain.
+returns starts at offsets `0` and `1` relative to that physical region.
 
 ### Alignment
 
@@ -266,7 +275,7 @@ No component-relative or runtime-address-relative alignment rule is inferred.
 
 ### Boundary behavior
 
-For component scopes, every candidate must fit entirely inside one canonical physical search domain. Internal I/O chunk boundaries do not count as semantic boundaries.
+For component scopes, every candidate must fit entirely inside at least one selected canonical component interval. Internal I/O chunk boundaries and internal overlap-provenance boundaries do not count as semantic component boundaries.
 
 For whole-ROM scope, every candidate must fit entirely inside the ROM file.
 
@@ -280,7 +289,7 @@ Carry bytes are bookkeeping only:
 
 - they are not double-counted in `scannedBytes`;
 - duplicate candidate starts are not emitted;
-- component-domain boundaries are still enforced.
+- component eligibility is still checked against the original selected canonical intervals.
 
 ## Result model
 
@@ -322,22 +331,6 @@ Owner kinds may include:
 - ARM7 overlay-table region;
 - otherwise `unmapped`.
 
-Where an owner has a deterministic direct ROM-to-runtime mapping, the owner includes the runtime address for the hit start.
-
-For an uncompressed main executable or uncompressed overlay, runtime mapping is derived only from the already validated direct file-backed relationship.
-
-Compressed-overlay stored bytes do not receive a fabricated runtime address.
-
-### Banner ownership clarification
-
-The current `NdsRomMap` validates only `bannerOffset`; it does not expose a validated banner size/range. The pattern milestone must therefore **not invent a banner extent** from that offset alone.
-
-A hit near or after `bannerOffset` remains described by other proven owners or `unmapped` unless a future separately designed parser adds a validated banner range.
-
-This tightens the approved design's original banner-owner idea to preserve the repository's no-guessing invariant.
-
-### Ambiguous/overlapping ownership
-
 Multiple owners are preserved rather than collapsed or guessed away.
 
 For example, one FAT-backed physical range may be both:
@@ -347,15 +340,39 @@ For example, one FAT-backed physical range may be both:
 
 The hit is still emitted once, with both owners.
 
+### Runtime mapping
+
+A runtime address is attached to an owner only when the **entire hit span** has a direct deterministic ROM-to-runtime relationship.
+
+For ARM9/ARM7 main this means the full hit lies within the validated main executable file-backed range.
+
+For an uncompressed overlay, the directly mapped initialized prefix is bounded by:
+
+```text
+min(overlay.ramSize, overlay.romSize)
+```
+
+A runtime address is attached only when the full hit lies inside that prefix. Stored bytes beyond the directly mapped initialized prefix remain valid raw-byte hits but do not receive a fabricated runtime mapping.
+
+Compressed-overlay stored bytes never receive a runtime address from this tool.
+
+### Banner ownership clarification
+
+The current `NdsRomMap` validates only `bannerOffset`; it does not expose a validated banner size/range. The pattern milestone must therefore **not invent a banner extent** from that offset alone.
+
+A hit near or after `bannerOffset` remains described by other proven owners or `unmapped` unless a future separately designed parser adds a validated banner range.
+
+This tightens the approved design's original banner-owner idea to preserve the repository's no-guessing invariant.
+
 ## Pagination and status
 
 `offset` is a **match index**, not a ROM byte offset.
 
-Recommended public/default bounds:
+Public/default bounds:
 
 ```text
 limit:          100 default / 1000 max
-offset:         0 default / < 100000
+offset:         0 default / 99999 max
 contextBytes:   0 default / 64 max each side
 maxScanBytes:   64 MiB default / 512 MiB max
 patternLength:  1..4096 encoded bytes
@@ -365,7 +382,7 @@ Component-scope selector bounds:
 
 - at most 128 overlay selectors total;
 - at most 256 NitroFS selectors total;
-- after resolution, at most 256 distinct canonical physical search domains.
+- after selector resolution/deduplication, at most 256 selected canonical component intervals.
 
 A separate internal discovered-match ceiling is 100,000.
 
@@ -389,20 +406,20 @@ interface NdsPatternSearchResult {
 
 ### Complete result
 
-`status === "complete"` means every byte in every selected search domain was examined for every candidate start that could fully contain the pattern.
+`status === "complete"` means every physical byte in the normalized selected union was examined and every candidate start whose full pattern span could fit within an eligible component/ROM interval was considered.
 
 A zero-hit result is definitive only when `status === "complete"`.
 
 ### Scan-byte truncation
 
-If `maxScanBytes` prevents examination of the complete selected scope:
+If `maxScanBytes` prevents examination of the complete normalized selected union:
 
 ```text
 status = "truncated"
 truncationReasons includes "scan-byte-limit"
 ```
 
-Only candidate starts whose entire pattern lies in the examined prefix are eligible. A partial candidate at the scan-budget boundary is not reported.
+Only candidate starts whose entire pattern lies in the physically examined prefix and satisfies component eligibility are reportable. A partial candidate at the scan-budget boundary is not reported.
 
 `offset` pagination does not act as a ROM-scan continuation cursor. If a scan is truncated by `maxScanBytes`, increasing `offset` alone cannot reveal bytes beyond the examined prefix. The caller must raise `maxScanBytes` or narrow/change the scope.
 
@@ -425,6 +442,8 @@ It does not claim that undiscovered matches exist beyond a scan-byte or match-co
 
 Therefore a truncated result may legitimately have `nextOffset: null` while still having incomplete coverage.
 
+`discoveredMatches` is the number of matches actually established before completion/truncation, not an estimate of total matches in unscanned bytes.
+
 ## Context bytes
 
 `contextBytes` defaults to `0` and is capped at 64 bytes before and after each returned hit.
@@ -434,10 +453,11 @@ Context is informational only:
 - it does not change match identity;
 - it does not affect `scannedBytes`;
 - it counts toward the repository-wide serialized output ceiling;
-- it is clipped to the component search-domain boundary for component-scoped searches;
 - it is clipped only to ROM bounds for whole-ROM searches.
 
-Component-scoped context never leaks into an adjacent component.
+For component-scoped searches, context must remain inside one selected canonical component that fully contains the hit. If more than one selected component contains the hit, choose the containing component with the greatest physical span; ties are broken by stable canonical component order (ARM9 main, ARM7 main, ARM9 overlay ID, ARM7 overlay ID, NitroFS file ID/path resolution order).
+
+This deterministic context component maximizes useful nearby bytes without allowing context to bridge adjacent components. Internal I/O chunk boundaries do not restrict context.
 
 ## Source integrity
 
@@ -467,6 +487,7 @@ Examples:
 
 - malformed signature such as `12 GG ??` -> `invalid-pattern`;
 - empty/all-wildcard signature -> `invalid-pattern`;
+- empty encoded string -> `invalid-pattern`;
 - integer outside requested width/signedness -> `invalid-pattern`;
 - non-ASCII input for ASCII search -> `invalid-pattern`;
 - structurally invalid component selector combination -> `invalid-pattern-scope`;
@@ -524,19 +545,21 @@ Responsibilities:
 ### `pattern-scope.ts`
 
 - resolve canonical NDS selectors;
-- construct bounded physical search domains with provenance;
-- validate selector limits;
-- preserve semantic boundaries while deduplicating physical overlap.
+- preserve selected component intervals/provenance;
+- normalize the physical union for one-pass scanning;
+- validate selector/domain limits;
+- provide deterministic component-containment checks and context-domain selection.
 
 ### `pattern-search.ts`
 
-- stream bytes from validated search domains;
+- stream bytes from the normalized selected physical union;
 - perform exact/masked matching;
+- enforce component-containment eligibility;
 - enforce alignment;
 - preserve overlapping matches;
 - enforce scan/match limits;
 - collect requested page/context;
-- map deterministic ownership;
+- map deterministic ownership/runtime relationships;
 - verify source integrity before return.
 
 ### `errors.ts`
@@ -577,6 +600,7 @@ Implementation must be TDD-first and cover at minimum:
 - empty signature rejection;
 - all-wildcard rejection;
 - encoded pattern-length bounds;
+- empty ASCII/UTF-16LE rejection;
 - 8/16/32-bit little-endian constants;
 - 8/16/32-bit big-endian constants;
 - signed minimum/maximum validation;
@@ -600,9 +624,11 @@ Implementation must be TDD-first and cover at minimum:
 - combined component scopes;
 - duplicate selector canonicalization;
 - overlapping physical relationship deduplication;
+- partial-overlap candidate remains valid when wholly contained by one selected component;
+- adjacent-component bridge is rejected when no selected component contains the full candidate;
 - invalid/empty component scope;
 - unknown file/overlay selectors;
-- selector/domain caps.
+- selector/component caps.
 
 ### Matcher
 
@@ -627,18 +653,22 @@ Implementation must be TDD-first and cover at minimum:
 - match-count truncation;
 - truncated result with `nextOffset: null`;
 - zero hits definitive only when complete;
-- candidate excluded when pattern is incomplete at scan-budget boundary.
+- candidate excluded when pattern is incomplete at scan-budget boundary;
+- `discoveredMatches` reports established matches only.
 
 ### Ownership/context
 
-- main executable runtime mapping;
-- uncompressed overlay runtime mapping;
+- main executable full-span runtime mapping;
+- uncompressed overlay full-span mapping only inside `min(ramSize, romSize)` initialized prefix;
+- stored overlay bytes beyond directly mapped prefix have no runtime mapping;
 - compressed overlay owner without fabricated runtime mapping;
 - NitroFS/FAT owner;
 - multiple owners on one physical hit;
 - FNT/FAT/overlay-table/header-metadata ownership where validated;
+- banner offset alone never fabricates banner ownership;
 - unmapped ownership fallback;
-- context clipping at component start/end;
+- context clipping at deterministic containing-component start/end;
+- deterministic context component selection for overlapping components;
 - context crossing ordinary internal I/O chunks;
 - whole-ROM context clipping only at ROM bounds;
 - context output-ceiling interaction.
@@ -692,13 +722,14 @@ The milestone is complete when:
 1. `nds_search_pattern` is the twelfth registered NDS static tool;
 2. all four approved pattern classes compile deterministically into one canonical matcher representation;
 3. canonical components and explicit whole-ROM scope both work within bounds;
-4. component scopes never allow cross-component matches;
+4. component-scoped matches are accepted only when the full span is contained in at least one selected canonical component;
 5. whole-ROM scope can cross structural boundaries;
 6. overlapping matches are preserved;
 7. physical duplicate hits are emitted once with all proven owners;
 8. compressed overlays are searched only as stored bytes;
-9. pagination, scan limits, match limits, and context have explicit deterministic semantics;
-10. source integrity is verified before return;
-11. no generic binary/mutation/runtime-search surface is added;
-12. unit/integration/tool/package acceptance tests pass;
-13. physical Catalina/DeSmuME acceptance remains a separate concern.
+9. runtime mappings are attached only to fully and directly mapped hit spans;
+10. pagination, scan limits, match limits, and context have explicit deterministic semantics;
+11. source integrity is verified before return;
+12. no generic binary/mutation/runtime-search surface is added;
+13. unit/integration/tool/package acceptance tests pass;
+14. physical Catalina/DeSmuME acceptance remains a separate concern.
