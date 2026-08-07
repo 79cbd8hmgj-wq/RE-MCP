@@ -84,7 +84,7 @@ test("Ghidra preparation contract owns exact program identity, manifest-backed o
   );
 });
 
-test("Ghidra evidence contract records exact entry, mode, overlay, and isolated call evidence", async () => {
+test("Ghidra evidence contract records exact entry, mode, overlay, and analyst-safe call evidence", async () => {
   const source = (await sources())["ReMcpImportEvidence.java"];
   for (const key of [
     "re-mcp.function-id",
@@ -100,16 +100,14 @@ test("Ghidra evidence contract records exact entry, mode, overlay, and isolated 
   assert.match(source, /addMemoryReference\s*\(/);
   assert.match(source, /RefType\.UNCONDITIONAL_CALL/);
   assert.match(source, /SourceType\.IMPORTED/);
-  assert.match(
-    source,
-    /Reference\.MNEMONIC/,
-    "instruction-level imported call evidence must use Ghidra's valid mnemonic reference index",
-  );
-  assert.doesNotMatch(
-    source,
-    /Reference\.OTHER/,
-    "Reference.OTHER (-2) is rejected by Ghidra addMemoryReference",
-  );
+  assert.match(source, /hasReferencesFrom\s*\(\s*from\s*,\s*0\s*\)/,
+    "RE-MCP must not overwrite an existing analyst/analyzer reference on the call-target operand");
+  assert.match(source, /SourceType\.IMPORTED\s*,\s*0\s*\)/,
+    "direct-call target evidence belongs to operand zero when that slot is unoccupied");
+  assert.doesNotMatch(source, /Reference\.OTHER/,
+    "Reference.OTHER is not a valid addMemoryReference operand index");
+  assert.doesNotMatch(source, /Reference\.MNEMONIC/,
+    "RE-MCP must not occupy the mnemonic reference slot for direct-call target evidence");
   assert.doesNotMatch(source, /setBody\s*\(/);
 });
 
