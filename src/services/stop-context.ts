@@ -1,4 +1,5 @@
 import { decodeArm9RegisterPacket, type Arm9RegisterContext } from "./arm9-registers.js";
+import type { BreakpointRecord } from "./breakpoint-registry.js";
 import { validateMemoryRead } from "./gdb-rsp.js";
 import type { GdbSession } from "./gdb-session.js";
 import type { GdbStopReply } from "./gdb-stop.js";
@@ -24,11 +25,15 @@ export interface CaptureStopContextInput {
   readonly stop: GdbStopReply;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly registers?: Arm9RegisterContext;
+  readonly breakpoint?: BreakpointRecord;
   readonly additionalRegions?: readonly StopContextRegionRequest[];
 }
 
 export interface StopContext {
+  readonly capturedAt: string;
   readonly stop: GdbStopReply;
+  readonly breakpoint?: BreakpointRecord;
   readonly registers: Arm9RegisterContext;
   readonly pcWindow: StopContextMemoryRegion;
   readonly stackWindow: StopContextMemoryRegion;
@@ -114,8 +119,9 @@ export async function captureStopContext(
   const additional = input.additionalRegions ?? [];
   validateAdditionalRegions(additional);
 
-  const registerHex = await input.session.sendStoppedCommand("g", input.timeoutMs);
-  const registers = decodeArm9RegisterPacket(registerHex);
+  const registers = input.registers ?? decodeArm9RegisterPacket(
+    await input.session.sendStoppedCommand("g", input.timeoutMs),
+  );
 
   const pc = pcWindow(registers.pc);
   const stack = stackWindow(registers.sp);
@@ -147,7 +153,9 @@ export async function captureStopContext(
   }
 
   const context: StopContext = {
+    capturedAt: new Date().toISOString(),
     stop: input.stop,
+    ...(input.breakpoint === undefined ? {} : { breakpoint: input.breakpoint }),
     registers,
     pcWindow: pcRegion,
     stackWindow: stackRegion,
