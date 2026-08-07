@@ -166,6 +166,11 @@ function looksLikeProjectLock(stderr: string): boolean {
   return /LockException|write-lock|project[^\n]*locked|already[^\n]*open/iu.test(stderr);
 }
 
+function hasReportedImportFailure(result: RunResult): boolean {
+  const output = `${result.stdout}\n${result.stderr}`;
+  return /REPORT:\s+(?:Save failed for:|Import failed\b)/iu.test(output);
+}
+
 function diagnosticTail(value: string): {
   readonly text: string;
   readonly clipped: boolean;
@@ -230,6 +235,12 @@ export async function runGhidraInvocation(
         ? "ghidra-import-failed"
         : "ghidra-analysis-failed",
       `${invocation.stage} failed with exit code ${result.exitCode ?? "null"}${result.signal === null ? "" : ` and signal ${result.signal}`}${failureDiagnostics(result)}`,
+    );
+  }
+  if (isImportStage(invocation.stage) && hasReportedImportFailure(result)) {
+    throw new NdsError(
+      "ghidra-import-failed",
+      `${invocation.stage} reported an import/save failure despite exit code 0${failureDiagnostics(result)}`,
     );
   }
 
