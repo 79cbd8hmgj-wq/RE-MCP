@@ -213,7 +213,7 @@ function dependencies(
       const request = JSON.parse(await readFile(requestPath as string, "utf8")) as Record<string, unknown>;
       await writeFile(resultPath as string, `${JSON.stringify(resultEnvelope(request, {
         found: true,
-        entry: { space: "ram", offset: 0x02000000 },
+        entry: { space: "ram", offset: 0x02000000, overlaySpace: false, defaultSpace: true },
         name: "FUN_02000000",
         namespace: "Global",
         signature: "undefined FUN_02000000(void)",
