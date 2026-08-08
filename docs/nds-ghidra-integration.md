@@ -1,31 +1,36 @@
 # Controlled NDS Ghidra Integration
 
-RE-MCP exposes two optional Ghidra-facing MCP tools:
+RE-MCP exposes seven optional Ghidra-facing MCP tools:
 
 - `nds_ghidra_bootstrap`
 - `nds_ghidra_status`
+- `nds_ghidra_inspect_function`
+- `nds_ghidra_decompile_function`
+- `nds_ghidra_search_symbols`
+- `nds_ghidra_list_references`
+- `nds_ghidra_list_calls`
 
-Both accept only a workspace-contained Nintendo DS ROM path. The caller cannot provide a Ghidra executable, project path/name, processor language, loader, script path, raw Ghidra arguments, environment variables, or output path.
+The Ghidra surface is intentionally split into one explicit mutating bootstrap operation, one non-mutating status operation, and five **strictly read-only inspection** operations. There is no generic Ghidra command/script runner.
 
 ## Requirements
 
-The rest of RE-MCP does not require Ghidra. To use these two tools, install a supported Ghidra 12.x release and configure:
+The rest of RE-MCP does not require Ghidra. To use Ghidra integration, install a supported Ghidra 12.x release and configure:
 
 ```text
 RE_MCP_GHIDRA_HOME=/absolute/path/to/ghidra_12.1.2_PUBLIC
 RE_MCP_GHIDRA_TIMEOUT_MS=900000
 ```
 
-The current reference acceptance release is Ghidra 12.1.2 and requires JDK 21. `RE_MCP_GHIDRA_TIMEOUT_MS` defaults to 900000 ms (15 minutes) and is capped at 3600000 ms (60 minutes) per headless subprocess.
+The reference acceptance release is Ghidra 12.1.2 with JDK 21. `RE_MCP_GHIDRA_TIMEOUT_MS` defaults to 900000 ms and is capped at 3600000 ms per headless subprocess.
 
-RE-MCP derives the exact `support/analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME` and validates the Ghidra version plus the required ARM language IDs before execution:
+RE-MCP derives the exact `support/analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME` and validates the required languages:
 
 - ARM9: `ARM:LE:32:v5t`
 - ARM7: `ARM:LE:32:v4t`
 
 ## Project and bridge layout
 
-Replaceable bridge inputs remain under the existing generated-analysis tree:
+Replaceable bridge inputs remain under:
 
 ```text
 analysis/generated/nds/<sha-prefix>/ghidra-bridge/
@@ -39,7 +44,15 @@ analysis/generated/nds/<sha-prefix>/ghidra-bridge/
 └── scripts/
 ```
 
-Persistent analyst state is separate and keyed by the **full** source ROM SHA-256:
+Read-only inspection transport uses a separate generated directory:
+
+```text
+analysis/generated/nds/<sha-prefix>/ghidra-inspection/
+```
+
+Request/result files in that directory are server-selected, versioned, validated, and removed after each inspection on success or best-effort on failure.
+
+Persistent analyst state is keyed by the **full** source ROM SHA-256:
 
 ```text
 analysis/ghidra/nds/<full-sha256>/
@@ -50,91 +63,201 @@ analysis/ghidra/nds/<full-sha256>/
     └── latest-failure.json
 ```
 
-This separation is intentional. The generated static bundle may be replaced transactionally; the persistent Ghidra project must not be erased with it.
+Generated bridge/inspection artifacts can be replaced without erasing the persistent Ghidra project.
 
 ## Program model
 
-Each SHA-scoped project contains two RE-MCP-owned programs:
+Each SHA-scoped project contains:
 
 - `RE-MCP_ARM9`
 - `RE-MCP_ARM7`
 
-ARM9 and ARM7 main executables are imported at their canonical runtime bases using their exact language IDs.
-
-Every **uncompressed** NDS overlay is represented as a true Ghidra overlay address space inside the corresponding processor program. Deterministic names include processor and overlay ID, for example:
+ARM9 and ARM7 main executables are imported at canonical runtime bases. Every **uncompressed** overlay is represented as a true Ghidra overlay address space, such as:
 
 ```text
 RE_MCP_ARM9_OVL_7
 RE_MCP_ARM7_OVL_3
 ```
 
-Two overlays may therefore retain the same physical runtime address without being flattened into one false identity.
+Overlays can therefore retain identical numeric runtime addresses without being flattened into one identity.
 
-Compressed overlays are recorded in the bridge as `not-imported-compressed` and are never decoded or imported as executable runtime bytes. Overlay decompression is a separate future milestone.
+Compressed overlays remain `not-imported-compressed`; their stored compressed bytes are never treated as executable runtime code. BSS may exist only as uninitialized runtime-only memory and never receives fabricated ROM backing.
 
-Canonical BSS may be represented only as uninitialized runtime-only memory. It never receives fabricated ROM backing.
-
-## Evidence and Ghidra authority
+## Evidence and authority
 
 RE-MCP remains authoritative for:
 
-- canonical source ROM SHA-256;
+- source ROM SHA-256;
 - processor/component/overlay ownership;
 - exact runtime/file-backed mappings;
 - ARM/Thumb mode when proven;
-- function **entry** proof from NDS program entry or exact deterministic direct call;
-- exact deterministic direct-call evidence.
+- function-entry proof from program entry or exact deterministic direct call;
+- exact RE-MCP direct-call evidence.
 
-RE-MCP does **not** claim a function end or exclusive function body. A proven function entry is imported as an entry seed plus RE-MCP-owned metadata. If Ghidra later creates or expands a function body, that body is Ghidra-derived rather than RE-MCP proof.
+RE-MCP does **not** prove a function end or exclusive function body. Ghidra may infer function bodies, symbols, references, strings, types, signatures, call relationships, and decompiler output, but those remain non-authoritative.
 
-Normal Ghidra auto-analysis runs after RE-MCP imports its exact evidence. Ghidra may infer additional functions, references, strings, switch tables, data types, signatures, and decompiler output. Those results remain **non-authoritative** to RE-MCP in this milestone and are not silently promoted into the canonical evidence model.
+Inspection responses preserve this boundary explicitly:
 
-## Analyst-work preservation
+- `canonical` — facts from the native RE-MCP NDS model;
+- `reMcpEvidence` — RE-MCP-owned metadata imported into Ghidra;
+- `ghidraDerived` — Ghidra/analyst function, symbol, reference, call, or decompiler results.
 
-Rerunning `nds_ghidra_bootstrap` for the same ROM SHA reconciles only RE-MCP-owned state. It does not intentionally delete or rename analyst-created labels, comments, bookmarks, types, namespaces, function names/signatures, or Ghidra-only discoveries.
+Inspection never silently promotes `ghidraDerived` information into canonical RE-MCP evidence.
 
-RE-MCP ownership is tracked through dedicated Program Information keys and address property maps rather than symbol names. If existing project state conflicts with that ownership contract in a way that cannot be reconciled safely, bootstrap returns `project-state-mismatch` instead of overwriting the project.
-
-A partial run is also preserved. For example, if ARM9 succeeds and ARM7 fails, a retry processes the already-owned ARM9 program and imports ARM7 rather than assuming project-directory existence proves both programs are present.
-
-## Tool behavior
+## Bootstrap and status
 
 ### `nds_ghidra_bootstrap`
 
-The tool:
+Bootstrap explicitly creates or safely reconciles the full-SHA project. It validates the ROM and bridge, validates the configured Ghidra installation, imports/processes ARM9 and ARM7, establishes overlays and RE-MCP-owned evidence, runs normal auto-analysis, validates processor results, rechecks source ROM identity, and only then updates persistent success/failure state.
 
-1. validates the canonical ROM and full SHA-256;
-2. regenerates/validates the deterministic bridge;
-3. validates the configured Ghidra installation;
-4. imports or processes ARM9 and ARM7 through the fixed `analyzeHeadless` executable;
-5. runs RE-MCP-owned pre/post scripts around normal auto-analysis;
-6. validates each generated processor result;
-7. rechecks source ROM identity;
-8. writes persistent success/failure state only after validation.
-
-Subprocess execution uses argument arrays with `shell: false`, a minimal environment, timeout enforcement, and bounded stdout/stderr. Output overflow terminates the Ghidra subprocess rather than allowing unbounded capture.
+Subprocesses use argument arrays with `shell: false`, bounded environment, timeout enforcement, and bounded stdout/stderr.
 
 ### `nds_ghidra_status`
 
-`nds_ghidra_status` is non-mutating. It does **not** launch Ghidra, regenerate the bridge, or require `RE_MCP_GHIDRA_HOME` to be usable. It reads the canonical ROM identity plus deterministic bridge/project state and reports the latest known status.
+Status is non-mutating. It does not launch Ghidra or regenerate the bridge and does not require `RE_MCP_GHIDRA_HOME` just to read existing deterministic state.
+
+## Strict inspection readiness
+
+The five inspection tools **never bootstrap or reconcile automatically**.
+
+Before inspection launches Ghidra, RE-MCP requires:
+
+1. the current ROM SHA-256 to match the canonical map;
+2. both `.gpr` and `.rep` SHA-scoped project markers;
+3. matching complete `latest-run.json` and `latest-success.json` state;
+4. both ARM9 and ARM7 completed processors;
+5. no `latest-failure.json`;
+6. the generated bridge manifest hash to match the trusted success state;
+7. a valid configured Ghidra installation;
+8. the configured Ghidra version to exactly match the trusted project version.
+
+Failure returns `ghidra-project-not-current`, `ghidra-version-mismatch`, or another specific structured error. The corrective action may tell the caller to run `nds_ghidra_bootstrap`; inspection never does that itself.
+
+## Read-only inspection execution
+
+Every inspection invocation processes exactly one canonical ARM9 or ARM7 program using:
+
+```text
+-process <RE-MCP_ARM9|RE-MCP_ARM7>
+-readOnly
+-noanalysis
+-scriptPath <RE-MCP-owned resources>
+-postScript ReMcpInspectProgram.java <request.json> <result.json>
+```
+
+Inspection therefore:
+
+- never uses `-import`;
+- never runs the bootstrap mutation scripts;
+- never runs normal auto-analysis;
+- never saves program/project changes;
+- exposes no caller-selected Ghidra program, project path, address-space name, script, output path, CLI argument list, or environment map.
+
+The Java inspection resource itself is additionally guarded by source-contract tests that reject known mutator, process, and network APIs.
+
+## Canonical selectors and overlay ambiguity
+
+Address-oriented inspection tools accept only:
+
+```text
+rom
+processor: arm9 | arm7
+runtimeAddress: uint32
+overlayId?: uint32
+```
+
+RE-MCP resolves the address through the canonical NDS model before Ghidra is invoked.
+
+- Main code uses the actual Ghidra program default address space; its name is not caller-controlled or hard-coded.
+- Uncompressed overlays use internally derived `RE_MCP_ARM*_OVL_<id>` spaces.
+- Overlapping static overlay ownership without `overlayId` fails closed.
+- An explicit `overlayId` must actually own the requested address.
+- Compressed overlays return `ghidra-address-not-inspectable` because they are intentionally absent from the Ghidra project.
+- BSS may be used for address-level reference inspection when its overlay exists, but function/decompiler/call inspection requires exact file-backed executable code.
+
+## Inspection tools
+
+### `nds_ghidra_inspect_function`
+
+Returns bounded Ghidra function metadata for the function containing one canonical address, including entry, name, namespace, signature, calling convention, flags, up to 256 discontiguous body ranges, entry-symbol metadata, and separate RE-MCP-owned entry evidence.
+
+The Ghidra body remains `ghidraDerived` and is not function-boundary proof.
+
+### `nds_ghidra_decompile_function`
+
+Runs the Ghidra decompiler for exactly one existing function with a fixed 30-second per-function bound. C-like output defaults to 20000 characters and caps at 100000 characters before the global MCP output bound. Truncation is explicit.
+
+### `nds_ghidra_search_symbols`
+
+Searches one processor program with only:
+
+- `exact`
+- `prefix` (default)
+- `contains`
+
+No regex or arbitrary expression language is accepted. Query length is 1–128 Unicode characters. Results default to 100 and cap at 1000 with offset capped at 100000.
+
+### `nds_ghidra_list_references`
+
+Returns bounded Ghidra references `from`, `to`, or `both` for one canonical address. Reference type/source/operand information remains Ghidra-derived unless independent RE-MCP evidence exists.
+
+### `nds_ghidra_list_calls`
+
+Returns bounded **depth-one only** callers, callees, or both for one Ghidra function. It does not expose arbitrary recursive graph traversal. Each call site may also report the independent RE-MCP call-evidence property present at that source address.
+
+## Errors specific to inspection
+
+Inspection adds:
+
+```text
+ghidra-project-not-current
+ghidra-version-mismatch
+ghidra-address-not-inspectable
+ghidra-inspection-failed
+ghidra-inspection-timeout
+ghidra-inspection-result-invalid
+```
+
+Existing installation, project-lock, output-limit, ROM, and project-state categories remain in use where applicable.
+
+## Output and safety bounds
+
+- one processor program per inspection invocation;
+- function body ranges: max 256;
+- list page: default 100, max 1000;
+- list offset: max 100000;
+- symbol query: 1–128 Unicode characters;
+- decompiler output: default 20000, max 100000 characters;
+- decompiler function timeout: 30 seconds;
+- subprocess timeout: existing bounded `RE_MCP_GHIDRA_TIMEOUT_MS`;
+- subprocess stdout/stderr and final MCP response: existing `RE_MCP_MAX_OUTPUT_BYTES`.
+
+The source ROM SHA-256 is checked again before an inspection result is returned. Temporary request/result transport is cleaned on every exit path.
+
+## Analyst-work preservation
+
+Bootstrap reconciliation modifies only RE-MCP-owned state and preserves analyst-created labels, comments, bookmarks, types, namespaces, names/signatures, and Ghidra-only discoveries whenever safe.
+
+Inspection is stricter: it runs Ghidra with `-readOnly -noanalysis`. Real-Ghidra acceptance must prove that inspection returns useful information while persistent project bytes and analyst markers remain unchanged.
 
 ## Relationship to dynamic debugging
 
-Ghidra integration is a static/external-analysis capability and is independent of the DeSmuME ARM9 GDB acceptance gate. A successful Ghidra bootstrap does not constitute physical Catalina/DeSmuME debugger acceptance, and this milestone does not add or modify native debugger behavior.
+Ghidra integration is independent of the DeSmuME ARM9 GDB acceptance gate. Successful bootstrap or inspection does not constitute physical Catalina/DeSmuME debugger acceptance and adds no debugger/watchpoint/runtime-tracing behavior.
 
 ## Security boundary
 
 The Ghidra integration does not expose:
 
-- an arbitrary shell command;
-- an arbitrary Ghidra command or script runner;
+- arbitrary shell execution;
+- arbitrary Ghidra commands or scripts;
 - caller-selected `analyzeHeadless` paths;
-- caller-selected project paths or names;
-- arbitrary loaders or processor IDs;
-- arbitrary pre/post scripts;
+- caller-selected project/program/address-space names;
+- arbitrary loaders/languages;
 - raw Ghidra CLI arguments;
 - caller-defined environment variables;
 - arbitrary binary imports;
+- automatic bootstrap from inspection;
+- auto-analysis during inspection;
 - Ghidra-to-RE-MCP evidence promotion;
-- compressed-overlay execution/decompression;
+- compressed-overlay decompression;
 - ROM mutation.
