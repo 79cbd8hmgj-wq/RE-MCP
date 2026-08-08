@@ -31,6 +31,15 @@ test("Ghidra inspection resource resolves main through the real default space an
   assert.match(text, /addressSpace/);
 });
 
+test("Ghidra inspection resource emits explicit default and overlay address-space identity", async () => {
+  const text = await source();
+  assert.match(text, /private JsonObject addressObject\s*\(Address address\)/);
+  assert.match(text, /AddressSpace space\s*=\s*address\.getAddressSpace\(\)/);
+  assert.match(text, /AddressSpace defaultSpace\s*=\s*currentProgram\.getAddressFactory\(\)\.getDefaultAddressSpace\(\)/);
+  assert.match(text, /addProperty\("overlaySpace",\s*space\.isOverlaySpace\(\)\)/);
+  assert.match(text, /addProperty\("defaultSpace",\s*space\.equals\(defaultSpace\)\)/);
+});
+
 test("Ghidra inspection resource reads function and RE-MCP metadata without claiming function bodies as canonical", async () => {
   const text = await source();
   assert.match(text, /FunctionManager/);
