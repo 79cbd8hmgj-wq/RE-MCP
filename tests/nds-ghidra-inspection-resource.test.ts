@@ -58,6 +58,27 @@ test("Ghidra inspection resource decompiles exactly one existing function with a
   assert.match(text, /100000/);
 });
 
+test("Ghidra inspection resource supports bounded symbol reference and depth-one call inspection", async () => {
+  const text = await source();
+  assert.match(text, /SymbolTable/);
+  assert.match(text, /getAllSymbols\s*\(\s*true\s*\)/);
+  assert.match(text, /ReferenceManager/);
+  assert.match(text, /getReferencesFrom\s*\(/);
+  assert.match(text, /getReferencesTo\s*\(/);
+  assert.match(text, /isCall\s*\(\)/);
+  assert.match(text, /search-symbols/);
+  assert.match(text, /list-references/);
+  assert.match(text, /list-calls/);
+  assert.match(text, /re-mcp\.call-evidence/);
+  assert.match(text, /exact/);
+  assert.match(text, /prefix/);
+  assert.match(text, /contains/);
+  assert.match(text, /callers/);
+  assert.match(text, /callees/);
+  assert.match(text, /1000/);
+  assert.match(text, /100000/);
+});
+
 test("Ghidra inspection resource writes only its generated result and contains no project mutation surface", async () => {
   const text = await source();
   assert.match(text, /Files\.writeString/);
