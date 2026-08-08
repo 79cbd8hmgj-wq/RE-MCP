@@ -6,9 +6,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -19,13 +24,19 @@ import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.options.Options;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressRangeIterator;
 import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionManager;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.ReferenceIterator;
+import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Symbol;
+import ghidra.program.model.symbol.SymbolIterator;
+import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.util.PropertyMapManager;
 import ghidra.program.model.util.StringPropertyMap;
 
@@ -34,6 +45,9 @@ public class ReMcpInspectProgram extends GhidraScript {
     private static final int FORMAT_VERSION = 1;
     private static final int MAX_BODY_RANGES = 256;
     private static final int MAX_DECOMPILE_CHARACTERS = 100000;
+    private static final int MAX_PAGE_LIMIT = 1000;
+    private static final int MAX_PAGE_OFFSET = 100000;
+    private static final int MAX_SYMBOL_QUERY_CHARACTERS = 128;
 
     private static final String KEY_ROM_SHA = "re-mcp.rom-sha256";
     private static final String KEY_PROCESSOR = "re-mcp.processor";
@@ -42,6 +56,7 @@ public class ReMcpInspectProgram extends GhidraScript {
     private static final String MAP_FUNCTION_PROOF = "re-mcp.function-proof";
     private static final String MAP_FUNCTION_MODE = "re-mcp.function-mode";
     private static final String MAP_OVERLAY_ID = "re-mcp.overlay-id";
+    private static final String MAP_CALL_EVIDENCE = "re-mcp.call-evidence";
 
     private final Gson gson = new GsonBuilder().disableHtmlEscaping().create();
 
@@ -64,6 +79,12 @@ public class ReMcpInspectProgram extends GhidraScript {
             payload = inspectFunction(request);
         } else if ("decompile-function".equals(operation)) {
             payload = decompileFunction(request);
+        } else if ("search-symbols".equals(operation)) {
+            payload = searchSymbols(request);
+        } else if ("list-references".equals(operation)) {
+            payload = listReferences(request);
+        } else if ("list-calls".equals(operation)) {
+            payload = listCalls(request);
         } else {
             throw new IllegalArgumentException("unsupported Ghidra inspection operation: " + operation);
         }
@@ -185,7 +206,7 @@ public class ReMcpInspectProgram extends GhidraScript {
         payload.addProperty("external", function.isExternal());
         payload.addProperty("varArgs", function.hasVarArgs());
 
-        var rangesJson = new com.google.gson.JsonArray();
+        JsonArray rangesJson = new JsonArray();
         AddressRangeIterator ranges = function.getBody().getAddressRanges();
         int count = 0;
         boolean truncated = false;
@@ -262,6 +283,284 @@ public class ReMcpInspectProgram extends GhidraScript {
         } finally {
             decompiler.dispose();
         }
+    }
+
+    private JsonObject searchSymbols(JsonObject request) {
+        JsonObject parameters = requireObject(request, "parameters");
+        String query = requireString(parameters, "query");
+        int queryCharacters = query.codePointCount(0, query.length());
+        if (queryCharacters < 1 || queryCharacters > MAX_SYMBOL_QUERY_CHARACTERS) {
+            throw new IllegalArgumentException("query must contain between 1 and 128 Unicode characters");
+        }
+        String match = requireString(parameters, "match");
+        if (!match.equals("exact") && !match.equals("prefix") && !match.equals("contains")) {
+            throw new IllegalArgumentException("match must be exact, prefix, or contains");
+        }
+        int limit = pageLimit(parameters);
+        int offset = pageOffset(parameters);
+
+        List<JsonObject> matches = new ArrayList<>();
+        SymbolTable symbolTable = currentProgram.getSymbolTable();
+        SymbolIterator symbols = symbolTable.getAllSymbols(true);
+        while (symbols.hasNext()) {
+            Symbol symbol = symbols.next();
+            String name = symbol.getName();
+            if (!symbolMatches(name, query, match)) {
+                continue;
+            }
+            JsonObject record = new JsonObject();
+            record.addProperty("name", name);
+            record.addProperty(
+                "namespace",
+                symbol.getParentNamespace() == null ? "" : symbol.getParentNamespace().getName());
+            record.addProperty("type", symbol.getSymbolType().toString());
+            record.add("address", addressObject(symbol.getAddress()));
+            record.addProperty("primary", symbol.isPrimary());
+            record.addProperty("dynamic", symbol.isDynamic());
+            record.addProperty("source", symbol.getSource().toString());
+            record.add("reMcpEvidence", reMcpEvidence(symbol.getAddress()));
+            matches.add(record);
+        }
+
+        matches.sort(this::compareSymbolRecords);
+        return pagedResult(matches, offset, limit, "results");
+    }
+
+    private boolean symbolMatches(String name, String query, String match) {
+        if (match.equals("exact")) {
+            return name.equals(query);
+        }
+        if (match.equals("prefix")) {
+            return name.startsWith(query);
+        }
+        return name.contains(query);
+    }
+
+    private int compareSymbolRecords(JsonObject left, JsonObject right) {
+        int result = compareAddresses(requireObject(left, "address"), requireObject(right, "address"));
+        if (result != 0) return result;
+        result = stringField(left, "namespace").compareTo(stringField(right, "namespace"));
+        if (result != 0) return result;
+        result = stringField(left, "name").compareTo(stringField(right, "name"));
+        if (result != 0) return result;
+        return stringField(left, "type").compareTo(stringField(right, "type"));
+    }
+
+    private JsonObject listReferences(JsonObject request) {
+        Address selected = selectedAddress(request);
+        JsonObject parameters = requireObject(request, "parameters");
+        String direction = requireString(parameters, "direction");
+        if (!direction.equals("from") && !direction.equals("to") && !direction.equals("both")) {
+            throw new IllegalArgumentException("direction must be from, to, or both");
+        }
+        int limit = pageLimit(parameters);
+        int offset = pageOffset(parameters);
+        ReferenceManager manager = currentProgram.getReferenceManager();
+        List<JsonObject> records = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+
+        if (direction.equals("from") || direction.equals("both")) {
+            for (Reference reference : manager.getReferencesFrom(selected)) {
+                addReferenceRecord(records, seen, reference);
+            }
+        }
+        if (direction.equals("to") || direction.equals("both")) {
+            ReferenceIterator incoming = manager.getReferencesTo(selected);
+            while (incoming.hasNext()) {
+                addReferenceRecord(records, seen, incoming.next());
+            }
+        }
+
+        records.sort(this::compareReferenceRecords);
+        return pagedResult(records, offset, limit, "results");
+    }
+
+    private void addReferenceRecord(
+            List<JsonObject> records,
+            Set<String> seen,
+            Reference reference) {
+        String key = referenceKey(reference);
+        if (!seen.add(key)) {
+            return;
+        }
+        records.add(referenceObject(reference));
+    }
+
+    private JsonObject referenceObject(Reference reference) {
+        JsonObject record = new JsonObject();
+        record.add("from", addressObject(reference.getFromAddress()));
+        record.add("to", addressObject(reference.getToAddress()));
+        record.addProperty("type", reference.getReferenceType().toString());
+        record.addProperty("source", reference.getSource().toString());
+        record.addProperty("operandIndex", reference.getOperandIndex());
+        record.addProperty("primary", reference.isPrimary());
+        return record;
+    }
+
+    private String referenceKey(Reference reference) {
+        return addressKey(reference.getFromAddress())
+            + "|" + addressKey(reference.getToAddress())
+            + "|" + reference.getReferenceType()
+            + "|" + reference.getSource()
+            + "|" + reference.getOperandIndex()
+            + "|" + reference.isPrimary();
+    }
+
+    private int compareReferenceRecords(JsonObject left, JsonObject right) {
+        int result = compareAddresses(requireObject(left, "from"), requireObject(right, "from"));
+        if (result != 0) return result;
+        result = compareAddresses(requireObject(left, "to"), requireObject(right, "to"));
+        if (result != 0) return result;
+        result = stringField(left, "type").compareTo(stringField(right, "type"));
+        if (result != 0) return result;
+        result = stringField(left, "source").compareTo(stringField(right, "source"));
+        if (result != 0) return result;
+        return Integer.compare(intField(left, "operandIndex"), intField(right, "operandIndex"));
+    }
+
+    private JsonObject listCalls(JsonObject request) {
+        Address selected = selectedAddress(request);
+        FunctionManager functions = currentProgram.getFunctionManager();
+        Function selectedFunction = functions.getFunctionContaining(selected);
+        JsonObject parameters = requireObject(request, "parameters");
+        String direction = requireString(parameters, "direction");
+        if (!direction.equals("callers") && !direction.equals("callees") && !direction.equals("both")) {
+            throw new IllegalArgumentException("direction must be callers, callees, or both");
+        }
+        int limit = pageLimit(parameters);
+        int offset = pageOffset(parameters);
+
+        if (selectedFunction == null) {
+            JsonObject missing = pagedResult(new ArrayList<>(), offset, limit, "edges");
+            missing.addProperty("found", false);
+            return missing;
+        }
+
+        ReferenceManager references = currentProgram.getReferenceManager();
+        List<JsonObject> edges = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+
+        if (direction.equals("callees") || direction.equals("both")) {
+            AddressIterator sources = references.getReferenceSourceIterator(selectedFunction.getBody(), true);
+            while (sources.hasNext()) {
+                Address callSite = sources.next();
+                for (Reference reference : references.getReferencesFrom(callSite)) {
+                    if (reference.getReferenceType().isCall()) {
+                        addCallEdge(edges, seen, reference, functions);
+                    }
+                }
+            }
+        }
+
+        if (direction.equals("callers") || direction.equals("both")) {
+            ReferenceIterator incoming = references.getReferencesTo(selectedFunction.getEntryPoint());
+            while (incoming.hasNext()) {
+                Reference reference = incoming.next();
+                if (reference.getReferenceType().isCall()) {
+                    addCallEdge(edges, seen, reference, functions);
+                }
+            }
+        }
+
+        edges.sort(this::compareCallEdges);
+        JsonObject payload = pagedResult(edges, offset, limit, "edges");
+        payload.addProperty("found", true);
+        payload.add("function", functionIdentity(selectedFunction));
+        return payload;
+    }
+
+    private void addCallEdge(
+            List<JsonObject> edges,
+            Set<String> seen,
+            Reference reference,
+            FunctionManager functions) {
+        String key = referenceKey(reference);
+        if (!seen.add(key)) {
+            return;
+        }
+
+        Function sourceFunction = functions.getFunctionContaining(reference.getFromAddress());
+        Function targetFunction = functions.getFunctionAt(reference.getToAddress());
+        if (targetFunction == null) {
+            targetFunction = functions.getFunctionContaining(reference.getToAddress());
+        }
+
+        JsonObject edge = referenceObject(reference);
+        edge.add("callSite", addressObject(reference.getFromAddress()));
+        edge.add("sourceFunction", sourceFunction == null ? JsonNull.INSTANCE : functionIdentity(sourceFunction));
+        edge.add("targetFunction", targetFunction == null ? JsonNull.INSTANCE : functionIdentity(targetFunction));
+        addNullable(
+            edge,
+            "reMcpDirectCallEvidence",
+            stringProperty(currentProgram.getUsrPropertyManager(), MAP_CALL_EVIDENCE, reference.getFromAddress()));
+        edges.add(edge);
+    }
+
+    private JsonObject functionIdentity(Function function) {
+        JsonObject result = new JsonObject();
+        result.add("entry", addressObject(function.getEntryPoint()));
+        result.addProperty("name", function.getName());
+        result.addProperty(
+            "namespace",
+            function.getParentNamespace() == null ? "" : function.getParentNamespace().getName());
+        return result;
+    }
+
+    private int compareCallEdges(JsonObject left, JsonObject right) {
+        return compareReferenceRecords(left, right);
+    }
+
+    private JsonObject pagedResult(
+            List<JsonObject> records,
+            int offset,
+            int limit,
+            String arrayName) {
+        int total = records.size();
+        int start = Math.min(offset, total);
+        int end = Math.min(total, start + limit);
+        JsonArray returned = new JsonArray();
+        for (int index = start; index < end; index += 1) {
+            returned.add(records.get(index));
+        }
+
+        JsonObject payload = new JsonObject();
+        payload.addProperty("totalMatches", total);
+        payload.addProperty("returned", end - start);
+        payload.addProperty("offset", offset);
+        payload.addProperty("limit", limit);
+        payload.addProperty("truncated", end < total);
+        payload.add(arrayName, returned);
+        return payload;
+    }
+
+    private int pageLimit(JsonObject parameters) {
+        return requireBoundedInt(parameters, "limit", 1, MAX_PAGE_LIMIT);
+    }
+
+    private int pageOffset(JsonObject parameters) {
+        return requireBoundedInt(parameters, "offset", 0, MAX_PAGE_OFFSET);
+    }
+
+    private int compareAddresses(JsonObject left, JsonObject right) {
+        int result = stringField(left, "space").compareTo(stringField(right, "space"));
+        if (result != 0) return result;
+        return Long.compareUnsigned(longField(left, "offset"), longField(right, "offset"));
+    }
+
+    private String stringField(JsonObject object, String key) {
+        return object.get(key).getAsString();
+    }
+
+    private int intField(JsonObject object, String key) {
+        return object.get(key).getAsInt();
+    }
+
+    private long longField(JsonObject object, String key) {
+        return object.get(key).getAsLong();
+    }
+
+    private String addressKey(Address address) {
+        return address.getAddressSpace().getName() + ":" + Long.toUnsignedString(address.getOffset());
     }
 
     private JsonObject reMcpEvidence(Address address) {
