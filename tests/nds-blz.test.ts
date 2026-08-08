@@ -8,9 +8,14 @@ import {
   DEFAULT_NDS_BLZ_LIMITS,
   decodeNdsBlz,
 } from "../src/services/nds/blz.js";
-import { NdsError, type NdsServiceErrorCategory } from "../src/services/nds/errors.js";
+import { NdsError } from "../src/services/nds/errors.js";
 
 const FIXTURE_ROOT = fileURLToPath(new URL("./fixtures/nds-blz/", import.meta.url));
+
+type ExpectedBlzCategory =
+  | "malformed-blz"
+  | "blz-output-size-mismatch"
+  | "blz-output-limit";
 
 async function fixture(name: string): Promise<Buffer> {
   return readFile(path.join(FIXTURE_ROOT, name));
@@ -18,7 +23,7 @@ async function fixture(name: string): Promise<Buffer> {
 
 function assertCategory(
   operation: () => unknown,
-  expected: NdsServiceErrorCategory,
+  expected: ExpectedBlzCategory,
 ): void {
   assert.throws(operation, (error: unknown) => {
     assert.ok(error instanceof NdsError);
