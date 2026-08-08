@@ -579,9 +579,13 @@ public class ReMcpInspectProgram extends GhidraScript {
     }
 
     private JsonObject addressObject(Address address) {
+        AddressSpace space = address.getAddressSpace();
+        AddressSpace defaultSpace = currentProgram.getAddressFactory().getDefaultAddressSpace();
         JsonObject result = new JsonObject();
-        result.addProperty("space", address.getAddressSpace().getName());
+        result.addProperty("space", space.getName());
         result.addProperty("offset", address.getOffset());
+        result.addProperty("overlaySpace", space.isOverlaySpace());
+        result.addProperty("defaultSpace", space.equals(defaultSpace));
         return result;
     }
 
