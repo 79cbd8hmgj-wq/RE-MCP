@@ -54,17 +54,17 @@ export type NdsGhidraInspectionErrorCategory =
   | "ghidra-inspection-timeout"
   | "ghidra-inspection-result-invalid";
 
-/** Error categories handled by the pre-Ghidra NDS tool surfaces. */
+/** Error categories handled by the current pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory
-  | NdsBlzErrorCategory;
+  | NdsFunctionErrorCategory;
 
-/** Complete service-layer category set, including optional Ghidra integration. */
+/** Complete service-layer category set, including BLZ and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
+  | NdsBlzErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
 
