@@ -38,6 +38,7 @@ jobs:
             cd "$root"
             npm install --omit=dev --ignore-scripts
             node scripts/check-install.mjs .
+            node scripts/check-ghidra-inspection-install.mjs .
           )
           tar -C /tmp -czf "/tmp/re-mcp-${version}.tar.gz" "re-mcp-${version}"
           sha256sum "/tmp/re-mcp-${version}.tar.gz" > "/tmp/re-mcp-${version}.tar.gz.sha256"

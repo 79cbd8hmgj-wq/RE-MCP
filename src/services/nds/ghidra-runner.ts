@@ -8,6 +8,7 @@ import { runProcess, type RunResult } from "../process-runner.js";
 import { NdsError } from "./errors.js";
 import type { GeneratedGhidraBridge } from "./ghidra-bridge.js";
 import type { ValidatedGhidraInstallation } from "./ghidra-installation.js";
+import { ghidraInspectionRoot } from "./ghidra-inspection-model.js";
 import {
   ghidraProgramName,
   ghidraProjectName,
@@ -29,11 +30,28 @@ export interface GhidraInvocationInput {
   readonly workspaceRoot: string;
 }
 
+export interface GhidraInspectionInvocationInput {
+  readonly installation: ValidatedGhidraInstallation;
+  readonly map: NdsRomMap;
+  readonly processor: NdsProcessor;
+  readonly workspaceRoot: string;
+  readonly requestPath: string;
+  readonly resultPath: string;
+}
+
+export type GhidraInvocationStage =
+  | "arm9-import"
+  | "arm9-process"
+  | "arm7-import"
+  | "arm7-process"
+  | "arm9-inspect"
+  | "arm7-inspect";
+
 export interface GhidraInvocation {
   readonly executable: string;
   readonly args: readonly string[];
   readonly cwd: string;
-  readonly stage: "arm9-import" | "arm9-process" | "arm7-import" | "arm7-process";
+  readonly stage: GhidraInvocationStage;
 }
 
 function candidateScriptPaths(): readonly string[] {
@@ -106,11 +124,15 @@ function commonScriptArgs(input: GhidraInvocationInput): string[] {
   ];
 }
 
-function projectPrefix(input: GhidraInvocationInput): string[] {
+function projectPrefixForMap(map: NdsRomMap, workspaceRoot: string): string[] {
   return [
-    ghidraProjectRoot(input.map, input.workspaceRoot),
-    ghidraProjectName(input.map),
+    ghidraProjectRoot(map, workspaceRoot),
+    ghidraProjectName(map),
   ];
+}
+
+function projectPrefix(input: GhidraInvocationInput): string[] {
+  return projectPrefixForMap(input.map, input.workspaceRoot);
 }
 
 function addressHex(value: number): string {
@@ -158,8 +180,62 @@ export function buildGhidraProcessInvocation(
   };
 }
 
-function isImportStage(stage: GhidraInvocation["stage"]): boolean {
+function validatedInspectionTransportPath(
+  input: GhidraInspectionInvocationInput,
+  candidatePath: string,
+): string {
+  const root = ghidraInspectionRoot(input.map, input.workspaceRoot);
+  const resolvedCandidate = path.resolve(candidatePath);
+  let resolvedInside: string;
+  try {
+    resolvedInside = resolveInside(root, path.relative(root, resolvedCandidate));
+  } catch {
+    throw new NdsError(
+      "ghidra-inspection-failed",
+      "Ghidra inspection request/result path is outside the deterministic generated inspection root",
+    );
+  }
+  if (resolvedInside !== resolvedCandidate) {
+    throw new NdsError(
+      "ghidra-inspection-failed",
+      "Ghidra inspection request/result path is outside the deterministic generated inspection root",
+    );
+  }
+  return resolvedInside;
+}
+
+export function buildGhidraInspectionInvocation(
+  input: GhidraInspectionInvocationInput,
+): GhidraInvocation {
+  const requestPath = validatedInspectionTransportPath(input, input.requestPath);
+  const resultPath = validatedInspectionTransportPath(input, input.resultPath);
+  const inspectionRoot = ghidraInspectionRoot(input.map, input.workspaceRoot);
+  return {
+    executable: input.installation.analyzeHeadless,
+    args: [
+      ...projectPrefixForMap(input.map, input.workspaceRoot),
+      "-process",
+      ghidraProgramName(input.processor),
+      "-readOnly",
+      "-noanalysis",
+      "-scriptPath",
+      resolveReMcpGhidraScriptPath(),
+      "-postScript",
+      "ReMcpInspectProgram.java",
+      requestPath,
+      resultPath,
+    ],
+    cwd: path.dirname(inspectionRoot),
+    stage: input.processor === "arm9" ? "arm9-inspect" : "arm7-inspect",
+  };
+}
+
+function isImportStage(stage: GhidraInvocationStage): boolean {
   return stage.endsWith("-import");
+}
+
+function isInspectionStage(stage: GhidraInvocationStage): boolean {
+  return stage.endsWith("-inspect");
 }
 
 function looksLikeProjectLock(stderr: string): boolean {
@@ -205,6 +281,12 @@ function failureDiagnostics(result: RunResult): string {
   return sections.length === 0 ? "" : `\n${sections.join("\n")}`;
 }
 
+function executionFailureCategory(stage: GhidraInvocationStage) {
+  if (isInspectionStage(stage)) return "ghidra-inspection-failed" as const;
+  if (isImportStage(stage)) return "ghidra-import-failed" as const;
+  return "ghidra-analysis-failed" as const;
+}
+
 export async function runGhidraInvocation(
   invocation: GhidraInvocation,
   config: ServerConfig,
@@ -220,7 +302,9 @@ export async function runGhidraInvocation(
 
   if (result.timedOut) {
     throw new NdsError(
-      "ghidra-analysis-timeout",
+      isInspectionStage(invocation.stage)
+        ? "ghidra-inspection-timeout"
+        : "ghidra-analysis-timeout",
       `${invocation.stage} exceeded the configured Ghidra timeout`,
     );
   }
@@ -234,21 +318,17 @@ export async function runGhidraInvocation(
     if (looksLikeProjectLock(result.stderr)) {
       throw new NdsError(
         "ghidra-project-locked",
-        `${invocation.stage} could not obtain the Ghidra project write lock${failureDiagnostics(result)}`,
+        `${invocation.stage} could not obtain the Ghidra project lock${failureDiagnostics(result)}`,
       );
     }
     throw new NdsError(
-      isImportStage(invocation.stage)
-        ? "ghidra-import-failed"
-        : "ghidra-analysis-failed",
+      executionFailureCategory(invocation.stage),
       `${invocation.stage} failed with exit code ${result.exitCode ?? "null"}${result.signal === null ? "" : ` and signal ${result.signal}`}${failureDiagnostics(result)}`,
     );
   }
   if (hasReportedScriptError(result)) {
     throw new NdsError(
-      isImportStage(invocation.stage)
-        ? "ghidra-import-failed"
-        : "ghidra-analysis-failed",
+      executionFailureCategory(invocation.stage),
       `${invocation.stage} reported a Ghidra script error despite exit code 0${failureDiagnostics(result)}`,
     );
   }

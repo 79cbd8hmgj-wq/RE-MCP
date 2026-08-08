@@ -26,6 +26,7 @@ import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.ProgramContext;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.util.PropertyMapManager;
 import ghidra.program.model.util.StringPropertyMap;
 
@@ -262,10 +263,14 @@ public class ReMcpPrepareProgram extends GhidraScript {
         if (tMode == null) {
             throw new IllegalStateException("Ghidra ARM language does not expose TMode context register");
         }
+        SymbolTable symbols = currentProgram.getSymbolTable();
         for (JsonElement element : requireArray(discovery, "functions")) {
             JsonObject function = element.getAsJsonObject();
             JsonObject entry = requireObject(function, "entry");
             Address address = identityAddress(entry, overlaySpaces);
+            if (!symbols.isExternalEntryPoint(address)) {
+                symbols.addExternalEntryPoint(address);
+            }
             String mode = requireString(entry, "mode");
             BigInteger desired;
             if ("thumb".equals(mode)) {
