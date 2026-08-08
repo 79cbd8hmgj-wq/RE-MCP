@@ -66,23 +66,31 @@ test("NDS BLZ rejects a truncated footer", () => {
 });
 
 test("NDS BLZ rejects impossible header geometry", async () => {
-  const stored = Buffer.from(await fixture("backreference.bin"));
+  const [storedFixture, expected] = await Promise.all([
+    fixture("backreference.bin"),
+    fixture("backreference.dec.bin"),
+  ]);
+  const stored = Buffer.from(storedFixture);
   stored[stored.length - 5] = 7;
 
   assertCategory(
-    () => decodeNdsBlz(stored, (await fixture("backreference.dec.bin")).length),
+    () => decodeNdsBlz(stored, expected.length),
     "malformed-blz",
   );
 });
 
 test("NDS BLZ rejects non-FF header padding", async () => {
-  const stored = Buffer.from(await fixture("literal-only.bin"));
+  const [storedFixture, expected] = await Promise.all([
+    fixture("literal-only.bin"),
+    fixture("literal-only.dec.bin"),
+  ]);
+  const stored = Buffer.from(storedFixture);
   const headerSize = stored[stored.length - 5]!;
   assert.ok(headerSize > 8);
   stored[stored.length - headerSize] = 0;
 
   assertCategory(
-    () => decodeNdsBlz(stored, (await fixture("literal-only.dec.bin")).length),
+    () => decodeNdsBlz(stored, expected.length),
     "malformed-blz",
   );
 });
