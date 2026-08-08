@@ -74,6 +74,11 @@ function config(maxOutputBytes = 64 * 1024): ServerConfig {
 }
 
 function successDependencies(diagnostic = ""): NdsGhidraToolDependencies {
+  const inspection = async (romPath: string, input: unknown) => ({
+    sourceRomSha256: "a".repeat(64),
+    resolvedRomForTest: romPath,
+    input,
+  });
   return {
     bootstrap: async (romPath: string) => ({
       sourceRomSha256: "a".repeat(64),
@@ -96,6 +101,11 @@ function successDependencies(diagnostic = ""): NdsGhidraToolDependencies {
       lastFailure: null,
       resolvedRomForTest: romPath,
     }),
+    inspectFunction: inspection,
+    decompileFunction: inspection,
+    searchSymbols: inspection,
+    listReferences: inspection,
+    listCalls: inspection,
   } as unknown as NdsGhidraToolDependencies;
 }
 
@@ -108,15 +118,20 @@ function register(
   return server;
 }
 
-test("registers exactly the two bounded NDS Ghidra tools", () => {
+test("registers exactly the seven bounded NDS Ghidra tools", () => {
   const server = register();
   assert.deepEqual([...server.tools.keys()].sort(), [
     "nds_ghidra_bootstrap",
+    "nds_ghidra_decompile_function",
+    "nds_ghidra_inspect_function",
+    "nds_ghidra_list_calls",
+    "nds_ghidra_list_references",
+    "nds_ghidra_search_symbols",
     "nds_ghidra_status",
   ]);
 });
 
-test("Ghidra MCP schemas expose only one canonical ROM selector", () => {
+test("Ghidra bootstrap/status MCP schemas expose only one canonical ROM selector", () => {
   const server = register();
   for (const name of ["nds_ghidra_bootstrap", "nds_ghidra_status"]) {
     const tool = server.tools.get(name)!;
@@ -128,7 +143,6 @@ test("Ghidra MCP schemas expose only one canonical ROM selector", () => {
   const forbidden = [
     "executable",
     "projectPath",
-    "processor",
     "language",
     "loader",
     "args",
@@ -159,7 +173,9 @@ test("Ghidra MCP success results use the shared serialized output bound", async 
 });
 
 test("Ghidra MCP errors preserve structured categories and corrective actions", async () => {
+  const fallback = successDependencies();
   const dependencies: NdsGhidraToolDependencies = {
+    ...fallback,
     bootstrap: async () => {
       throw new NdsError("ghidra-not-configured", "RE_MCP_GHIDRA_HOME is not configured");
     },
@@ -182,14 +198,24 @@ test("Ghidra MCP errors preserve structured categories and corrective actions", 
   assert.match(String(statusError.correctiveAction), /will not overwrite|ownership|state/i);
 });
 
-test("index registers both Ghidra tools and advertises their trust boundary", async () => {
+test("index registers all Ghidra tools and advertises their trust boundary", async () => {
   const indexPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
   const source = await readFile(indexPath, "utf8");
   assert.match(source, /registerNdsGhidraTools\(server, config\)/);
-  assert.match(source, /"nds_ghidra_bootstrap"/);
-  assert.match(source, /"nds_ghidra_status"/);
+  for (const name of [
+    "nds_ghidra_bootstrap",
+    "nds_ghidra_status",
+    "nds_ghidra_inspect_function",
+    "nds_ghidra_decompile_function",
+    "nds_ghidra_search_symbols",
+    "nds_ghidra_list_references",
+    "nds_ghidra_list_calls",
+  ]) {
+    assert.equal(source.includes(`"${name}"`), true, name);
+  }
   assert.match(source, /Ghidra/i);
   assert.match(source, /SHA-scoped|SHA-256/);
   assert.match(source, /non-authoritative|not authoritative/i);
-  assert.match(source, /analyst/i);
+  assert.match(source, /read-only/i);
+  assert.match(source, /auto-analysis disabled|analysis disabled|noanalysis/i);
 });
