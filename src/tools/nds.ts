@@ -1,55 +1,55 @@
 import path from "node:path";
 
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { ServerConfig } from "../config.js";
-import { resolveInside } from "../security/path-policy.js";
-import { DisassemblyBackendError } from "../services/disassembly/backend.js";
-import { getDisassemblyBackend } from "../services/disassembly/capstone-backend.js";
+import { resolveInside } from "../security/paths.js";
+import {
+  DisassemblyBackendError,
+} from "../services/disassembly/backend.js";
+import { createCapstoneArmBackend } from "../services/disassembly/capstone.js";
 import { analyzeNdsControlFlow } from "../services/nds/control-flow.js";
 import { disassembleNdsRange } from "../services/nds/disassembly.js";
+import type { NdsDisassemblyLocation } from "../services/nds/disassembly-source.js";
 import {
-  AnyNdsErrorCategory,
   NdsError,
+  type AnyNdsErrorCategory,
   type NdsErrorCategory,
 } from "../services/nds/errors.js";
 import {
   extractNdsAnalysisBundle,
   extractNdsComponent,
+  type NdsExtractionRequest,
 } from "../services/nds/extraction.js";
-import { analyzeNdsFunction } from "../services/nds/function-analysis.js";
-import { discoverNdsFunctions } from "../services/nds/function-discovery.js";
-import type { FunctionSearchScope } from "../services/nds/function-source.js";
 import { listNdsReferences } from "../services/nds/reference-list.js";
 import {
   resolveRomOffset,
   resolveRuntimeAddress,
 } from "../services/nds/resolver.js";
 import { readNdsRomMap } from "../services/nds/rom-map.js";
-import { searchNdsPattern } from "../services/nds/search.js";
-import type { NdsPatternScope } from "../services/nds/search-source.js";
-import type {
-  ReferenceSearchScope,
-  ReferenceSearchSeed,
-} from "../services/nds/xref-source.js";
+import type { NdsReferenceTargetSelector } from "../services/nds/xref-source.js";
 import { findNdsXrefs } from "../services/nds/xrefs.js";
 
-import type { RegisteredTool } from "./types.js";
-
-const uint32Schema = z.number().int().min(0).max(0xffff_ffff);
-const positiveSafeIntegerSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+const romSchema = z.string().min(1);
+const uint32Schema = z.number().int().min(0).max(0xffffffff);
 const processorSchema = z.enum(["arm9", "arm7"]);
-const modeSchema = z.enum(["arm", "thumb"]);
-const referenceTargetSchema = z.union([
-  z.object({
-    targetRuntimeAddress: uint32Schema,
-    targetRomOffset: z.never().optional(),
-  }),
-  z.object({
-    targetRomOffset: uint32Schema,
-    targetRuntimeAddress: z.never().optional(),
-  }),
-]);
+const listProcessorSchema = z.enum(["arm9", "arm7", "all"]);
+const listLimitSchema = z.number().int().min(1).max(200).default(100);
+const listOffsetSchema = z.number().int().min(0).default(0);
+const disassemblyModeSchema = z.enum(["arm", "thumb", "auto"]);
+const linearInstructionLimitSchema = z.number().int().min(1).max(256).default(32);
+const linearByteLimitSchema = z.number().int().min(2).max(1024).default(128);
+const cfgBlockLimitSchema = z.number().int().min(1).max(256).default(64);
+const cfgInstructionLimitSchema = z.number().int().min(1).max(4096).default(512);
+const cfgByteLimitSchema = z.number().int().min(2).max(16384).default(2048);
+const cfgEdgeLimitSchema = z.number().int().min(1).max(1024).default(128);
+const xrefComponentLimitSchema = z.number().int().min(1).max(128).default(32);
+const xrefBlockLimitSchema = z.number().int().min(1).max(512).default(128);
+const xrefInstructionLimitSchema = z.number().int().min(1).max(16384).default(2048);
+const xrefByteLimitSchema = z.number().int().min(2).max(65536).default(8192);
+const xrefEdgeLimitSchema = z.number().int().min(1).max(4096).default(512);
+const xrefResultLimitSchema = z.number().int().min(1).max(2048).default(256);
 const referenceScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("main") }),
   z.object({
@@ -124,12 +124,6 @@ function correctiveAction(category: NdsToolErrorCategory): string {
       return "Provide processor, ARM/Thumb mode, and overlay context when needed so the requested function entry selects one exact initialized executable source.";
     case "function-discovery-limit-exceeded":
       return "Use positive bounded function-discovery, proof-search, and CFG limits within the documented maxima.";
-    case "malformed-blz":
-      return "Use a known-good ROM revision; RE-MCP will not analyze a canonically compressed overlay whose BLZ stream is malformed.";
-    case "blz-output-size-mismatch":
-      return "Verify the ROM revision and overlay metadata; decoded overlay bytes must exactly match the canonical initialized runtime size.";
-    case "blz-output-limit":
-      return "Use an overlay within RE-MCP's bounded compressed/decompressed size limits; decompression limits cannot be bypassed.";
     case "disassembly-backend-failure":
       return "Verify the packaged @alexaltea/capstone-js JavaScript/WASM assets and Node.js runtime, then retry the static disassembly request.";
   }
@@ -185,290 +179,488 @@ function relativeWorkspacePath(config: ServerConfig, absolutePath: string): stri
   return path.relative(config.workspaceRoot, absolutePath).split(path.sep).join("/");
 }
 
-const COMPONENT_SCHEMA = z.union([
-  z.object({ kind: z.literal("arm9") }),
-  z.object({ kind: z.literal("arm7") }),
-  z.object({ kind: z.literal("file"), fileId: uint32Schema }),
-  z.object({ kind: z.literal("overlay"), processor: processorSchema, overlayId: uint32Schema }),
-]);
+function normalizeExtractionRequest(input: {
+  readonly component: "arm9" | "arm7" | "arm9-overlay" | "arm7-overlay" | "nitrofs-file";
+  readonly overlayId?: number;
+  readonly fileId?: number;
+  readonly filePath?: string;
+}): NdsExtractionRequest {
+  const hasOverlay = input.overlayId !== undefined;
+  const hasFileId = input.fileId !== undefined;
+  const hasFilePath = input.filePath !== undefined;
 
-const LOCATION_SCHEMA = z.union([
-  z.object({
-    processor: processorSchema,
-    runtimeAddress: uint32Schema,
-    romOffset: z.never().optional(),
-    overlayId: uint32Schema.optional(),
-    mode: modeSchema.optional(),
-  }),
-  z.object({
-    romOffset: uint32Schema,
-    runtimeAddress: z.never().optional(),
-    processor: processorSchema.optional(),
-    overlayId: uint32Schema.optional(),
-    mode: modeSchema.optional(),
-  }),
-]);
+  if (input.component === "arm9" || input.component === "arm7") {
+    if (hasOverlay || hasFileId || hasFilePath) {
+      throw new Error(`${input.component} extraction does not accept overlayId, fileId, or filePath selectors`);
+    }
+    return { component: input.component };
+  }
 
-const PATTERN_SCOPE_SCHEMA = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("whole-rom") }),
-  z.object({
-    kind: z.literal("components"),
-    components: z.array(COMPONENT_SCHEMA).min(1).max(128),
-  }),
-]);
+  if (input.component === "arm9-overlay" || input.component === "arm7-overlay") {
+    if (!hasOverlay || hasFileId || hasFilePath) {
+      throw new Error(`${input.component} extraction requires exactly overlayId and no file selector`);
+    }
+    return { component: input.component, overlayId: input.overlayId! };
+  }
 
-const FUNCTION_SCOPE_SCHEMA = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("main") }),
-  z.object({
-    kind: z.literal("overlay"),
-    overlayIds: z.array(uint32Schema).min(1).max(128),
-  }),
-  z.object({
-    kind: z.literal("main-and-overlays"),
-    overlayIds: z.array(uint32Schema).min(1).max(128),
-  }),
-  z.object({ kind: z.literal("all-executable-components") }),
-]);
+  if (hasOverlay || hasFileId === hasFilePath) {
+    throw new Error("nitrofs-file extraction requires exactly one of fileId or filePath");
+  }
+  if (hasFileId) {
+    return { component: "nitrofs-file", fileId: input.fileId! };
+  }
+  return { component: "nitrofs-path", filePath: input.filePath! };
+}
 
-export function registerNdsTools(config: ServerConfig): RegisteredTool[] {
-  const tools: RegisteredTool[] = [
-    {
-      name: "nds_inspect_rom",
-      description: "Inspect a Nintendo DS ROM and return its validated canonical map.",
-      schema: z.object({ rom: z.string().min(1) }),
-      handler: async ({ rom }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          return boundedTextResult(config, "nds_inspect_rom", map);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_inspect_rom", error, "invalid-rom");
-        }
-      },
+function normalizeDisassemblyLocation(input: {
+  readonly processor: "arm9" | "arm7";
+  readonly mode: "arm" | "thumb" | "auto";
+  readonly runtimeAddress?: number;
+  readonly romOffset?: number;
+  readonly overlayId?: number;
+}): NdsDisassemblyLocation {
+  const hasRuntime = input.runtimeAddress !== undefined;
+  const hasRom = input.romOffset !== undefined;
+  if (hasRuntime === hasRom) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Disassembly requires exactly one of runtimeAddress or romOffset",
+    );
+  }
+  return {
+    processor: input.processor,
+    mode: input.mode,
+    ...(hasRuntime
+      ? { runtimeAddress: input.runtimeAddress! }
+      : { romOffset: input.romOffset! }),
+    ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
+  };
+}
+
+function normalizeReferenceTarget(input: {
+  readonly targetRuntimeAddress?: number;
+  readonly targetRomOffset?: number;
+}): NdsReferenceTargetSelector {
+  const hasRuntimeTarget = input.targetRuntimeAddress !== undefined;
+  const hasRomTarget = input.targetRomOffset !== undefined;
+  if (hasRuntimeTarget === hasRomTarget) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Reference search requires exactly one of targetRuntimeAddress or targetRomOffset",
+    );
+  }
+  return hasRuntimeTarget
+    ? { targetRuntimeAddress: input.targetRuntimeAddress! }
+    : { targetRomOffset: input.targetRomOffset! };
+}
+
+export function registerNdsTools(server: McpServer, config: ServerConfig): void {
+  server.tool(
+    "nds_inspect_rom",
+    "Parse a Nintendo DS ROM into the canonical static structure summary without modifying it.",
+    { rom: romSchema },
+    async ({ rom }) => {
+      const operation = "nds_inspect_rom";
+      try {
+        const romPath = resolveRom(config, rom);
+        const map = await readNdsRomMap(romPath);
+        return boundedTextResult(config, operation, {
+          rom: relativeWorkspacePath(config, map.romPath),
+          sha256: map.sha256,
+          sha256Prefix: map.sha256Prefix,
+          fileSize: map.fileSize,
+          game: {
+            title: map.header.gameTitle,
+            code: map.header.gameCode,
+            makerCode: map.header.makerCode,
+            unitCode: map.header.unitCode,
+            deviceCapacity: map.header.deviceCapacity,
+            romVersion: map.header.romVersion,
+          },
+          arm9: map.header.arm9,
+          arm7: map.header.arm7,
+          fnt: map.header.fnt,
+          fat: map.header.fat,
+          arm9OverlayTable: map.header.arm9OverlayTable,
+          arm7OverlayTable: map.header.arm7OverlayTable,
+          bannerOffset: map.header.bannerOffset,
+          nitroFsFileCount: map.filesystem.files.length,
+          arm9OverlayCount: map.overlays.arm9.length,
+          arm7OverlayCount: map.overlays.arm7.length,
+          executableRanges: map.executableRanges,
+        });
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_list_files",
+    "List bounded NitroFS/FAT file mappings from the canonical NDS model.",
     {
-      name: "nds_list_files",
-      description: "List validated NitroFS files in a Nintendo DS ROM.",
-      schema: z.object({ rom: z.string().min(1), prefix: z.string().optional() }),
-      handler: async ({ rom, prefix }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const files = map.filesystem.files
-            .filter((file) => prefix === undefined || file.path.startsWith(prefix))
-            .map((file) => ({
-              id: file.id,
-              path: file.path,
-              romOffset: file.romOffset,
-              size: file.size,
-            }));
-          return boundedTextResult(config, "nds_list_files", files);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_list_files", error, "invalid-rom");
-        }
-      },
+      rom: romSchema,
+      prefix: z.string().max(4096).default(""),
+      limit: listLimitSchema,
+      offset: listOffsetSchema,
     },
-    {
-      name: "nds_list_overlays",
-      description: "List validated ARM9/ARM7 overlay metadata in a Nintendo DS ROM.",
-      schema: z.object({ rom: z.string().min(1), processor: processorSchema.optional() }),
-      handler: async ({ rom, processor }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const overlays = processor === undefined
-            ? [...map.overlays.arm9, ...map.overlays.arm7]
-            : map.overlays[processor];
-          return boundedTextResult(config, "nds_list_overlays", overlays);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_list_overlays", error, "invalid-rom");
-        }
-      },
+    async ({ rom, prefix, limit, offset }) => {
+      const operation = "nds_list_files";
+      try {
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const filtered = prefix.length === 0
+          ? [...map.filesystem.files]
+          : map.filesystem.files.filter(
+            (file) => file.path !== null && file.path.startsWith(prefix),
+          );
+        filtered.sort((left, right) => left.fileId - right.fileId);
+        const page = filtered.slice(offset, offset + limit);
+        const nextOffset = offset + page.length < filtered.length
+          ? offset + page.length
+          : null;
+        return boundedTextResult(config, operation, {
+          total: filtered.length,
+          offset,
+          limit,
+          nextOffset,
+          files: page.map((file) => ({
+            fileId: file.fileId,
+            path: file.path,
+            romOffset: file.startOffset,
+            endOffset: file.endOffset,
+            size: file.size,
+          })),
+        });
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_list_overlays",
+    "List bounded ARM9/ARM7 overlay metadata without claiming runtime loaded state.",
     {
-      name: "nds_resolve_runtime_address",
-      description: "Resolve a canonical ARM9/ARM7 runtime address without guessing through overlay ambiguity.",
-      schema: z.object({
-        rom: z.string().min(1),
-        runtimeAddress: uint32Schema,
-        processor: processorSchema.optional(),
-      }),
-      handler: async ({ rom, runtimeAddress, processor }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const result = resolveRuntimeAddress(map, runtimeAddress, processor);
-          return boundedTextResult(config, "nds_resolve_runtime_address", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_resolve_runtime_address", error, "range-out-of-bounds");
-        }
-      },
+      rom: romSchema,
+      processor: listProcessorSchema.default("all"),
+      limit: listLimitSchema,
+      offset: listOffsetSchema,
     },
-    {
-      name: "nds_resolve_rom_offset",
-      description: "Resolve a validated physical Nintendo DS ROM offset to its canonical structural/runtime owners.",
-      schema: z.object({ rom: z.string().min(1), romOffset: uint32Schema }),
-      handler: async ({ rom, romOffset }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const result = resolveRomOffset(map, romOffset);
-          return boundedTextResult(config, "nds_resolve_rom_offset", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_resolve_rom_offset", error, "range-out-of-bounds");
-        }
-      },
+    async ({ rom, processor, limit, offset }) => {
+      const operation = "nds_list_overlays";
+      try {
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const overlays = processor === "arm9"
+          ? [...map.overlays.arm9]
+          : processor === "arm7"
+            ? [...map.overlays.arm7]
+            : [...map.overlays.arm9, ...map.overlays.arm7];
+        overlays.sort((left, right) => {
+          if (left.processor !== right.processor) return left.processor === "arm9" ? -1 : 1;
+          return left.overlayId - right.overlayId;
+        });
+        const page = overlays.slice(offset, offset + limit);
+        const nextOffset = offset + page.length < overlays.length
+          ? offset + page.length
+          : null;
+        return boundedTextResult(config, operation, {
+          total: overlays.length,
+          offset,
+          limit,
+          nextOffset,
+          overlays: page,
+        });
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_resolve_runtime_address",
+    "Resolve one ARM9/ARM7 runtime address against main code and static overlay candidates without guessing overlap state.",
     {
-      name: "nds_extract_component",
-      description: "Extract one canonical NDS main processor image, NitroFS file, or overlay into deterministic generated analysis output.",
-      schema: z.object({
-        rom: z.string().min(1),
-        component: COMPONENT_SCHEMA,
-      }),
-      handler: async ({ rom, component }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const output = await extractNdsComponent(map, component, config.workspaceRoot);
-          return boundedTextResult(config, "nds_extract_component", {
-            ...output,
-            output: relativeWorkspacePath(config, output.output),
-          });
-        } catch (error) {
-          return ndsErrorResult(config, "nds_extract_component", error, "generated-path-failure");
-        }
-      },
+      rom: romSchema,
+      address: uint32Schema,
+      processor: processorSchema,
     },
-    {
-      name: "nds_extract_analysis_bundle",
-      description: "Extract a transactional, deterministic static-analysis bundle for a validated Nintendo DS ROM.",
-      schema: z.object({ rom: z.string().min(1) }),
-      handler: async ({ rom }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const output = await extractNdsAnalysisBundle(map, config.workspaceRoot);
-          return boundedTextResult(config, "nds_extract_analysis_bundle", {
-            ...output,
-            output: relativeWorkspacePath(config, output.output),
-          });
-        } catch (error) {
-          return ndsErrorResult(config, "nds_extract_analysis_bundle", error, "generated-path-failure");
-        }
-      },
+    async ({ rom, address, processor }) => {
+      const operation = "nds_resolve_runtime_address";
+      try {
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        return boundedTextResult(
+          config,
+          operation,
+          resolveRuntimeAddress(map, address, processor),
+        );
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_resolve_rom_offset",
+    "Classify one ROM offset across NDS structural, file, main-binary, and overlay relationships.",
     {
-      name: "nds_disassemble_range",
-      description: "Disassemble a bounded canonical Nintendo DS ARM/Thumb range using the packaged Capstone backend.",
-      schema: z.object({
-        rom: z.string().min(1),
-        location: LOCATION_SCHEMA,
-        maxInstructions: positiveSafeIntegerSchema.max(4096),
-        maxBytes: positiveSafeIntegerSchema.max(64 * 1024),
-      }),
-      handler: async ({ rom, location, maxInstructions, maxBytes }) => {
+      rom: romSchema,
+      offset: uint32Schema,
+    },
+    async ({ rom, offset }) => {
+      const operation = "nds_resolve_rom_offset";
+      try {
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        return boundedTextResult(config, operation, resolveRomOffset(map, offset));
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_extract_component",
+    "Extract one validated ARM9, ARM7, overlay, or NitroFS component to the server-controlled generated-analysis tree.",
+    {
+      rom: romSchema,
+      component: z.enum(["arm9", "arm7", "arm9-overlay", "arm7-overlay", "nitrofs-file"]),
+      overlayId: uint32Schema.optional(),
+      fileId: uint32Schema.optional(),
+      filePath: z.string().min(1).max(4096).optional(),
+    },
+    async ({ rom, component, overlayId, fileId, filePath }) => {
+      const operation = "nds_extract_component";
+      try {
+        const request = normalizeExtractionRequest({
+          component,
+          ...(overlayId === undefined ? {} : { overlayId }),
+          ...(fileId === undefined ? {} : { fileId }),
+          ...(filePath === undefined ? {} : { filePath }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const result = await extractNdsComponent(map, config.workspaceRoot, request);
+        return boundedTextResult(config, operation, result);
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "generated-path-failure");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_extract_analysis_bundle",
+    "Generate the deterministic NDS static-analysis bundle without dumping every NitroFS asset.",
+    { rom: romSchema },
+    async ({ rom }) => {
+      const operation = "nds_extract_analysis_bundle";
+      try {
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const result = await extractNdsAnalysisBundle(map, config.workspaceRoot);
+        return boundedTextResult(config, operation, result);
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "generated-path-failure");
+      }
+    },
+  );
+
+  server.tool(
+    "nds_disassemble_range",
+    "Decode a bounded ARM/Thumb instruction window from one uniquely mapped Nintendo DS code source.",
+    {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxInstructions: linearInstructionLimitSchema,
+      maxBytes: linearByteLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxInstructions,
+      maxBytes,
+    }) => {
+      const operation = "nds_disassemble_range";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
         try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
           const result = await disassembleNdsRange(
             map,
             location,
             { maxInstructions, maxBytes },
             backend,
           );
-          return boundedTextResult(config, "nds_disassemble_range", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_disassemble_range", error, "range-out-of-bounds");
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
         }
-      },
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_analyze_control_flow",
+    "Build a bounded direct-control-flow graph from one uniquely mapped Nintendo DS ARM/Thumb entry point without traversing calls.",
     {
-      name: "nds_analyze_control_flow",
-      description: "Build a bounded canonical ARM/Thumb control-flow graph without pretending indirect edges are resolved.",
-      schema: z.object({
-        rom: z.string().min(1),
-        location: LOCATION_SCHEMA,
-        maxBlocks: positiveSafeIntegerSchema.max(1024),
-        maxInstructions: positiveSafeIntegerSchema.max(16_384),
-        maxBytes: positiveSafeIntegerSchema.max(512 * 1024),
-        maxEdges: positiveSafeIntegerSchema.max(4096),
-      }),
-      handler: async ({ rom, location, maxBlocks, maxInstructions, maxBytes, maxEdges }) => {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxBlocks: cfgBlockLimitSchema,
+      maxInstructions: cfgInstructionLimitSchema,
+      maxBytes: cfgByteLimitSchema,
+      maxEdges: cfgEdgeLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxBlocks,
+      maxInstructions,
+      maxBytes,
+      maxEdges,
+    }) => {
+      const operation = "nds_analyze_control_flow";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
         try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
           const result = await analyzeNdsControlFlow(
             map,
             location,
             { maxBlocks, maxInstructions, maxBytes, maxEdges },
             backend,
           );
-          return boundedTextResult(config, "nds_analyze_control_flow", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_analyze_control_flow", error, "range-out-of-bounds");
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
         }
-      },
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_list_references",
+    "List bounded deterministic proven references from one uniquely mapped Nintendo DS ARM/Thumb code window.",
     {
-      name: "nds_list_references",
-      description: "List deterministic static references from one bounded canonical Nintendo DS disassembly range.",
-      schema: z.object({
-        rom: z.string().min(1),
-        location: LOCATION_SCHEMA,
-        maxInstructions: positiveSafeIntegerSchema.max(4096),
-        maxBytes: positiveSafeIntegerSchema.max(64 * 1024),
-        maxReferences: positiveSafeIntegerSchema.max(8192),
-      }),
-      handler: async ({ rom, location, maxInstructions, maxBytes, maxReferences }) => {
+      rom: romSchema,
+      processor: processorSchema,
+      runtimeAddress: uint32Schema.optional(),
+      romOffset: uint32Schema.optional(),
+      overlayId: uint32Schema.optional(),
+      mode: disassemblyModeSchema.default("auto"),
+      maxInstructions: linearInstructionLimitSchema,
+      maxBytes: linearByteLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      runtimeAddress,
+      romOffset,
+      overlayId,
+      mode,
+      maxInstructions,
+      maxBytes,
+    }) => {
+      const operation = "nds_list_references";
+      try {
+        const location = normalizeDisassemblyLocation({
+          processor,
+          mode,
+          ...(runtimeAddress === undefined ? {} : { runtimeAddress }),
+          ...(romOffset === undefined ? {} : { romOffset }),
+          ...(overlayId === undefined ? {} : { overlayId }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
         try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
           const result = await listNdsReferences(
             map,
             location,
-            { maxInstructions, maxBytes, maxReferences },
+            { maxInstructions, maxBytes },
             backend,
           );
-          return boundedTextResult(config, "nds_list_references", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_list_references", error, "range-out-of-bounds");
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
         }
-      },
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
+  );
+
+  server.tool(
+    "nds_find_xrefs",
+    "Find bounded deterministic proven xrefs in caller-selected Nintendo DS static scope using explicit/proven seeds without inferring loaded overlay state.",
     {
-      name: "nds_find_xrefs",
-      description: "Find bounded deterministic static xrefs to one canonical ARM9/ARM7 runtime target with explicit executable-component coverage.",
-      schema: z.object({
-        rom: z.string().min(1),
-        processor: processorSchema,
-        target: referenceTargetSchema,
-        scope: referenceScopeSchema,
-        seeds: z.array(referenceSeedSchema).max(256).default([]),
-        maxComponents: positiveSafeIntegerSchema.max(256),
-        maxBlocks: positiveSafeIntegerSchema.max(4096),
-        maxInstructions: positiveSafeIntegerSchema.max(65_536),
-        maxBytes: positiveSafeIntegerSchema.max(4 * 1024 * 1024),
-        maxEdges: positiveSafeIntegerSchema.max(16_384),
-        maxXrefs: positiveSafeIntegerSchema.max(16_384),
-      }),
-      handler: async ({
-        rom,
-        processor,
-        target,
-        scope,
-        seeds,
-        maxComponents,
-        maxBlocks,
-        maxInstructions,
-        maxBytes,
-        maxEdges,
-        maxXrefs,
-      }) => {
+      rom: romSchema,
+      processor: processorSchema,
+      targetRuntimeAddress: uint32Schema.optional(),
+      targetRomOffset: uint32Schema.optional(),
+      scope: referenceScopeSchema,
+      seeds: z.array(referenceSeedSchema).max(512).default([]),
+      maxComponents: xrefComponentLimitSchema,
+      maxBlocks: xrefBlockLimitSchema,
+      maxInstructions: xrefInstructionLimitSchema,
+      maxBytes: xrefByteLimitSchema,
+      maxEdges: xrefEdgeLimitSchema,
+      maxXrefs: xrefResultLimitSchema,
+    },
+    async ({
+      rom,
+      processor,
+      targetRuntimeAddress,
+      targetRomOffset,
+      scope,
+      seeds,
+      maxComponents,
+      maxBlocks,
+      maxInstructions,
+      maxBytes,
+      maxEdges,
+      maxXrefs,
+    }) => {
+      const operation = "nds_find_xrefs";
+      try {
+        const target = normalizeReferenceTarget({
+          ...(targetRuntimeAddress === undefined ? {} : { targetRuntimeAddress }),
+          ...(targetRomOffset === undefined ? {} : { targetRomOffset }),
+        });
+        const map = await readNdsRomMap(resolveRom(config, rom));
+        const backend = await createCapstoneArmBackend();
         try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
           const result = await findNdsXrefs(
             map,
-            {
-              processor,
-              target,
-              scope: scope as ReferenceSearchScope,
-              seeds: seeds as readonly ReferenceSearchSeed[],
-            },
+            { processor, target, scope, seeds },
             {
               maxComponents,
               maxBlocks,
@@ -479,183 +671,13 @@ export function registerNdsTools(config: ServerConfig): RegisteredTool[] {
             },
             backend,
           );
-          return boundedTextResult(config, "nds_find_xrefs", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_find_xrefs", error, "range-out-of-bounds");
+          return boundedTextResult(config, operation, result);
+        } finally {
+          backend.close();
         }
-      },
+      } catch (error) {
+        return ndsErrorResult(config, operation, error, "invalid-rom");
+      }
     },
-    {
-      name: "nds_search_pattern",
-      description: "Search bounded canonical Nintendo DS ROM bytes with exact/wildcard byte or UTF-8 patterns and explicit scope.",
-      schema: z.object({
-        rom: z.string().min(1),
-        pattern: z.union([
-          z.object({ kind: z.literal("bytes"), value: z.string().min(1) }),
-          z.object({ kind: z.literal("utf8"), value: z.string().min(1) }),
-        ]),
-        scope: PATTERN_SCOPE_SCHEMA,
-        alignment: z.number().int().min(1).max(4096).default(1),
-        offset: z.number().int().min(0).max(1_000_000).default(0),
-        limit: z.number().int().min(1).max(10_000).default(100),
-        contextBefore: z.number().int().min(0).max(256).default(0),
-        contextAfter: z.number().int().min(0).max(256).default(0),
-        maxScanBytes: positiveSafeIntegerSchema.max(256 * 1024 * 1024).default(64 * 1024 * 1024),
-      }),
-      handler: async ({
-        rom,
-        pattern,
-        scope,
-        alignment,
-        offset,
-        limit,
-        contextBefore,
-        contextAfter,
-        maxScanBytes,
-      }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const result = await searchNdsPattern(
-            map,
-            pattern,
-            scope as NdsPatternScope,
-            {
-              alignment,
-              offset,
-              limit,
-              contextBefore,
-              contextAfter,
-              maxScanBytes,
-            },
-          );
-          return boundedTextResult(config, "nds_search_pattern", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_search_pattern", error, "invalid-pattern");
-        }
-      },
-    },
-    {
-      name: "nds_discover_functions",
-      description: "Discover bounded proven ARM/Thumb function entries from program entry and exact direct-call evidence, with explicit coverage accounting.",
-      schema: z.object({
-        rom: z.string().min(1),
-        processor: processorSchema,
-        scope: FUNCTION_SCOPE_SCHEMA,
-        seeds: z.array(referenceSeedSchema).max(256).default([]),
-        maxComponents: positiveSafeIntegerSchema.max(256),
-        maxFunctions: positiveSafeIntegerSchema.max(8192),
-        maxBlocks: positiveSafeIntegerSchema.max(65_536),
-        maxInstructions: positiveSafeIntegerSchema.max(1_000_000),
-        maxBytes: positiveSafeIntegerSchema.max(64 * 1024 * 1024),
-        maxEdges: positiveSafeIntegerSchema.max(1_000_000),
-        maxCalls: positiveSafeIntegerSchema.max(1_000_000),
-        maxProofSearchFunctions: positiveSafeIntegerSchema.max(8192),
-      }),
-      handler: async ({
-        rom,
-        processor,
-        scope,
-        seeds,
-        maxComponents,
-        maxFunctions,
-        maxBlocks,
-        maxInstructions,
-        maxBytes,
-        maxEdges,
-        maxCalls,
-        maxProofSearchFunctions,
-      }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
-          const result = await discoverNdsFunctions(
-            map,
-            {
-              processor,
-              scope: scope as FunctionSearchScope,
-              seeds: seeds as readonly ReferenceSearchSeed[],
-            },
-            {
-              maxComponents,
-              maxFunctions,
-              maxBlocks,
-              maxInstructions,
-              maxBytes,
-              maxEdges,
-              maxCalls,
-              maxProofSearchFunctions,
-            },
-            backend,
-          );
-          return boundedTextResult(config, "nds_discover_functions", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_discover_functions", error, "range-out-of-bounds");
-        }
-      },
-    },
-    {
-      name: "nds_analyze_function",
-      description: "Analyze one proven ARM/Thumb function entry with bounded proof search, CFG-backed body, calls, inbound references, and explicit negative-claim integrity.",
-      schema: z.object({
-        rom: z.string().min(1),
-        processor: processorSchema,
-        runtimeAddress: uint32Schema,
-        mode: modeSchema,
-        overlayId: uint32Schema.nullish(),
-        maxComponents: positiveSafeIntegerSchema.max(256),
-        maxFunctions: positiveSafeIntegerSchema.max(8192),
-        maxBlocks: positiveSafeIntegerSchema.max(65_536),
-        maxInstructions: positiveSafeIntegerSchema.max(1_000_000),
-        maxBytes: positiveSafeIntegerSchema.max(64 * 1024 * 1024),
-        maxEdges: positiveSafeIntegerSchema.max(1_000_000),
-        maxCalls: positiveSafeIntegerSchema.max(1_000_000),
-        maxProofSearchFunctions: positiveSafeIntegerSchema.max(8192),
-      }),
-      handler: async ({
-        rom,
-        processor,
-        runtimeAddress,
-        mode,
-        overlayId,
-        maxComponents,
-        maxFunctions,
-        maxBlocks,
-        maxInstructions,
-        maxBytes,
-        maxEdges,
-        maxCalls,
-        maxProofSearchFunctions,
-      }) => {
-        try {
-          const map = await readNdsRomMap(resolveRom(config, rom));
-          const backend = await getDisassemblyBackend();
-          const result = await analyzeNdsFunction(
-            map,
-            {
-              processor,
-              runtimeAddress,
-              mode,
-              overlayId: overlayId ?? null,
-            },
-            {
-              maxComponents,
-              maxFunctions,
-              maxBlocks,
-              maxInstructions,
-              maxBytes,
-              maxEdges,
-              maxCalls,
-              maxProofSearchFunctions,
-            },
-            backend,
-          );
-          return boundedTextResult(config, "nds_analyze_function", result);
-        } catch (error) {
-          return ndsErrorResult(config, "nds_analyze_function", error, "function-entry-not-uniquely-resolved");
-        }
-      },
-    },
-  ];
-
-  return tools;
+  );
 }
