@@ -105,7 +105,7 @@ server.tool(
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection; no register writes, general memory writes, watchpoints, or arbitrary GDB packets",
       evidencePolicy: "Atomic raw evidence under project analysis/generated only",
       ndsStaticAnalysisPolicy:
-        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, and bounded proven function-entry/call-graph analysis over canonical executable components; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, ROM mutation/rebuild, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled output/project paths",
+        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, and bounded proven function-entry/call-graph analysis over canonical executable components; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, ROM mutation/rebuild, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled output/project paths",
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -147,6 +147,11 @@ server.tool(
         "nds_analyze_function",
         "nds_ghidra_bootstrap",
         "nds_ghidra_status",
+        "nds_ghidra_inspect_function",
+        "nds_ghidra_decompile_function",
+        "nds_ghidra_search_symbols",
+        "nds_ghidra_list_references",
+        "nds_ghidra_list_calls",
         "server_capabilities",
       ],
     }),
