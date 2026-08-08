@@ -4,53 +4,57 @@
 
 **Goal:** Decode canonical Nintendo DS BLZ/code-compressed overlays into provenance-tracked runtime images, let the existing static-analysis stack consume those exact runtime bytes, and safely import the same derived images into controlled Ghidra projects.
 
-**Architecture:** Preserve the existing canonical ROM/FAT/overlay model as authority. Add a bounded internal BLZ decoder and an operation-scoped compressed-overlay runtime-image service, then generalize `NdsCodeSource` from direct-ROM-only bytes to either `rom-file-backed` or `derived-overlay` bytes. Static analysis and Ghidra consume that shared runtime representation; no layer fabricates a direct ROM offset for decompressed bytes.
+**Architecture:** Keep the existing validated ROM/FAT/overlay map as authority. Add a bounded internal BLZ decoder and operation-scoped overlay-runtime context, then generalize code sources from direct-ROM-only bytes to either `rom-file-backed` or `derived-overlay`. All static-analysis and Ghidra consumers use the same decoded runtime representation; decompressed bytes never receive a fabricated direct ROM offset.
 
-**Tech Stack:** TypeScript/Node.js 20, existing RE-MCP NDS parser/resolver/static-analysis services, Capstone.js/WASM, Java Ghidra scripts, Ghidra 12.1.2 with JDK 21 for manual acceptance. No new production runtime dependency.
+**Tech Stack:** TypeScript/Node.js 20, existing RE-MCP NDS parser/resolver services, Capstone.js/WASM, Java Ghidra scripts, Ghidra 12.1.2 with JDK 21 for manual acceptance. No new production runtime dependency.
 
 ## Global Constraints
 
-- Source ROM is read-only and must match the canonical full SHA-256 before and after derived-byte operations.
+- Source ROM is immutable and must match the canonical full SHA-256 before and after derived-byte operations.
 - Maximum stored compressed overlay: **16 MiB**.
 - Maximum decoded overlay runtime image: **16 MiB**.
 - Maximum aggregate decoded-overlay bytes in one top-level operation: **64 MiB**.
 - Expected decoded initialized size comes only from canonical overlay `ramSize`.
-- BSS is excluded from the decoded initialized image and remains runtime-only/uninitialized.
-- A decompressed runtime byte has canonical runtime identity and `runtimeImageOffset`, but **never** a fabricated direct `romOffset`.
+- BSS is excluded from decoded initialized bytes and remains runtime-only/uninitialized.
+- A decompressed runtime byte has canonical runtime identity and exact `runtimeImageOffset`, but `romOffset` is `null`.
 - `nds_resolve_rom_offset` remains physical-storage semantics.
-- `nds_search_pattern` remains physical-ROM search and does not silently search decoded runtime images.
-- Overlapping overlay runtime ranges remain ambiguous unless the existing explicit canonical overlay selector resolves one overlay.
-- Overlay selection is static identity only; it does not claim that an overlay is loaded at runtime.
-- Function proof remains limited to existing deterministic proof such as program entry and exact resolved direct calls. Decompression, alignment, prologues, Ghidra output, and explicit selection are not proof.
-- Ghidra Java scripts consume Node-generated runtime artifacts; they do not implement BLZ.
-- No BLZ recompression, ROM rebuilding, patch generation, generic decompression MCP tool, caller-selected output path, compressed ARM9-main support, asset decompression, runtime overlay detection, or Ghidra-to-RE-MCP evidence promotion.
-- No DeSmuME/GDB/debug-controller production behavior changes.
+- `nds_search_pattern` remains physical-ROM search; no silent decoded-runtime search is added.
+- Overlapping overlay ranges remain ambiguous unless the existing explicit canonical overlay selector selects one overlay.
+- Explicit overlay selection is static identity only and does not claim the overlay is loaded at runtime.
+- Function proof remains limited to existing deterministic proof: processor program entry and exact resolved direct calls.
+- Decompression, alignment, prologue appearance, Ghidra output, and explicit overlay selection are not function proof.
+- Ghidra Java scripts consume Node-generated derived artifacts; Java does not implement BLZ.
+- No BLZ recompression, ROM rebuilding, patch generation, generic decompression MCP tool, caller-selected output path, compressed ARM9-main support, LZ10/LZ11/RLE/Huffman asset decompression, runtime loaded-overlay detection, or Ghidra-to-RE-MCP evidence promotion.
+- No DeSmuME/GDB/debug-controller/owned-process production behavior changes.
 
 ---
 
 ## Delivery topology
 
-Implement and merge this milestone as three independently verified PRs:
+Use three independently verified PRs:
 
-1. **PR A — Native decoder + canonical runtime images**: Tasks 1–3.
-2. **PR B — Static-analysis consumption + generated artifacts**: Tasks 4–7, branched from `main` after PR A merges.
-3. **PR C — Controlled Ghidra import + real acceptance**: Tasks 8–10, branched from `main` after PR B merges.
-
-The approved design and this plan travel with PR A so later PRs can reference documents already on `main`.
+1. **PR A — Native decoder + canonical runtime images:** Tasks 1–3. Continue draft PR #27 and include the approved design/plan.
+2. **PR B — Static-analysis consumption + generated artifacts:** Tasks 4–7, branch from `main` only after PR A merges.
+3. **PR C — Controlled Ghidra import + real acceptance:** Tasks 8–10, branch from `main` only after PR B merges.
 
 ---
 
-### Task 1: Add a bounded Nintendo DS BLZ decoder
+### Task 1: Bounded Nintendo DS BLZ decoder
 
 **Files:**
 - Create: `src/services/nds/blz.ts`
 - Modify: `src/services/nds/errors.ts`
 - Create: `tests/nds-blz.test.ts`
-- Add binary fixtures: `tests/fixtures/nds-blz/*.bin`
+- Add fixtures: `tests/fixtures/nds-blz/literal-only.bin`
+- Add fixtures: `tests/fixtures/nds-blz/literal-only.dec.bin`
+- Add fixtures: `tests/fixtures/nds-blz/backreference.bin`
+- Add fixtures: `tests/fixtures/nds-blz/backreference.dec.bin`
+- Add fixtures: `tests/fixtures/nds-blz/mixed-groups.bin`
+- Add fixtures: `tests/fixtures/nds-blz/mixed-groups.dec.bin`
+- Add fixtures: `tests/fixtures/nds-blz/uncompressed-prefix.bin`
+- Add fixtures: `tests/fixtures/nds-blz/uncompressed-prefix.dec.bin`
 
 **Interfaces:**
-- Consumes: a canonical overlay's stored bytes plus its canonical expected initialized runtime size.
-- Produces:
 
 ```ts
 export interface NdsBlzLimits {
@@ -75,7 +79,7 @@ export function decodeNdsBlz(
 ): NdsBlzDecodeResult;
 ```
 
-- Add service error categories to the canonical NDS service error union:
+Add:
 
 ```ts
 export type NdsBlzErrorCategory =
@@ -84,76 +88,54 @@ export type NdsBlzErrorCategory =
   | "blz-output-limit";
 ```
 
-- [ ] **Step 1: Commit independent golden vectors before production decoder code**
+and include it in `NdsServiceErrorCategory`/the NDS service error union used by callers.
 
-Add committed binary fixtures covering:
+- [ ] **Step 1: Commit independent golden vectors before decoder implementation**
 
-```text
-literal-only.bin          -> literal-only.dec.bin
-backreference.bin         -> backreference.dec.bin
-mixed-groups.bin          -> mixed-groups.dec.bin
-uncompressed-prefix.bin   -> uncompressed-prefix.dec.bin
-```
+Cross-check each compressed fixture with an established Nintendo DS code-compression implementation outside production code. Use overlay compression semantics, not ARM9-main compression. Commit only the compressed bytes and expected decoded bytes; CI must not import the external implementation.
 
-Generate/cross-check the compressed fixture bytes outside production code with an established NDS code-compression implementation, then commit only the binary vectors and expected decoded binaries. For overlays, use the overlay variant of the format, not ARM9-main compression. The test suite must not import the external implementation.
+- [ ] **Step 2: Write RED fixture tests**
 
-- [ ] **Step 2: Write RED decoder tests**
-
-`tests/nds-blz.test.ts` must read the committed fixture pairs and assert exact bytes plus metadata:
+`tests/nds-blz.test.ts` reads each pair and checks exact output:
 
 ```ts
-const decoded = decodeNdsBlz(compressed, expected.length);
-assert.deepEqual(decoded.bytes, expected);
-assert.equal(decoded.storedSize, compressed.length);
-assert.equal(decoded.decodedSize, expected.length);
-assert.ok(decoded.headerSize >= 8);
-assert.ok(decoded.encodedRegionSize > 0);
+const result = decodeNdsBlz(stored, expected.length);
+assert.deepEqual(result.bytes, expected);
+assert.equal(result.storedSize, stored.length);
+assert.equal(result.decodedSize, expected.length);
+assert.ok(result.headerSize >= 8);
+assert.ok(result.encodedRegionSize > 0);
 ```
 
-Add explicit malformed cases created directly in the test:
+Add direct malformed vectors in the test for a 7-byte footer truncation, impossible header geometry, truncated control/token data, invalid back-reference history, decoded-size mismatch, stored-size limit, and decoded-size limit. Use small custom limits for limit tests to avoid unnecessary large allocations.
 
-```ts
-assert.throws(() => decodeNdsBlz(Buffer.alloc(7), 32), category("malformed-blz"));
-assert.throws(() => decodeNdsBlz(badHeaderGeometry, 64), category("malformed-blz"));
-assert.throws(() => decodeNdsBlz(truncatedToken, 64), category("malformed-blz"));
-assert.throws(() => decodeNdsBlz(invalidBackReference, 64), category("malformed-blz"));
-assert.throws(() => decodeNdsBlz(validCompressed, expected.length + 1), category("blz-output-size-mismatch"));
-assert.throws(() => decodeNdsBlz(Buffer.alloc(16 * 1024 * 1024 + 1), 1), category("blz-output-limit"));
-assert.throws(() => decodeNdsBlz(validCompressed, 16 * 1024 * 1024 + 1), category("blz-output-limit"));
-```
-
-Also test custom limits with small values so CI does not allocate huge buffers for every bound case.
-
-- [ ] **Step 3: Run the focused RED test**
-
-Run:
+- [ ] **Step 3: Run the RED test**
 
 ```bash
-npm test -- --test-name-pattern="BLZ" tests/nds-blz.test.ts
+npm test -- tests/nds-blz.test.ts
 ```
 
-Expected: FAIL because `src/services/nds/blz.ts` does not exist or `decodeNdsBlz` is not defined.
+Expected: FAIL because `src/services/nds/blz.ts` is absent.
 
-- [ ] **Step 4: Implement the decoder with backward-only bounded writes**
+- [ ] **Step 4: Implement `decodeNdsBlz()`**
 
-Implement `decodeNdsBlz()` so it:
+The implementation must:
 
-1. rejects unsafe/non-positive expected sizes and limit violations before allocation;
-2. parses the NDS code-compression footer from the end of the stored input;
-3. validates header length and encoded-region geometry before indexing;
-4. copies the uncompressed prefix exactly;
-5. decodes control groups from the end of the encoded region toward the beginning of the output;
-6. treats a clear control bit as one backwards literal byte;
-7. treats a set control bit as one two-byte backward-reference token, deriving length and displacement from that token;
-8. checks every source index is already-decoded history before copying;
-9. prevents writes below the start of the encoded output region or beyond `expectedDecodedSize`;
-10. requires the final decoded size to equal `expectedDecodedSize` exactly.
+1. reject unsafe/non-positive expected sizes;
+2. reject stored/output sizes above configured limits before allocating output;
+3. parse the NDS code-compression footer from the end of the input;
+4. validate header length, compressed region length, and uncompressed-prefix geometry before indexing;
+5. copy the uncompressed prefix exactly;
+6. decode control groups backwards from the encoded region;
+7. copy clear-bit tokens as backwards literals;
+8. decode set-bit two-byte tokens as backwards `(length, displacement)` copies;
+9. reject a back-reference unless every source byte comes from already-decoded history;
+10. reject any read/write index that leaves the validated encoded/output ranges;
+11. require final decoded length to equal `expectedDecodedSize` exactly.
 
-Use `Buffer.allocUnsafe(expectedDecodedSize)` only after the output limit checks; fill every returned byte deterministically before return. Do not return the original stored input for an invalid or apparently-uncompressed stream because this function is called only for canonically marked compressed overlays.
+Allocate returned bytes only after all size limits are validated. Because callers use this function only for canonically marked compressed overlays, an invalid stream throws instead of returning the stored input unchanged.
 
-- [ ] **Step 5: Run decoder tests and type-check**
-
-Run:
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-blz.test.ts
@@ -162,7 +144,7 @@ npm run check
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 1**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/blz.ts src/services/nds/errors.ts tests/nds-blz.test.ts tests/fixtures/nds-blz
@@ -171,12 +153,12 @@ git commit -m "feat: add bounded NDS BLZ decoder"
 
 ---
 
-### Task 2: Add canonical compressed-overlay runtime images and operation budgets
+### Task 2: Canonical compressed-overlay runtime images and aggregate budgets
 
 **Files:**
 - Create: `src/services/nds/overlay-runtime.ts`
 - Create: `tests/nds-overlay-runtime.test.ts`
-- Reuse fixture helpers from existing NDS synthetic-ROM tests; do not add a second ROM parser.
+- Modify: `src/services/nds/errors.ts`
 
 **Interfaces:**
 
@@ -217,64 +199,47 @@ export function createNdsOverlayRuntimeContext(
 ): NdsOverlayRuntimeContext;
 ```
 
-- Add category:
-
-```ts
-"compressed-overlay-runtime-unavailable"
-```
-
-for canonical overlay/runtime-image failures that are not malformed BLZ itself.
+Add category `"compressed-overlay-runtime-unavailable"` for canonical selection/runtime-image failures that are not BLZ stream errors.
 
 - [ ] **Step 1: Write RED runtime-image tests**
 
-Cover ARM9 and ARM7 compressed overlays with synthetic ROMs whose FAT entries contain committed valid BLZ fixture bytes. Assert:
+Build synthetic ARM9 and ARM7 compressed overlays whose FAT entries contain Task 1 fixture bytes. Assert runtime/stored sizes, both SHA-256 hashes, runtime base, BSS exclusion, `representation === "derived-blz"`, and exact decoded bytes.
 
-```ts
-const context = createNdsOverlayRuntimeContext(map);
-const image = await context.getCompressedOverlay("arm9", 7);
-assert.equal(image.overlayId, 7);
-assert.equal(image.representation, "derived-blz");
-assert.equal(image.runtimeAddress, overlay.ramAddress);
-assert.equal(image.runtimeSize, overlay.ramSize);
-assert.equal(image.bytes.length, overlay.ramSize);
-assert.equal(image.storedRomOffset, overlay.romOffset);
-assert.equal(image.storedSize, overlay.romSize);
-assert.equal(image.bssSize, overlay.bssSize);
-assert.equal(image.storedSha256, sha256(storedBytes));
-assert.equal(image.runtimeSha256, sha256(decodedBytes));
-```
-
-Also assert:
+Add tests proving:
 - unknown overlay ID fails;
-- an uncompressed overlay is rejected by `getCompressedOverlay`;
-- stored-size and decoded-size limits fail closed;
-- two calls for the same processor/overlay return the same cached image object and charge aggregate decoded bytes only once;
-- decoding two different overlays charges the sum and rejects the second if it would exceed 64 MiB/custom test limit;
-- source mutation before read, between stored-byte read and final return, and after a cached decode is detected before a top-level consumer can treat the cache as trusted;
-- BSS bytes are absent from `image.bytes`.
+- uncompressed overlay ID fails the compressed-only service;
+- stored/decoded limit failures are rejected before a cache entry is created;
+- repeated lookup of the same processor/overlay returns the same cached image and charges decoded bytes once;
+- different overlays charge aggregate decoded size independently and fail before exceeding the configured aggregate cap;
+- source mutation before read and during decode is rejected;
+- a cached image is not returned after the source ROM no longer matches `map.sha256`.
 
-- [ ] **Step 2: Run RED runtime-image tests**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-overlay-runtime.test.ts
 ```
 
-Expected: FAIL because `overlay-runtime.ts` does not exist.
+Expected: FAIL because `overlay-runtime.ts` is absent.
 
-- [ ] **Step 3: Implement canonical overlay lookup, exact stored-range read, hashes, cache, and budget**
+- [ ] **Step 3: Implement canonical lookup and decode context**
 
-Implementation rules:
+Use exact canonical lookup:
 
 ```ts
-const overlay = overlaysFor(map, processor).find(x => x.overlayId === overlayId);
-if (!overlay?.compressed) throw new NdsError("compressed-overlay-runtime-unavailable", ...);
+const overlays = processor === "arm9" ? map.overlays.arm9 : map.overlays.arm7;
+const overlay = overlays.find((candidate) => candidate.overlayId === overlayId);
+if (overlay === undefined || !overlay.compressed) {
+  throw new NdsError(
+    "compressed-overlay-runtime-unavailable",
+    `${processor.toUpperCase()} overlay ${overlayId} is not a canonical compressed overlay`,
+  );
+}
 ```
 
-Before reading, hash `map.romPath` and require `map.sha256`. Open read-only, read exactly `overlay.romSize` bytes at `overlay.romOffset`, close, decode with `overlay.ramSize`, hash both representations, then hash the source ROM again before caching/returning. The cache key is `${processor}:${overlayId}`.
+Before reading stored bytes, require `hashFileSha256(map.romPath) === map.sha256`. Read exactly `[overlay.romOffset, overlay.romOffset + overlay.romSize)`, compute `storedSha256`, decode with `overlay.ramSize`, compute `runtimeSha256`, and re-hash the ROM before cache/return. Cache key: `${processor}:${overlayId}`. Charge aggregate decoded bytes only after a unique decode succeeds.
 
-The context must charge `image.bytes.length` only on first successful decode of a unique key; a failed decode never consumes budget and never enters cache.
-
-- [ ] **Step 4: Run focused tests and full type-check**
+- [ ] **Step 4: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-overlay-runtime.test.ts tests/nds-blz.test.ts
@@ -283,7 +248,7 @@ npm run check
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/services/nds/overlay-runtime.ts src/services/nds/errors.ts tests/nds-overlay-runtime.test.ts
@@ -292,103 +257,79 @@ git commit -m "feat: add canonical compressed overlay runtime images"
 
 ---
 
-### Task 3: Extend resolver provenance without inventing ROM mappings
+### Task 3: Resolver provenance for derived runtime bytes
 
 **Files:**
 - Modify: `src/services/nds/resolver.ts`
 - Modify: `tests/nds-resolver.test.ts`
 
-**Interfaces:**
-
-Extend `RuntimeCandidate` with:
+**Interfaces:** Extend `RuntimeCandidate`:
 
 ```ts
 readonly runtimeImageOffset: number | null;
 readonly representation: "rom-file-backed" | "derived-overlay" | "runtime-only";
 ```
 
-Rules:
-- main/uncompressed initialized code: `representation: "rom-file-backed"`, exact `romOffset`, `runtimeImageOffset: relativeOffset`;
-- compressed initialized overlay: `representation: "derived-overlay"`, `romOffset: null`, `runtimeImageOffset: relativeOffset`, existing `backingRomOffset/backingRomSize` retained;
-- BSS: `representation: "runtime-only"`, `romOffset: null`, `runtimeImageOffset: null`.
+Mapping rules:
+- main/uncompressed initialized: `rom-file-backed`, exact `romOffset`, `runtimeImageOffset = relativeOffset`;
+- compressed initialized overlay: `derived-overlay`, `romOffset = null`, `runtimeImageOffset = relativeOffset`;
+- BSS: `runtime-only`, `romOffset = null`, `runtimeImageOffset = null`.
 
-Keep `resolveRomOffset()` physical. Bytes inside a compressed overlay FAT range continue to produce an overlay storage match with `runtimeAddress: null`.
+Existing `backingRomOffset`, `backingRomSize`, `fileId`, and compression metadata remain physical provenance.
 
-- [ ] **Step 1: Write RED resolver assertions**
+- [ ] **Step 1: Write RED resolver tests**
 
-Add tests for one compressed overlay runtime byte:
+For a compressed initialized address require `status === "compressed-no-direct-rom-mapping"`, `representation === "derived-overlay"`, `romOffset === null`, exact `runtimeImageOffset`, and exact backing storage range. For BSS require runtime-only/null offsets. For `resolveRomOffset()` inside compressed FAT storage require the overlay storage match to keep `runtimeAddress === null`.
 
-```ts
-assert.equal(result.status, "compressed-no-direct-rom-mapping");
-assert.equal(result.candidate.romOffset, null);
-assert.equal(result.candidate.runtimeImageOffset, address - overlay.ramAddress);
-assert.equal(result.candidate.representation, "derived-overlay");
-assert.equal(result.candidate.backingRomOffset, overlay.romOffset);
-assert.equal(result.candidate.backingRomSize, overlay.romSize);
-```
-
-For `resolveRomOffset(map, overlay.romOffset + 3)`, assert the compressed overlay match still has `runtimeAddress === null`.
-
-For BSS, assert `runtimeImageOffset === null` and `representation === "runtime-only"`.
-
-- [ ] **Step 2: Run RED resolver test**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-resolver.test.ts
 ```
 
-Expected: FAIL because the new fields are absent.
+Expected: FAIL because the new provenance fields are absent.
 
-- [ ] **Step 3: Populate provenance fields in all resolver candidates**
+- [ ] **Step 3: Populate every resolver candidate deterministically**
 
-Do not change the existing resolver status model. This task adds provenance only; the static byte-source layer in PR B decides whether a `compressed-no-direct-rom-mapping` candidate is usable as derived code.
+Do not change resolver statuses in this task. PR B's byte-source layer converts a compressed runtime candidate into usable derived code; physical ROM-offset resolution stays unchanged.
 
-- [ ] **Step 4: Run resolver + full checks**
+- [ ] **Step 4: Verify PR A**
 
 ```bash
 npm test -- tests/nds-resolver.test.ts
 npm run check
+npm test
 npm run build
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/services/nds/resolver.ts tests/nds-resolver.test.ts
 git commit -m "feat: expose compressed overlay runtime provenance"
 ```
 
-### PR A verification and integration gate
+### PR A gate
 
-- [ ] Run:
-
-```bash
-npm run check
-npm test
-npm run build
-```
-
-Expected: all pass with no Ghidra requirement.
-
-- [ ] Ensure package workflow passes on the exact head.
-- [ ] Confirm changed production files are limited to NDS decoder/runtime/resolver/error surfaces and no debugger files changed.
-- [ ] Mark PR #27 ready only after exact-head CI/package are green, then merge after the protected merge approval gate.
+- [ ] Update PR #27 body/title from design-only wording to the implemented PR A scope.
+- [ ] Require exact-head CI success: install, type-check, full tests, build.
+- [ ] Require exact-head Package success.
+- [ ] Compare against `main` and confirm no DeSmuME/GDB/controller/process-lifecycle production file changed.
+- [ ] Mark ready only when the exact head is green; merge only through the protected explicit approval gate.
 
 ---
 
-### Task 4: Generalize exact code sources to ROM-backed or derived-overlay bytes
+### Task 4: Generalize `NdsCodeSource` and exact byte reading
 
-**PR B branch:** create from updated `main` after PR A merges, e.g. `feature/nds-compressed-overlay-static-analysis`.
+**PR B branch:** `feature/nds-compressed-overlay-static-analysis`, created from updated `main` after PR A merges.
 
 **Files:**
 - Modify: `src/services/nds/disassembly-source.ts`
 - Modify: `tests/nds-disassembly-source.test.ts`
 
 **Interfaces:**
-
-Replace the direct-ROM-only `NdsCodeSource` assumption with:
 
 ```ts
 export type NdsCodeRepresentation = "rom-file-backed" | "derived-overlay";
@@ -407,11 +348,7 @@ export interface NdsCodeSource {
   readonly representation: NdsCodeRepresentation;
   readonly mode: ArmMode;
 }
-```
 
-Add a shared reader entry point:
-
-```ts
 export async function withValidatedNdsCodeReader<T>(
   map: NdsRomMap,
   callback: (
@@ -420,68 +357,44 @@ export async function withValidatedNdsCodeReader<T>(
 ): Promise<T>;
 ```
 
-It owns one `NdsOverlayRuntimeContext` for the top-level callback, preserving the 64 MiB aggregate decoded-image budget and decode reuse.
+`withValidatedNdsCodeReader()` owns one `NdsOverlayRuntimeContext` for the full callback, so one top-level static operation gets decode reuse plus the 64 MiB aggregate cap.
 
-- [ ] **Step 1: Characterize current uncompressed source behavior before changing types**
+- [ ] **Step 1: Characterize current main/uncompressed behavior**
 
-Add tests that pin main and uncompressed overlay `romOffset`, runtime geometry, ARM/Thumb alignment, control-flow retargeting, and before/after ROM SHA checks. Run them green before modifying production.
+Before type changes, add green tests pinning main and uncompressed overlay source runtime range, exact ROM offset, ARM/Thumb alignment, `codeSourceAt()`, and control-flow retargeting.
 
 - [ ] **Step 2: Add RED compressed-runtime source tests**
 
-For a compressed overlay selected by runtime address + explicit `overlayId`, require:
+For runtime address + explicit compressed `overlayId`, require `status === "resolved"`, `representation === "derived-overlay"`, `romOffset === null`, and exact `runtimeImageOffset`. Without overlay ID, overlapping runtime candidates remain `ambiguous-code-source`. A ROM-offset selector into compressed storage must not resolve as decoded runtime code.
 
-```ts
-assert.equal(resolution.status, "resolved");
-assert.equal(resolution.source.representation, "derived-overlay");
-assert.equal(resolution.source.romOffset, null);
-assert.equal(resolution.source.runtimeImageOffset, address - overlay.ramAddress);
-```
-
-An overlapping address without overlay ID must remain `ambiguous-code-source`. A ROM-offset selector into compressed storage must not resolve as runtime code.
-
-- [ ] **Step 3: Run RED source tests**
+- [ ] **Step 3: Run RED**
 
 ```bash
 npm test -- tests/nds-disassembly-source.test.ts
 ```
 
-Expected: FAIL on compressed-overlay expectations.
+Expected: compressed source assertions FAIL.
 
 - [ ] **Step 4: Refactor source classification and `codeSourceAt()`**
 
-For compressed initialized runtime candidates, create `derived-overlay` sources with `romStart/romEnd/romOffset === null` and exact runtime offsets. For ROM-backed sources preserve existing behavior.
-
-`codeSourceAt()` must advance:
-
-```ts
-runtimeImageOffset: source.runtimeImageOffset + (runtimeAddress - source.runtimeAddress)
-```
-
-and advance `romOffset` only when `representation === "rom-file-backed"`.
+Compressed initialized runtime candidates become derived sources. `codeSourceAt()` advances `runtimeImageOffset` by runtime delta; it advances `romOffset` only for `rom-file-backed` sources. Component boundaries use `runtimeEnd`, not a nullable ROM end.
 
 - [ ] **Step 5: Implement `withValidatedNdsCodeReader()`**
 
-For ROM-backed sources, read the existing exact ROM range. For derived overlay sources:
+For ROM-backed sources read the existing exact ROM range. For derived sources obtain `runtimeContext.getCompressedOverlay(source.processor, source.overlayId)` and return the bounded slice beginning at `source.runtimeImageOffset`. Require non-null overlay ID for `derived-overlay` and throw an internal NDS range error if that invariant is broken.
 
-```ts
-const image = await runtimeContext.getCompressedOverlay(source.processor, source.overlayId!);
-const start = source.runtimeImageOffset;
-const length = Math.min(maxBytes, image.bytes.length - start);
-return image.bytes.subarray(start, start + length);
-```
+Keep ROM SHA verification before the callback and after the callback.
 
-Keep source-ROM SHA validation before opening/decoding and after the callback. Do not expose the runtime context to MCP callers.
-
-- [ ] **Step 6: Run source tests and compile all call sites**
+- [ ] **Step 6: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-disassembly-source.test.ts tests/nds-overlay-runtime.test.ts
 npm run check
 ```
 
-Expected: PASS after updating internal call sites to the new reader name/signature.
+Expected: PASS after internal reader imports are renamed.
 
-- [ ] **Step 7: Commit Task 4**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/services/nds/disassembly-source.ts tests/nds-disassembly-source.test.ts
@@ -490,54 +403,72 @@ git commit -m "feat: read NDS code from canonical runtime images"
 
 ---
 
-### Task 5: Enable compressed overlays in disassembly, CFG, references, and xrefs
+### Task 5: Disassembly, CFG, references, and xrefs over decoded overlays
 
 **Files:**
-- Modify as required by type flow: `src/services/nds/disassembly.ts`
+- Modify: `src/services/nds/disassembly.ts`
 - Modify: `src/services/nds/control-flow.ts`
+- Modify: `src/services/nds/references.ts`
 - Modify: `src/services/nds/reference-list.ts`
 - Modify: `src/services/nds/xref-source.ts`
 - Modify: `src/services/nds/xrefs.ts`
-- Tests: `tests/nds-disassembly.test.ts`, `tests/nds-control-flow.test.ts`, `tests/nds-reference-list.test.ts`, `tests/nds-xrefs.test.ts`
+- Modify: `tests/nds-disassembly.test.ts`
+- Modify: `tests/nds-control-flow.test.ts`
+- Modify: `tests/nds-reference-list.test.ts`
+- Modify: `tests/nds-xrefs.test.ts`
+- Modify: `tests/nds-reference-target-mode.test.ts`
 
-**Interfaces:** Existing public service/tool result shapes remain authoritative except code-source provenance may now report `representation: "derived-overlay"`, `romOffset: null`, and exact `runtimeImageOffset`.
+**Type changes:**
 
-- [ ] **Step 1: Write one synthetic compressed ARM overlay fixture with known ARM/Thumb code**
-
-Decoded bytes must contain at least:
-- deterministic instructions that Capstone can decode;
-- one direct branch/call with known target mode;
-- one PC-relative/literal reference usable by reference tests.
-
-Use the same canonical overlay metadata and BLZ stored bytes across the four focused test files.
-
-- [ ] **Step 2: Write RED end-to-end static tests**
-
-Require:
-- `disassembleNdsRange` returns decoded instructions from the runtime image, not compressed storage bytes;
-- CFG traversal follows an in-overlay direct edge;
-- `listNdsReferences` reports deterministic decoded-code references;
-- `findNdsXrefs` finds the same direct reference in reverse;
-- all returned compressed-overlay identities keep `romOffset: null`;
-- overlapping compressed overlays still require explicit overlay selection.
-
-- [ ] **Step 3: Run the focused RED suite**
-
-```bash
-npm test -- tests/nds-disassembly.test.ts tests/nds-control-flow.test.ts tests/nds-reference-list.test.ts tests/nds-xrefs.test.ts
+```ts
+export interface StaticInstruction {
+  readonly address: number;
+  readonly romOffset: number | null;
+  // existing remaining fields unchanged
+}
 ```
 
-Expected: at least compressed-overlay cases FAIL before the reader integration is threaded through every service.
+and:
 
-- [ ] **Step 4: Route all exact code reads through `withValidatedNdsCodeReader()`**
+```ts
+StaticReference["source"]["instructionRomOffset"]: number | null
+```
 
-Remove assumptions such as arithmetic on non-null `source.romOffset`. Control-flow identity must use runtime/component/overlay/mode, not ROM offset, for derived sources.
+Target `romOffset` is already nullable and remains so.
 
-- [ ] **Step 5: Preserve bounds and truncation behavior**
+- [ ] **Step 1: Add a synthetic compressed-code fixture shared by focused static tests**
 
-The existing max blocks/instructions/bytes/edges and `RE_MCP_MAX_OUTPUT_BYTES` behavior remain unchanged. Decoded-image memory is additionally bounded by the operation-scoped 64 MiB cap.
+Decoded bytes contain valid ARM/Thumb instructions, an exact direct branch/call, and a deterministic PC-relative/literal reference. The ROM contains BLZ stored bytes, so a test can prove returned instructions match decoded bytes rather than compressed storage.
 
-- [ ] **Step 6: Run focused + regression tests**
+- [ ] **Step 2: Write RED end-to-end assertions**
+
+Require:
+- linear disassembly returns expected decoded mnemonics/bytes;
+- `StaticInstruction.romOffset === null` and canonical overlay source identity is retained;
+- component-boundary logic uses runtime initialized end;
+- CFG follows an in-overlay deterministic edge;
+- `StaticReference.source.instructionRomOffset === null` for decoded code;
+- reference target resolution remains canonical;
+- reverse xref discovery finds the same decoded direct reference;
+- overlapping compressed overlays remain ambiguous without explicit overlay selection.
+
+- [ ] **Step 3: Run RED**
+
+```bash
+npm test -- tests/nds-disassembly.test.ts tests/nds-control-flow.test.ts tests/nds-reference-list.test.ts tests/nds-xrefs.test.ts tests/nds-reference-target-mode.test.ts
+```
+
+Expected: compressed cases/type assertions FAIL.
+
+- [ ] **Step 4: Route exact reads through `withValidatedNdsCodeReader()`**
+
+Replace `withValidatedNdsRomReader` imports. Remove arithmetic that assumes `source.romOffset`/`romEnd` are numbers. Use runtime range for read/component boundaries and canonical processor/component/overlay/runtime/mode for identity.
+
+- [ ] **Step 5: Update reference source provenance**
+
+Copy `instruction.romOffset` as nullable. Sorting/dedup remains based on processor/component/overlay/instruction runtime address/mode/reference kind/target runtime address, so nullable physical provenance must not become identity.
+
+- [ ] **Step 6: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-disassembly.test.ts tests/nds-control-flow.test.ts tests/nds-reference-list.test.ts tests/nds-xrefs.test.ts tests/nds-reference-target-mode.test.ts
@@ -546,159 +477,187 @@ npm run check
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 5**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/nds/disassembly.ts src/services/nds/control-flow.ts src/services/nds/reference-list.ts src/services/nds/xref-source.ts src/services/nds/xrefs.ts tests/nds-disassembly.test.ts tests/nds-control-flow.test.ts tests/nds-reference-list.test.ts tests/nds-xrefs.test.ts
+git add src/services/nds/disassembly.ts src/services/nds/control-flow.ts src/services/nds/references.ts src/services/nds/reference-list.ts src/services/nds/xref-source.ts src/services/nds/xrefs.ts tests/nds-disassembly.test.ts tests/nds-control-flow.test.ts tests/nds-reference-list.test.ts tests/nds-xrefs.test.ts tests/nds-reference-target-mode.test.ts
 git commit -m "feat: analyze compressed NDS overlay code"
 ```
 
 ---
 
-### Task 6: Extend proven function discovery and focused function analysis
+### Task 6: Proven function discovery and focused analysis with nullable ROM provenance
 
 **Files:**
+- Modify: `src/services/nds/function-model.ts`
 - Modify: `src/services/nds/function-source.ts`
 - Modify: `src/services/nds/function-discovery.ts`
 - Modify: `src/services/nds/function-analysis.ts`
-- Modify: `src/services/nds/function-model.ts` only if its non-null ROM-offset typing requires it
-- Tests: `tests/nds-function-source.test.ts`, `tests/nds-function-discovery.test.ts`, `tests/nds-function-analysis.test.ts`, `tests/nds-function-integrity.test.ts`
+- Modify: `tests/nds-function-model.test.ts`
+- Modify: `tests/nds-function-source.test.ts`
+- Modify: `tests/nds-function-discovery.test.ts`
+- Modify: `tests/nds-function-analysis.test.ts`
+- Modify: `tests/nds-function-integrity.test.ts`
 
-**Interfaces:** `ProvenFunctionIdentity.romOffset` must become `number | null` if it is currently non-null. Identity uniqueness continues to use processor + component + overlay ID + runtime address + mode; `romOffset` is provenance, not the key for derived overlay functions.
+**Type changes:**
 
-- [ ] **Step 1: Write RED proof-boundary tests**
-
-Create a compressed overlay with a direct call from an explicit search seed to a second decoded function. Assert the target becomes proven only through `direct-call` evidence. Also assert:
-- an explicit seed alone is not proof;
-- a prologue-looking decoded sequence is not proof;
-- overlapping overlay target resolution remains ambiguous without canonical overlay context;
-- focused analysis distinguishes complete negative proof from truncation exactly as before.
-
-- [ ] **Step 2: Run RED function tests**
-
-```bash
-npm test -- tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
+```ts
+export interface ProvenFunctionIdentity {
+  readonly processor: NdsProcessor;
+  readonly component: "main" | "overlay";
+  readonly overlayId: number | null;
+  readonly runtimeAddress: number;
+  readonly romOffset: number | null;
+  readonly mode: ArmMode;
+}
 ```
 
-Expected: compressed-overlay cases FAIL until nullable ROM provenance is supported throughout function identity/evidence.
+Change both direct-call physical provenance fields to nullable:
 
-- [ ] **Step 3: Update function identities and canonicalization**
+```ts
+FunctionProof direct-call caller.instructionRomOffset: number | null
+ProvenFunctionCallEdge.instructionRomOffset: number | null
+```
 
-`identityFromSource()` must copy `source.romOffset` without requiring non-null. `canonicalizeFunctionTarget()` still resolves through canonical code-source ownership and selected component scope.
+Function IDs and comparison remain based on processor/component/overlay/runtime/mode, not ROM offset.
 
-Coverage should no longer classify a successfully decodable compressed overlay as an unavoidable compressed gap. A malformed/limit-failing compressed overlay must produce an explicit incomplete/truncated coverage reason rather than being interpreted as code from stored bytes.
+- [ ] **Step 1: Write RED model/proof tests**
 
-- [ ] **Step 4: Run proof tests and full type-check**
+Assert derived overlay function identities allow `romOffset: null`, IDs remain stable, and direct-call proof/call edges preserve `instructionRomOffset: null`.
+
+Add a compressed overlay with an explicit coverage seed containing one direct call to a second entry. Require the second entry to be proven only by exact `direct-call` evidence. Require the explicit seed itself and a prologue-looking byte sequence to remain unproven.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
-npm test -- tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
+npm test -- tests/nds-function-model.test.ts tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
+```
+
+Expected: nullable-provenance/compressed cases FAIL.
+
+- [ ] **Step 3: Update function model and proof propagation**
+
+`identityFromSource()` copies nullable `source.romOffset`. Direct-call evidence copies nullable instruction ROM provenance. Coverage no longer reports `compressed-overlay-not-decodable` for a successfully decoded overlay. If decoding fails because BLZ is malformed or a decode budget is exceeded, coverage remains incomplete and surfaces a deterministic truncation/error reason; stored compressed bytes are never interpreted as instructions.
+
+- [ ] **Step 4: Preserve proof boundary**
+
+`canonicalizeFunctionTarget()` still calls canonical code-source resolution and requires the selected component set. Do not add heuristic seeds, prologue recognition, Ghidra facts, or branch-only proof.
+
+- [ ] **Step 5: Verify GREEN**
+
+```bash
+npm test -- tests/nds-function-model.test.ts tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
 npm run check
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 6**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/nds/function-source.ts src/services/nds/function-discovery.ts src/services/nds/function-analysis.ts src/services/nds/function-model.ts tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
+git add src/services/nds/function-model.ts src/services/nds/function-source.ts src/services/nds/function-discovery.ts src/services/nds/function-analysis.ts tests/nds-function-model.test.ts tests/nds-function-source.test.ts tests/nds-function-discovery.test.ts tests/nds-function-analysis.test.ts tests/nds-function-integrity.test.ts
 git commit -m "feat: prove functions in decoded NDS overlays"
 ```
 
 ---
 
-### Task 7: Persist derived runtime artifacts in analysis bundles and package smoke
+### Task 7: Deterministic derived artifacts in analysis bundles and package smoke
 
 **Files:**
+- Create: `src/services/nds/derived-artifacts.ts`
 - Modify: `src/services/nds/extraction.ts`
-- Create: `src/services/nds/derived-artifacts.ts` if keeping atomic derived writes out of the already-large extraction service is cleaner
 - Modify: `tests/nds-extraction.test.ts`
 - Modify: `scripts/check-install.mjs`
-- Modify package workflow smoke only if the existing script cannot exercise the new artifact
 
-**Interfaces:** For each compressed overlay, persist a deterministic generated artifact at:
+**Interfaces:**
+
+```ts
+export interface NdsDerivedOverlayArtifact {
+  readonly output: string;
+  readonly representation: "derived-blz";
+  readonly processor: NdsProcessor;
+  readonly overlayId: number;
+  readonly fileId: number;
+  readonly storedRomOffset: number;
+  readonly storedSize: number;
+  readonly storedSha256: string;
+  readonly runtimeAddress: number;
+  readonly runtimeSize: number;
+  readonly runtimeSha256: string;
+  readonly bssSize: number;
+}
+
+export async function writeNdsDerivedOverlayArtifact(
+  root: string,
+  image: NdsOverlayRuntimeImage,
+): Promise<NdsDerivedOverlayArtifact>;
+```
+
+Path:
 
 ```text
 analysis/generated/nds/<sha-prefix>/derived/overlays/<processor>/overlay-<id>.runtime.bin
 ```
 
-Bundle manifest entries for derived images must include:
+- [ ] **Step 1: Write RED bundle tests**
 
-```ts
-{
-  representation: "derived-blz",
-  processor,
-  overlayId,
-  fileId,
-  storedRomOffset,
-  storedSize,
-  storedSha256,
-  runtimeAddress,
-  runtimeSize,
-  runtimeSha256,
-  bssSize,
-  output
-}
-```
+Require a compressed overlay bundle to contain both exact stored extraction under `overlays/<processor>/overlay_<id>.bin` and decoded runtime artifact under `derived/overlays/<processor>/overlay-<id>.runtime.bin`. Assert exact stored/runtime hashes, `runtimeSize === ramSize`, and BSS exclusion.
 
-- [ ] **Step 1: Write RED transactional bundle tests**
+Add a mutation/promotion failure test proving the previous final bundle remains intact and the temporary tree is removed.
 
-Require the bundle to contain both:
-- the original exact compressed stored overlay extraction under `overlays/...`; and
-- the decoded runtime artifact under `derived/overlays/...`.
-
-Assert hashes/sizes against the runtime-image service, `runtimeSize === ramSize`, and no BSS bytes in the derived file. Add a source-mutation test that leaves the previous final bundle intact and removes the temporary bundle.
-
-- [ ] **Step 2: Run RED extraction tests**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-extraction.test.ts
 ```
 
-Expected: FAIL because derived runtime artifacts are absent.
+Expected: FAIL because derived artifacts are absent.
 
-- [ ] **Step 3: Generate derived images inside the existing transaction**
+- [ ] **Step 3: Implement atomic derived writer**
 
-Instantiate one `NdsOverlayRuntimeContext` for bundle generation. For each compressed overlay, obtain its image, atomically write `image.bytes` inside the temporary bundle, record exact provenance, then perform the existing source-SHA recheck before temp→final promotion.
+`writeNdsDerivedOverlayArtifact()` writes `image.bytes` to a temporary file inside the supplied generated root, syncs it, verifies the resulting SHA-256 equals `image.runtimeSha256`, and renames atomically to the deterministic path. It never accepts a caller/MCP path; `root` is only the internally selected analysis-bundle temporary root.
 
-Do not change `extractNdsComponent()` behavior: explicit overlay extraction remains exact stored FAT-backed bytes.
+- [ ] **Step 4: Integrate with the existing bundle transaction**
 
-- [ ] **Step 4: Extend package smoke**
+Create one `NdsOverlayRuntimeContext` for `extractNdsAnalysisBundle()`. Keep every stored overlay extraction unchanged. For each compressed overlay also get its runtime image and write a derived artifact inside the same temporary bundle. Add a `derivedOverlays` array to `manifest.json`; bump the static-analysis bundle `formatVersion` from 1 to 2. Perform the existing final source SHA check before temp→final promotion.
 
-The packaged smoke ROM must include a valid small compressed overlay and require the compiled production service to generate a decoded runtime artifact whose bytes/hash match the known expected runtime bytes. No Python/ndspy invocation is allowed in package CI.
+`extractNdsComponent()` remains stored-byte extraction only.
 
-- [ ] **Step 5: Run bundle/package-facing checks locally**
+- [ ] **Step 5: Extend packaged smoke**
+
+`check-install.mjs` creates a valid synthetic ROM with one small compressed overlay using committed fixture bytes, runs compiled production bundle generation, and requires the generated runtime artifact bytes/hash to match the committed expected decoded bytes. The package check does not invoke Python, ndspy, Ghidra, or a network resource.
+
+- [ ] **Step 6: Verify PR B**
 
 ```bash
-npm test -- tests/nds-extraction.test.ts tests/package-capstone-install.test.ts
+npm test -- tests/nds-extraction.test.ts
 npm run check
+npm test
 npm run build
 node scripts/check-install.mjs .
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 7**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/nds/extraction.ts src/services/nds/derived-artifacts.ts tests/nds-extraction.test.ts scripts/check-install.mjs .github/workflows/package.yml
+git add src/services/nds/derived-artifacts.ts src/services/nds/extraction.ts tests/nds-extraction.test.ts scripts/check-install.mjs
 git commit -m "feat: persist decoded overlay analysis artifacts"
 ```
 
-If `derived-artifacts.ts` or the workflow file is not needed after the implementation is kept focused, omit that path from the commit rather than creating an empty abstraction.
+### PR B gate
 
-### PR B verification and integration gate
-
-- [ ] Run full tests, type-check, and build.
 - [ ] Require exact-head CI and Package success.
-- [ ] Confirm `nds_search_pattern` tests still prove physical-ROM behavior for compressed storage.
-- [ ] Confirm no debugger/runtime-control files changed.
-- [ ] Merge only after the protected merge approval gate.
+- [ ] Run existing `nds_search_pattern` tests and explicitly confirm compressed-overlay matches still describe stored FAT bytes only.
+- [ ] Compare against `main`; confirm no DeSmuME/GDB/controller/process-lifecycle production files changed.
+- [ ] Merge only through the protected explicit approval gate.
 
 ---
 
-### Task 8: Extend Ghidra bridge manifests to derived overlay artifacts
+### Task 8: Ghidra bridge manifest for derived overlay artifacts
 
-**PR C branch:** create from updated `main` after PR B merges, e.g. `feature/nds-compressed-overlay-ghidra`.
+**PR C branch:** `feature/nds-compressed-overlay-ghidra`, created from updated `main` after PR B merges.
 
 **Files:**
 - Modify: `src/services/nds/ghidra-model.ts`
@@ -706,58 +665,59 @@ If `derived-artifacts.ts` or the workflow file is not needed after the implement
 - Modify: `tests/nds-ghidra-model.test.ts`
 - Modify: `tests/nds-ghidra-bridge.test.ts`
 
-**Interfaces:** Bump `GHIDRA_BRIDGE_FORMAT_VERSION` because overlay artifact semantics gain runtime/stored provenance. Preserve `importable` for existing uncompressed overlays and add:
+**Interfaces:** Bump `GHIDRA_BRIDGE_FORMAT_VERSION` from 1 to 2.
 
 ```ts
 export type GhidraOverlayImportStatus =
   | "importable"
   | "importable-derived";
+
+export interface GhidraOverlayManifest {
+  readonly processor: NdsProcessor;
+  readonly overlayId: number;
+  readonly spaceName: string;
+  readonly artifactPath: string;
+  readonly fileId: number;
+  readonly runtimeAddress: number;
+  readonly ramSize: number;
+  readonly bssSize: number;
+  readonly representation: "rom-file-backed" | "derived-blz";
+  readonly initializedSize: number;
+  readonly storedRomOffset: number;
+  readonly storedSize: number;
+  readonly storedSha256: string;
+  readonly runtimeSha256: string;
+  readonly compressed: boolean;
+  readonly compressedSize: number | null;
+  readonly importStatus: GhidraOverlayImportStatus;
+}
 ```
 
-Extend `GhidraOverlayManifest` with:
+For uncompressed overlays, `artifactPath` remains the stored overlay artifact, `representation = "rom-file-backed"`, `initializedSize = Math.min(ramSize, romSize)`, and `importStatus = "importable"`.
 
-```ts
-readonly representation: "rom-file-backed" | "derived-blz";
-readonly initializedSize: number;
-readonly storedRomOffset: number;
-readonly storedSize: number;
-readonly storedSha256: string;
-readonly runtimeSha256: string;
-```
+For compressed overlays, `artifactPath` is the deterministic derived runtime artifact, `representation = "derived-blz"`, `initializedSize = ramSize`, and `importStatus = "importable-derived"`.
 
-For compressed overlays:
-- `artifactPath` points to the generated derived runtime file;
-- `representation === "derived-blz"`;
-- `initializedSize === ramSize`;
-- `importStatus === "importable-derived"`;
-- stored and runtime hashes come from bundle/runtime provenance.
+- [ ] **Step 1: Write RED bridge/model tests**
 
-For uncompressed overlays:
-- keep the existing file-backed artifact and behavior;
-- `initializedSize === Math.min(ramSize, romSize)`;
-- `representation === "rom-file-backed"`.
+Require compressed overlay records to contain distinct stored/runtime hashes and derived artifact path. Require no `not-imported-compressed` status in bridge format v2. Require all artifact paths to remain under the generated analysis root.
 
-- [ ] **Step 1: Write RED manifest tests**
-
-Assert a compressed overlay is no longer `not-imported-compressed`, points only to a generated runtime artifact, contains both stored/runtime hashes, and retains canonical ROM storage metadata separately.
-
-- [ ] **Step 2: Run RED bridge/model tests**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-ghidra-model.test.ts tests/nds-ghidra-bridge.test.ts
 ```
 
-Expected: FAIL on old bridge format/status.
+Expected: old status/format assertions FAIL.
 
-- [ ] **Step 3: Build bridge records from the generated bundle/runtime provenance**
+- [ ] **Step 3: Build v2 manifests from bundle provenance**
 
-Do not decompress again inside Ghidra bridge generation. `extractNdsAnalysisBundle()` already produces and validates the derived artifact; bridge generation copies/references that exact artifact and records its hash in the bridge artifact inventory.
+Do not decompress a second time in Ghidra bridge generation. Read the validated v2 analysis-bundle manifest, associate each compressed canonical overlay with its derived artifact record by processor/overlay ID, and require source SHA, runtime size, and runtime address to match the canonical map before producing the bridge manifest.
 
-- [ ] **Step 4: Validate all manifest artifact hashes before Ghidra runs**
+- [ ] **Step 4: Validate derived bridge artifacts**
 
-`validateGeneratedGhidraBridge()` must verify the derived runtime artifact size/hash exactly like every other bridge artifact and reject any mismatch before `analyzeHeadless` starts.
+`validateGeneratedGhidraBridge()` verifies derived artifact regular-file status, exact size, and SHA-256 using the same artifact inventory validation as other bridge inputs.
 
-- [ ] **Step 5: Run focused + package tests**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 npm test -- tests/nds-ghidra-model.test.ts tests/nds-ghidra-bridge.test.ts tests/nds-ghidra-tools.test.ts
@@ -766,7 +726,7 @@ npm run check
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 8**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/nds/ghidra-model.ts src/services/nds/ghidra-bridge.ts tests/nds-ghidra-model.test.ts tests/nds-ghidra-bridge.test.ts
@@ -775,122 +735,104 @@ git commit -m "feat: bridge decoded overlays into Ghidra"
 
 ---
 
-### Task 9: Reconcile derived overlays into persistent Ghidra projects without overwriting analyst state
+### Task 9: Safe persistent-Ghidra reconciliation for derived overlays
 
 **Files:**
 - Modify: `resources/ghidra/ReMcpPrepareProgram.java`
 - Modify: `tests/nds-ghidra-resources.test.ts`
-- Modify/add focused source-contract test if existing resource test is too broad
-- Modify: `tests/nds-ghidra-project.test.ts` or acceptance harness assertions for project-state behavior
+- Create: `tests/nds-ghidra-compressed-overlay-resource.test.ts`
+- Modify: `tests/nds-ghidra-project.test.ts`
 
-**Interfaces:** Java accepts only `importable` and `importable-derived`. It reads `initializedSize`, `representation`, and `runtimeSha256` from the trusted bridge manifest.
+**Manifest contract consumed by Java:** `importStatus`, `representation`, `initializedSize`, `runtimeSha256`, canonical runtime geometry, and artifact path.
 
-- [ ] **Step 1: Write RED Java source-contract tests**
+- [ ] **Step 1: Write RED source-contract tests**
 
-Require the resource to:
-- accept `importable-derived`;
-- use manifest `initializedSize` rather than `Math.min(ramSize, fileBackedSize)`;
-- resolve only generated-analysis-contained artifacts;
-- create true Ghidra overlay blocks at canonical runtime addresses;
-- keep BSS in the same overlay address space and uninitialized;
-- reject unknown import status/representation;
-- retain the existing no-destructive-repair guarantees.
+Require Java source to accept only `importable` and `importable-derived`, consume `initializedSize`, reject unknown representations/statuses, resolve artifact paths under generated analysis, create true overlay blocks, and keep BSS uninitialized in the same overlay address space.
 
-- [ ] **Step 2: Add ownership/hash metadata contract**
+- [ ] **Step 2: Write RED ownership/conflict tests**
 
-Use per-overlay program metadata keys derived from processor/overlay ID, for example:
+Require per-overlay program-info metadata keys:
 
 ```text
-re-mcp.overlay.<id>.representation
-re-mcp.overlay.<id>.runtime-sha256
+re-mcp.overlay.<overlayId>.representation
+re-mcp.overlay.<overlayId>.runtime-sha256
 ```
 
-On a newly created derived block, set those values after successful creation/validation. On an existing RE-MCP overlay block:
-- validate name, overlay-space identity, runtime start, and exact initialized size;
-- require existing representation/hash metadata to match, or when migrating a v1 file-backed owned block, validate its canonical geometry before writing only the new metadata;
-- never delete/recreate a conflicting block;
-- fail `project-state-mismatch` through the existing headless failure path on conflict.
+For a newly created derived overlay, bootstrap sets matching metadata after block validation. For an existing block, bootstrap validates block name, overlay space, runtime start, initialized size, representation, and runtime hash metadata. Any conflict fails closed; Java never deletes/recreates an existing conflicting analyst/project block.
 
-- [ ] **Step 3: Run RED resource/project tests**
+For a v1 project with an existing canonical uncompressed RE-MCP block but no per-overlay hash metadata, permit one migration only after canonical geometry is validated, then record the v2 metadata. A formerly absent compressed overlay can be added as a new RE-MCP-owned overlay block because the project already has matching full ROM SHA ownership.
+
+- [ ] **Step 3: Run RED**
 
 ```bash
-npm test -- tests/nds-ghidra-resources.test.ts tests/nds-ghidra-project.test.ts
+npm test -- tests/nds-ghidra-resources.test.ts tests/nds-ghidra-compressed-overlay-resource.test.ts tests/nds-ghidra-project.test.ts
 ```
 
-Expected: FAIL until Java and the expected bridge version/status are updated.
+Expected: FAIL until Java understands bridge v2/derived status.
 
 - [ ] **Step 4: Update `ReMcpPrepareProgram.java`**
 
-For both importable representations, open only the manifest artifact and create the initialized overlay block with exactly `initializedSize`. Never read compressed stored bytes for `derived-blz`. BSS creation remains `createUninitializedBlock` at `runtimeAddress + ramSize` in the true overlay space.
+Use manifest `initializedSize` for both representations. For `derived-blz`, open only the derived artifact; never open compressed stored bytes as executable contents. Create BSS using `createUninitializedBlock` at `runtimeAddress + ramSize` in the initialized block's true overlay address space. Keep labels/comments/bookmarks/types/namespaces/function names/signatures untouched.
 
-Keep analyst labels/comments/bookmarks/types/namespaces/functions untouched. Existing block conflicts terminate bootstrap rather than being repaired.
-
-- [ ] **Step 5: Run Ghidra-independent tests**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
-npm test -- tests/nds-ghidra-resources.test.ts tests/nds-ghidra-project.test.ts tests/nds-ghidra-runner.test.ts
+npm test -- tests/nds-ghidra-resources.test.ts tests/nds-ghidra-compressed-overlay-resource.test.ts tests/nds-ghidra-project.test.ts tests/nds-ghidra-runner.test.ts
 npm run check
 npm run build
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 9**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add resources/ghidra/ReMcpPrepareProgram.java tests/nds-ghidra-resources.test.ts tests/nds-ghidra-project.test.ts
+git add resources/ghidra/ReMcpPrepareProgram.java tests/nds-ghidra-resources.test.ts tests/nds-ghidra-compressed-overlay-resource.test.ts tests/nds-ghidra-project.test.ts
 git commit -m "feat: reconcile decoded overlays in Ghidra"
 ```
 
 ---
 
-### Task 10: Real-Ghidra acceptance, docs, and final regression
+### Task 10: Real Ghidra acceptance, docs, and final regression
 
 **Files:**
 - Modify: `scripts/ghidra-acceptance.mjs`
 - Modify: `scripts/ghidra-inspection-hardening-acceptance.mjs`
-- Modify: `.github/workflows/ghidra-integration.yml` only if the harness invocation itself changes
 - Modify: `tests/nds-ghidra-acceptance.test.ts`
 - Modify: `docs/nds-ghidra-integration.md`
-- Modify: `README.md` only where public capability text needs compressed-overlay status updated
+- Modify: `README.md`
 
-**Acceptance fixture:** Add one compressed ARM9 overlay with known decoded ARM/Thumb code. Keep the existing two overlapping uncompressed overlay identities and analyst marker checks so this is additive coverage, not replacement coverage.
+**Acceptance fixture:** one compressed ARM9 overlay containing known decoded code, alongside the existing overlapping overlay identities and analyst marker checks.
 
 - [ ] **Step 1: Write RED acceptance-contract assertions**
 
-Source tests must require the harness to verify:
-- compressed overlay stored bytes differ from decoded runtime bytes;
-- runtime artifact hash equals the bridge manifest `runtimeSha256`;
-- Ghidra memory bytes in the compressed overlay space equal decoded runtime bytes;
-- BSS block is uninitialized;
-- hardened read-only inspection can inspect a function/reference/call inside the derived overlay when RE-MCP proof exists;
-- the same numeric runtime address in another overlay remains a distinct Ghidra overlay space;
-- rerunning bootstrap preserves `REMCP_ACCEPTANCE_ANALYST_MARKER` and existing project content;
-- hidden `REPORT SCRIPT ERROR` / exceptions are rejected.
+`tests/nds-ghidra-acceptance.test.ts` requires the harness source to verify:
+- compressed stored bytes differ from decoded runtime bytes;
+- runtime artifact SHA equals manifest `runtimeSha256`;
+- Ghidra overlay memory bytes equal decoded runtime bytes;
+- BSS is uninitialized;
+- hardened read-only inspection can inspect a proven function/reference/call inside the derived overlay;
+- overlapping numeric runtime addresses remain separate overlay spaces;
+- rerun preserves `REMCP_ACCEPTANCE_ANALYST_MARKER` and existing project content;
+- hidden `REPORT SCRIPT ERROR`/exceptions fail acceptance.
 
-- [ ] **Step 2: Run RED acceptance-contract tests**
+- [ ] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/nds-ghidra-acceptance.test.ts
 ```
 
-Expected: FAIL until the real acceptance harness includes compressed-overlay assertions.
+Expected: FAIL because compressed-overlay acceptance assertions are absent.
 
-- [ ] **Step 3: Extend synthetic acceptance ROM and harness**
+- [ ] **Step 3: Extend both acceptance harnesses**
 
-Use committed/embedded valid overlay BLZ fixture bytes; do not invoke an external compressor during Actions. The harness must derive the canonical map through compiled RE-MCP services, bootstrap Ghidra, inspect the true derived overlay space, snapshot persistent project bytes before read-only inspection, and compare them after inspection.
+Embed/read committed valid compressed overlay fixture bytes; do not run an external compressor in Actions. `ghidra-acceptance.mjs` verifies bootstrap/import/provenance/project preservation. `ghidra-inspection-hardening-acceptance.mjs` performs the existing read-only/no-analysis checks against a decoded overlay identity and snapshots persistent project bytes before/after inspection.
 
-- [ ] **Step 4: Update docs**
+- [ ] **Step 4: Update documentation**
 
-Document:
-- compressed overlays are decoded by RE-MCP before static/Ghidra analysis;
-- stored compressed extraction is still available and distinct from derived runtime artifacts;
-- decoded runtime addresses have no fabricated direct ROM offset;
-- explicit Ghidra bootstrap is still required before read-only inspection;
-- Ghidra remains non-authoritative for RE-MCP proof;
-- `nds_search_pattern` remains physical-ROM only.
+Document storage-vs-runtime distinction, derived artifact location/provenance, `romOffset: null` for decoded runtime bytes, unchanged physical `nds_search_pattern`, explicit bootstrap requirement, and unchanged Ghidra non-authority boundary.
 
-- [ ] **Step 5: Run all local/GitHub-independent verification**
+- [ ] **Step 5: Run all Ghidra-independent verification**
 
 ```bash
 npm run check
@@ -903,62 +845,47 @@ node --check scripts/ghidra-inspection-hardening-acceptance.mjs
 
 Expected: PASS.
 
-- [ ] **Step 6: Run the manual real-Ghidra gate**
+- [ ] **Step 6: Dispatch the permanent manual Ghidra workflow on the exact PR head**
 
-Dispatch `.github/workflows/ghidra-integration.yml` on the exact PR head. Require:
-- Ghidra 12.1.2 archive SHA verification;
-- JDK 21;
-- bootstrap acceptance success;
-- compressed derived-overlay checks success;
-- hardened read-only inspection success;
-- analyst-state/project-byte preservation success;
-- no hidden Ghidra script errors/exceptions.
+Use `.github/workflows/ghidra-integration.yml`. Require Ghidra 12.1.2 archive SHA verification, JDK 21, bootstrap acceptance, derived-overlay checks, hardened read-only inspection, analyst/project preservation, and hidden-error rejection. Do not claim real acceptance until the workflow job reports success.
 
-Do not claim this gate passed until the exact workflow job reports success.
+- [ ] **Step 7: Final clean-head verification**
 
-- [ ] **Step 7: Final scope review and clean-head gates**
+After any acceptance-only cleanup, compare final head against the real-Ghidra-verified functional head. Production behavior must be identical. Require exact-final-head CI and Package success and no unresolved review threads. Confirm the diff contains no DeSmuME/GDB/controller/owned-process production files.
 
-After removing any temporary trigger workflow used only for PR automation, compare the final head against the real-Ghidra-verified functional head. Only acceptance/docs cleanup may differ. Then require exact-final-head CI and Package success.
-
-Confirm no production changes under DeSmuME GDB transport, debugger controller, stop-context, or owned-process lifecycle.
-
-- [ ] **Step 8: Commit Task 10 cleanup/docs**
+- [ ] **Step 8: Commit docs/acceptance changes**
 
 ```bash
-git add scripts/ghidra-acceptance.mjs scripts/ghidra-inspection-hardening-acceptance.mjs .github/workflows/ghidra-integration.yml tests/nds-ghidra-acceptance.test.ts docs/nds-ghidra-integration.md README.md
+git add scripts/ghidra-acceptance.mjs scripts/ghidra-inspection-hardening-acceptance.mjs tests/nds-ghidra-acceptance.test.ts docs/nds-ghidra-integration.md README.md
 git commit -m "test: accept decoded overlays with real Ghidra"
 ```
 
-Only add files that actually changed.
+### PR C gate
 
-### PR C final integration gate
-
-- [ ] Current PR head is mergeable and not draft.
-- [ ] Exact-head CI passes type-check, full tests, and build.
-- [ ] Exact-head Package passes source verification and self-contained bundle smoke.
-- [ ] Real Ghidra 12.1.2/JDK 21 acceptance passed on production-equivalent code.
-- [ ] No unresolved review threads remain.
+- [ ] Exact-head CI: success.
+- [ ] Exact-head Package: success.
+- [ ] Real Ghidra 12.1.2/JDK 21 acceptance: success on production-equivalent code.
+- [ ] PR mergeable, ready, no unresolved review threads.
 - [ ] No debugger-dependent production behavior changed.
-- [ ] Merge only after the protected explicit approval gate.
+- [ ] Merge only through the protected explicit approval gate.
 
 ---
 
 ## End-state verification checklist
 
-When all three PRs are merged, verify these user-visible truths from `main`:
-
-1. Canonically marked ARM9/ARM7 compressed overlays decode through the internal bounded BLZ implementation.
-2. Decoded initialized length equals overlay `ramSize`; BSS is separate.
-3. Stored compressed and decoded runtime representations have separate SHA-256 provenance.
-4. Runtime resolution exposes exact `runtimeImageOffset` but `romOffset: null` for decoded bytes.
-5. ROM-offset resolution still treats the compressed file as physical storage only.
-6. Disassembly, CFG, references, xrefs, proven-function discovery, and focused function analysis consume decoded overlay bytes.
-7. Overlap ambiguity and function proof rules are unchanged.
-8. `nds_search_pattern` still searches only physical ROM bytes.
-9. Analysis bundles contain both exact stored compressed overlay files and deterministic derived runtime artifacts.
-10. Ghidra bootstrap imports validated derived bytes into true overlay spaces and keeps BSS uninitialized.
-11. Read-only Ghidra inspection consumes those spaces without mutating the persistent project.
-12. Malformed BLZ, size/aggregate limits, source mutation, ownership conflicts, and generated-artifact tampering fail closed.
-13. Normal CI/package require no Ghidra or external decompression dependency.
-14. Real Ghidra 12.1.2/JDK 21 acceptance proves the final Ghidra path.
-15. Native Catalina/DeSmuME debugger acceptance remains a separate frozen gate.
+1. Canonically marked ARM9/ARM7 compressed overlays decode through the bounded internal BLZ implementation.
+2. Decoded initialized length equals canonical `ramSize`; BSS remains separate.
+3. Stored compressed and decoded runtime representations retain separate SHA-256 provenance.
+4. Runtime resolution exposes exact `runtimeImageOffset` and `romOffset: null` for decoded bytes.
+5. ROM-offset resolution continues to describe compressed physical storage only.
+6. Static instructions/references/function proofs permit nullable physical ROM provenance without changing canonical runtime identity.
+7. Disassembly, CFG, references, xrefs, function discovery, and focused function analysis consume decoded overlay bytes.
+8. Overlap ambiguity and function proof rules remain unchanged.
+9. `nds_search_pattern` remains physical-ROM only.
+10. Analysis bundles contain both exact stored compressed overlays and deterministic derived runtime artifacts.
+11. Ghidra bootstrap imports validated derived runtime bytes into true overlay spaces and keeps BSS uninitialized.
+12. Read-only Ghidra inspection consumes those spaces without mutating the persistent project.
+13. Malformed BLZ, size/aggregate limits, source mutation, artifact tampering, and ownership conflicts fail closed.
+14. Normal CI/package require neither Ghidra nor an external decompression dependency.
+15. Real Ghidra 12.1.2/JDK 21 acceptance verifies the final Ghidra path.
+16. Physical Intel Catalina/DeSmuME debugger acceptance remains a separate frozen gate.
