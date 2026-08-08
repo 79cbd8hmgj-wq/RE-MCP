@@ -58,7 +58,7 @@ public class ReMcpInspectProgram extends GhidraScript {
     private static final String MAP_OVERLAY_ID = "re-mcp.overlay-id";
     private static final String MAP_CALL_EVIDENCE = "re-mcp.call-evidence";
 
-    private final Gson gson = new GsonBuilder().disableHtmlEscaping().create();
+    private final Gson gson = new GsonBuilder().serializeNulls().disableHtmlEscaping().create();
 
     @Override
     protected void run() throws Exception {
