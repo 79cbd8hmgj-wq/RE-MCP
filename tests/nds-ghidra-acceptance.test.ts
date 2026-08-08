@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const acceptancePath = fileURLToPath(new URL("../scripts/ghidra-acceptance.mjs", import.meta.url));
+const inspectionAcceptancePath = fileURLToPath(new URL("../scripts/ghidra-inspection-hardening-acceptance.mjs", import.meta.url));
 const workflowPath = fileURLToPath(new URL("../.github/workflows/ghidra-integration.yml", import.meta.url));
 
 const GHIDRA_URL = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/ghidra_12.1.2_PUBLIC_20260605.zip";
@@ -20,10 +21,13 @@ test("manual Ghidra acceptance workflow is dispatch-only and pins the verified 1
   assert.match(workflow, /sha256sum\s+(?:-c|--check)/);
   assert.match(workflow, /--strict/);
   assert.match(workflow, /scripts\/ghidra-acceptance\.mjs/);
+  assert.match(workflow, /scripts\/ghidra-inspection-hardening-acceptance\.mjs/);
+  assert.doesNotMatch(workflow, /scripts\/ghidra-inspection-acceptance\.mjs/);
   assert.match(workflow, /fixture\.nds/);
+  assert.match(workflow, /Reject hidden Ghidra script errors/);
 });
 
-test("manual Ghidra acceptance uses only a synthetic NDS and checks project/evidence preservation", async () => {
+test("manual Ghidra bootstrap acceptance uses only a synthetic NDS and checks project/evidence preservation", async () => {
   const source = await readFile(acceptancePath, "utf8");
   assert.match(source, /Buffer\.alloc\s*\(/);
   assert.match(source, /writeSyntheticRom\s*\(/);
@@ -43,4 +47,16 @@ test("manual Ghidra acceptance uses only a synthetic NDS and checks project/evid
   assert.match(source, /already-current/);
   assert.match(source, /bodyEnd|functionEnd|bodySize/);
   assert.doesNotMatch(source, /\.nds["']\s*\)\s*\.download|private ROM/i);
+});
+
+test("manual Ghidra inspection acceptance verifies hardened authority shape and read-only preservation", async () => {
+  const source = await readFile(inspectionAcceptancePath, "utf8");
+  assert.match(source, /hardenedAuthorityShape/);
+  assert.match(source, /ghidraDerived/);
+  assert.match(source, /reMcpEvidence/);
+  assert.match(source, /canonical/);
+  assert.match(source, /projectFilesVerified/);
+  assert.match(source, /read-only\/no-analysis inspection changed persistent project bytes/);
+  assert.match(source, /REMCP_ACCEPTANCE_ANALYST_MARKER/);
+  assert.match(source, /overlaysVerified:\s*\[1,\s*2\]/);
 });
