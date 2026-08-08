@@ -1,0 +1,76 @@
+name: Temporary Ghidra Inspection Acceptance Trigger
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ghidra:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install and verify RE-MCP
+        run: |
+          set -euo pipefail
+          npm install
+          npm run check
+          npm run build
+          node --check scripts/ghidra-acceptance.mjs
+          node --check scripts/ghidra-inspection-acceptance.mjs
+
+      - name: Download and verify Ghidra 12.1.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC_20260605.zip"
+          url="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/ghidra_12.1.2_PUBLIC_20260605.zip"
+          expected="b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d"
+          curl --fail --location --retry 3 --output "$archive" "$url"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+          unzip -q "$archive" -d "$RUNNER_TEMP"
+          test -x "$RUNNER_TEMP/ghidra_12.1.2_PUBLIC/support/analyzeHeadless"
+
+      - name: Run real Ghidra bootstrap and inspection acceptance
+        shell: bash
+        env:
+          RE_MCP_GHIDRA_TIMEOUT_MS: '900000'
+          RE_MCP_MAX_OUTPUT_BYTES: '1000000'
+        run: |
+          set -euo pipefail
+          workspace="$RUNNER_TEMP/re-mcp-ghidra-workspace"
+          mkdir -p "$workspace"
+          export RE_MCP_WORKSPACE_ROOT="$workspace"
+          export RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC"
+          node scripts/ghidra-acceptance.mjs "$workspace" fixture.nds
+          node scripts/ghidra-inspection-acceptance.mjs "$workspace" fixture.nds
+
+      - name: Reject hidden Ghidra script errors
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
+          if [[ ! -f "$log" ]]; then
+            echo "No Ghidra application log available"
+            exit 1
+          fi
+          if grep -nE 'REPORT SCRIPT ERROR|Exception' "$log"; then
+            echo "Hidden Ghidra script/exception diagnostics found"
+            exit 1
+          fi
+          echo "No hidden Ghidra script errors or exceptions"
