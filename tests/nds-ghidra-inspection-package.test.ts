@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 test("install smoke requires the complete controlled Ghidra inspection surface", async () => {
-  const checkPath = fileURLToPath(new URL("../scripts/check-install.mjs", import.meta.url));
+  const checkPath = fileURLToPath(new URL("../scripts/check-ghidra-inspection-install.mjs", import.meta.url));
   const source = await readFile(checkPath, "utf8");
   for (const required of [
     "dist/services/nds/ghidra-inspection.js",
@@ -18,6 +18,10 @@ test("install smoke requires the complete controlled Ghidra inspection surface",
   ]) {
     assert.equal(source.includes(required), true, required);
   }
+
+  const workflowPath = fileURLToPath(new URL("../.github/workflows/package.yml", import.meta.url));
+  const workflow = await readFile(workflowPath, "utf8");
+  assert.match(workflow, /check-ghidra-inspection-install\.mjs/);
 });
 
 test("normal package workflow never downloads or requires Ghidra", async () => {
