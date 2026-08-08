@@ -531,6 +531,13 @@ export function resolveGhidraInspectionSelector(
     }
   }
 
+  if (candidate === undefined) {
+    throw new NdsError(
+      "ghidra-address-not-inspectable",
+      "Unable to resolve one canonical runtime candidate for Ghidra inspection",
+    );
+  }
+
   if (candidate.compressed) {
     throw new NdsError(
       "ghidra-address-not-inspectable",
