@@ -28,6 +28,11 @@ export type NdsFunctionErrorCategory =
   | "function-entry-not-uniquely-resolved"
   | "function-discovery-limit-exceeded";
 
+export type NdsBlzErrorCategory =
+  | "malformed-blz"
+  | "blz-output-size-mismatch"
+  | "blz-output-limit";
+
 export type NdsGhidraErrorCategory =
   | "ghidra-not-configured"
   | "invalid-ghidra-installation"
@@ -54,7 +59,8 @@ export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory;
+  | NdsFunctionErrorCategory
+  | NdsBlzErrorCategory;
 
 /** Complete service-layer category set, including optional Ghidra integration. */
 export type NdsServiceErrorCategory =
