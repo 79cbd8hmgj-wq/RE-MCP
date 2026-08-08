@@ -29,6 +29,7 @@ jobs:
           npm run check
           npm run build
           node --check scripts/ghidra-acceptance.mjs
+          node --check scripts/ghidra-inspection-acceptance.mjs
 
       - name: Download and verify Ghidra 12.1.2
         shell: bash
@@ -42,7 +43,7 @@ jobs:
           unzip -q "$archive" -d "$RUNNER_TEMP"
           test -x "$RUNNER_TEMP/ghidra_12.1.2_PUBLIC/support/analyzeHeadless"
 
-      - name: Run real Ghidra bridge acceptance
+      - name: Run real Ghidra bootstrap and inspection acceptance
         shell: bash
         env:
           RE_MCP_GHIDRA_TIMEOUT_MS: '900000'
@@ -51,6 +52,23 @@ jobs:
           set -euo pipefail
           workspace="$RUNNER_TEMP/re-mcp-ghidra-workspace"
           mkdir -p "$workspace"
-          RE_MCP_WORKSPACE_ROOT="$workspace" \
-          RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC" \
+          export RE_MCP_WORKSPACE_ROOT="$workspace"
+          export RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC"
           node scripts/ghidra-acceptance.mjs "$workspace" fixture.nds
+          node scripts/ghidra-inspection-acceptance.mjs "$workspace" fixture.nds
+
+      - name: Reject hidden Ghidra script errors
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
+          if [[ ! -f "$log" ]]; then
+            echo "No Ghidra application log available"
+            exit 1
+          fi
+          if grep -nE 'REPORT SCRIPT ERROR|Exception' "$log"; then
+            echo "Hidden Ghidra script/exception diagnostics found"
+            exit 1
+          fi
+          echo "No hidden Ghidra script errors or exceptions"
