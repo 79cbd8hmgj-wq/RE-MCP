@@ -109,6 +109,18 @@ class MutatingManager extends RecordingManager {
   }
 }
 
+class RemovingManager extends RecordingManager {
+  constructor(private readonly romPath: string) {
+    super();
+  }
+
+  override async start(request: OwnedProcessStart): Promise<OwnedProcessStatus> {
+    const status = await super.start(request);
+    await rm(this.romPath, { force: true });
+    return status;
+  }
+}
+
 function createNarrowLaunchRom(): Buffer {
   const buffer = Buffer.alloc(0x400);
   buffer.writeUInt32LE(0x100, 0x20);
@@ -221,6 +233,36 @@ test("desmume_start fails closed when the ROM changes during process start", asy
       executableRanges: [],
       hasStop: false,
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("desmume_start cleans up when post-launch ROM verification cannot read the ROM", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "re-mcp-runtime-unreadable-"));
+  try {
+    await createFixture(directory);
+    const romPath = path.join(directory, "game.nds");
+    const manager = new RemovingManager(romPath);
+    const debugController = controller();
+    const server = new FakeMcpServer();
+    registerDesmumeTools(
+      server as unknown as McpServer,
+      config(directory),
+      manager,
+      debugController,
+    );
+
+    const result = await server.invoke("desmume_start", {
+      launcher: "desmume-launcher",
+      rom: "game.nds",
+      arm9GdbPort: 20000,
+    });
+
+    assert.equal((result as { isError?: boolean }).isError, true);
+    assert.equal(manager.stopCalled, true);
+    assert.equal(manager.status().running, false);
+    assert.equal(debugController.status().initialized, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
