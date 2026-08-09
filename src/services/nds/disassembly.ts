@@ -10,7 +10,7 @@ import {
   codeSourceAt,
   resolveNdsCodeSource,
   resolveNdsControlFlowTarget,
-  withValidatedNdsRomReader,
+  withValidatedNdsCodeReader,
   type NdsCodeSource,
   type NdsCodeSourceResolution,
   type NdsDisassemblyLocation,
@@ -30,7 +30,7 @@ export type StaticFlowKind =
 
 export interface StaticInstruction {
   readonly address: number;
-  readonly romOffset: number;
+  readonly romOffset: number | null;
   readonly size: 2 | 4;
   readonly bytesHex: string;
   readonly mode: ArmMode;
@@ -246,6 +246,10 @@ function stoppedDetailedResult(
   };
 }
 
+function reachedRuntimeBoundary(source: NdsCodeSource, decodedBytes: number): boolean {
+  return source.runtimeAddress + decodedBytes >= source.runtimeEnd;
+}
+
 export async function disassembleNdsRangeDetailed(
   map: NdsRomMap,
   location: NdsDisassemblyLocation,
@@ -260,7 +264,7 @@ export async function disassembleNdsRangeDetailed(
     return resolved;
   }
 
-  return await withValidatedNdsRomReader(map, async (read) => {
+  return await withValidatedNdsCodeReader(map, async (read) => {
     const start = resolved.source;
     const bytes = await read(start, options.maxBytes);
     const instructions: DetailedStaticInstruction[] = [];
@@ -273,9 +277,10 @@ export async function disassembleNdsRangeDetailed(
       const remaining = bytes.length - cursor;
       const minimumSize = start.mode === "arm" ? 4 : 2;
       if (remaining < minimumSize) {
-        const reachedBoundary = start.romOffset + bytes.length >= start.romEnd;
         return stoppedDetailedResult(
-          reachedBoundary ? "component-boundary" : "complete",
+          reachedRuntimeBoundary(start, bytes.length)
+            ? "component-boundary"
+            : "complete",
           start,
           instructions,
           cursor,
@@ -300,10 +305,10 @@ export async function disassembleNdsRangeDetailed(
 
       const instruction = detailed.instruction;
       const crossesReadWindow = cursor + instruction.size > bytes.length;
-      const crossesComponent = source.romOffset + instruction.size > source.romEnd;
+      const crossesComponent = source.runtimeAddress + instruction.size > source.runtimeEnd;
       if (crossesReadWindow || crossesComponent) {
         return stoppedDetailedResult(
-          crossesComponent || start.romOffset + bytes.length >= start.romEnd
+          crossesComponent || reachedRuntimeBoundary(start, bytes.length)
             ? "component-boundary"
             : "complete",
           start,
@@ -316,9 +321,8 @@ export async function disassembleNdsRangeDetailed(
       cursor += instruction.size;
     }
 
-    const reachedBoundary = start.romOffset + cursor >= start.romEnd;
     return stoppedDetailedResult(
-      reachedBoundary ? "component-boundary" : "complete",
+      reachedRuntimeBoundary(start, cursor) ? "component-boundary" : "complete",
       start,
       instructions,
       cursor,
