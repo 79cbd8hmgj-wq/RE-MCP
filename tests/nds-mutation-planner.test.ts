@@ -4,7 +4,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { NdsError } from "../src/services/nds/errors.js";
-import { loadNdsMutationManifest } from "../src/services/nds/mutation/manifest.js";
+import {
+  loadNdsMutationManifest,
+  serializeCanonicalJson,
+} from "../src/services/nds/mutation/manifest.js";
 import {
   compileNdsMutationPlan,
   serializeResolvedNdsMutationPlan,
@@ -13,6 +16,10 @@ import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function sha256Text(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 test("compiles disjoint guarded operations into a deterministic read-only plan", async () => {
@@ -42,6 +49,37 @@ test("compiles disjoint guarded operations into a deterministic read-only plan",
   assert.match(plan.buildId, /^[0-9a-f]{64}$/u);
   assert.equal(plan.outputFilename, "test-mod.nds");
   assert.equal(JSON.stringify(serializeResolvedNdsMutationPlan(plan)).includes(fixture.directory), false);
+});
+
+test("uses the exact canonical build-identity JSON contract", async () => {
+  const fixture = await createMutationFixture();
+  const component = fixture.map.header.arm7;
+  const source = (await readFile(fixture.romPath)).subarray(
+    component.romOffset,
+    component.romEnd,
+  );
+  const artifact = await fixture.writeArtifact(
+    "artifacts/identity-arm7.bin",
+    Buffer.alloc(source.length, 0x2f),
+  );
+  const manifestPath = await fixture.writeManifest({
+    operations: [{
+      type: "replace-component",
+      target: { component: "arm7" },
+      expectedOriginalSha256: sha256(source),
+      replacement: { artifact: artifact.relativePath, sha256: artifact.sha256 },
+    }],
+  }, "plans/identity.json");
+  const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+  const plan = await compileNdsMutationPlan(fixture.map, fixture.directory, loaded);
+  const canonicalIdentity = serializeCanonicalJson({
+    format: "re-mcp-nds-build-identity",
+    formatVersion: 1,
+    sourceSha256: fixture.sourceSha256,
+    manifestSha256: loaded.sha256,
+    replacementArtifactSha256: [artifact.sha256],
+  });
+  assert.equal(plan.buildId, sha256Text(canonicalIdentity));
 });
 
 test("rejects any physical overlap, including identical overlap", async () => {
@@ -93,22 +131,19 @@ test("allows adjacent physical mutation ranges", async () => {
   );
 });
 
-test("rejects physical aliases even when canonical selectors differ", async () => {
+test("rejects physical aliases even when ordinary NitroFS selectors differ", async () => {
   const fixture = await createMutationFixture();
-  const overlay = fixture.map.overlays.arm9.find(
-    (candidate) => candidate.overlayId === fixture.uncompressedOverlayId,
+  const file = fixture.map.filesystem.files.find(
+    (candidate) => candidate.fileId === fixture.ordinaryFileId,
   );
-  assert.ok(overlay);
-  const source = (await readFile(fixture.romPath)).subarray(
-    overlay.romOffset,
-    overlay.romOffset + overlay.romSize,
-  );
+  assert.ok(file);
+  const source = (await readFile(fixture.romPath)).subarray(file.startOffset, file.endOffset);
   const replacementA = await fixture.writeArtifact(
-    "artifacts/overlay-a.bin",
+    "artifacts/asset-a.bin",
     Buffer.alloc(source.length, 0x31),
   );
   const replacementB = await fixture.writeArtifact(
-    "artifacts/overlay-b.bin",
+    "artifacts/asset-b.bin",
     Buffer.alloc(source.length, 0x32),
   );
   const sourceHash = sha256(source);
@@ -116,13 +151,13 @@ test("rejects physical aliases even when canonical selectors differ", async () =
     operations: [
       {
         type: "replace-component",
-        target: { component: "arm9-overlay", overlayId: fixture.uncompressedOverlayId },
+        target: { component: "nitrofs-file", fileId: fixture.ordinaryFileId },
         expectedOriginalSha256: sourceHash,
         replacement: { artifact: replacementA.relativePath, sha256: replacementA.sha256 },
       },
       {
         type: "replace-component",
-        target: { component: "nitrofs-file", fileId: fixture.uncompressedFileId },
+        target: { component: "nitrofs-path", filePath: "asset.bin" },
         expectedOriginalSha256: sourceHash,
         replacement: { artifact: replacementB.relativePath, sha256: replacementB.sha256 },
       },
@@ -145,7 +180,7 @@ test("fails closed when the manifest source identity differs from the canonical 
   );
 });
 
-test("normalization makes build identity stable across source operation order", async () => {
+test("preserves semantic manifest operation order and therefore build identity", async () => {
   const fixture = await createMutationFixture();
   const first = {
     type: "replace-bytes" as const,
@@ -166,10 +201,38 @@ test("normalization makes build identity stable across source operation order", 
   const planA = await compileNdsMutationPlan(fixture.map, fixture.directory, a);
   const planB = await compileNdsMutationPlan(fixture.map, fixture.directory, b);
 
-  assert.equal(a.sha256, b.sha256);
-  assert.equal(planA.buildId, planB.buildId);
+  assert.notEqual(a.sha256, b.sha256);
+  assert.notEqual(planA.buildId, planB.buildId);
+  assert.equal(planA.operations[0]?.component.component, "arm9");
+  assert.equal(planB.operations[0]?.component.component, "arm7");
   assert.deepEqual(
-    planA.operations.map((operation) => operation.index),
-    planB.operations.map((operation) => operation.index),
+    planA.applicationOperations.map((operation) => operation.component.component),
+    planB.applicationOperations.map((operation) => operation.component.component),
+  );
+});
+
+test("rejects replacement artifacts that alias the mutation manifest", async () => {
+  const fixture = await createMutationFixture();
+  const component = fixture.map.header.arm7;
+  const source = (await readFile(fixture.romPath)).subarray(
+    component.romOffset,
+    component.romEnd,
+  );
+  const manifestPath = await fixture.writeManifest({
+    operations: [{
+      type: "replace-component",
+      target: { component: "arm7" },
+      expectedOriginalSha256: sha256(source),
+      replacement: {
+        artifact: "plans/manifest-alias.json",
+        sha256: "0".repeat(64),
+      },
+    }],
+  }, "plans/manifest-alias.json");
+  const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+  await assert.rejects(
+    compileNdsMutationPlan(fixture.map, fixture.directory, loaded),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "unsupported-mutation-target",
   );
 });
