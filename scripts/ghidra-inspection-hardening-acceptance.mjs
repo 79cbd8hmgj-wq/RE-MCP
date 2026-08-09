@@ -134,20 +134,13 @@ const markerResult = await searchNdsGhidraSymbols(
 );
 assert.ok(derived(markerResult).results.some((entry) => entry.ghidraDerived?.name === analystMarker));
 
-const referencesResult = await listNdsGhidraReferences(
+const entryReferencesResult = await listNdsGhidraReferences(
   romPath,
   { processor: "arm9", runtimeAddress: 0x02000000, direction: "from", limit: 100, offset: 0 },
   config,
 );
-const references = derived(referencesResult).results;
-const thumbCallReference = references.find((reference) =>
-  String(reference.ghidraDerived?.type).includes("CALL")
-  && reference.ghidraDerived?.to?.offset === 0x02000010);
-assert.ok(thumbCallReference, "expected Ghidra call reference from ARM9 entry to proven Thumb target");
-assert.equal(thumbCallReference.canonical?.from?.component, "main");
-assert.equal(thumbCallReference.canonical?.to?.component, "main");
-
-const compressedCallReference = references.find((reference) =>
+const entryReferences = derived(entryReferencesResult).results;
+const compressedCallReference = entryReferences.find((reference) =>
   String(reference.ghidraDerived?.type).includes("CALL")
   && reference.ghidraDerived?.to?.offset === 0x02210000
   && reference.ghidraDerived?.to?.space === "RE_MCP_ARM9_OVL_3");
@@ -157,6 +150,19 @@ assert.equal(compressedCallReference.canonical?.to?.component, "overlay");
 assert.equal(compressedCallReference.canonical?.to?.overlayId, 3);
 assert.equal(compressedCallReference.canonical?.to?.compressed, true);
 assert.equal(compressedCallReference.canonical?.to?.fileBacked, false);
+
+const thumbReferencesResult = await listNdsGhidraReferences(
+  romPath,
+  { processor: "arm9", runtimeAddress: 0x02000004, direction: "from", limit: 100, offset: 0 },
+  config,
+);
+const thumbReferences = derived(thumbReferencesResult).results;
+const thumbCallReference = thumbReferences.find((reference) =>
+  String(reference.ghidraDerived?.type).includes("CALL")
+  && reference.ghidraDerived?.to?.offset === 0x02000010);
+assert.ok(thumbCallReference, "expected Ghidra call reference from exact BLX call site to proven Thumb target");
+assert.equal(thumbCallReference.canonical?.from?.component, "main");
+assert.equal(thumbCallReference.canonical?.to?.component, "main");
 
 const callsResult = await listNdsGhidraCalls(
   romPath,
@@ -278,7 +284,7 @@ process.stdout.write(JSON.stringify({
   functionName: functionDerived.name,
   decompilerCharacters: decompileDerived.c.length,
   derivedDecompilerCharacters: derivedDecompileResult.ghidraDerived.c.length,
-  references: references.length,
+  references: entryReferences.length + thumbReferences.length,
   calls: calls.edges.length,
   derivedReferences: derivedReferences.length,
   derivedCalls: derivedCalls.edges.length,
