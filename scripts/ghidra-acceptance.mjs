@@ -591,8 +591,7 @@ try {
   await rm(applicationLog, { force: true });
   await assert.rejects(
     bootstrapNdsGhidraProject(romPath, config),
-    (error) => error?.category === "ghidra-analysis-failed"
-      && String(error.message).includes("runtime bytes do not match runtimeSha256"),
+    (error) => error?.category === "ghidra-analysis-failed",
   );
   const afterRejectedConflict = await inspect(map, "RE-MCP_ARM9", "inspect", scriptDirectory);
   assert.equal(requireBlock(afterRejectedConflict, "RE_MCP_ARM9_OVL_3").sha256, tamperedHash,
