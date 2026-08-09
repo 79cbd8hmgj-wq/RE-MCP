@@ -78,6 +78,8 @@ test("manual Ghidra inspection acceptance verifies derived overlays and read-onl
   assert.match(source, /overlayId:\s*3/);
   assert.match(source, /canonical\.compressed/);
   assert.match(source, /canonical\.fileBacked/);
+  assert.match(source, /default-space cross-overlay references must not receive fabricated canonical ownership/);
+  assert.doesNotMatch(source, /expected Ghidra call reference from ARM9 entry to derived overlay 3/);
   assert.match(source, /derivedOverlayVerified/);
   assert.match(source, /overlaysVerified:\s*\[1,\s*2,\s*3\]/);
 });
