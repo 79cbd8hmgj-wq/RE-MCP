@@ -63,6 +63,12 @@ function correctiveAction(category: NdsServiceErrorCategory): string {
       return "Resolve the manifest conflict so no two operations modify overlapping physical ROM bytes.";
     case "compressed-overlay-invalid":
       return "Provide a valid exact-size stored compressed-overlay replacement whose BLZ payload decodes to the canonical runtime geometry.";
+    case "header-rebuild-failed":
+      return "Use a verified NDS source header and only canonical rebuild-owned pointer, size, capacity, and checksum fields.";
+    case "header-checksum-invalid":
+      return "Re-read the exact source or rebuilt ROM and require a valid Nintendo DS header CRC16 before continuing.";
+    case "rom-capacity-exceeded":
+      return "Reduce planned ROM growth so the deterministic rebuilt output fits the repository-owned Nintendo DS capacity limit.";
     case "staging-failed":
       return "Check workspace/output permissions and source identity, then retry so RE-MCP can create a fresh controlled staging copy.";
     case "post-build-parse-failed":
