@@ -44,6 +44,8 @@ function correctiveAction(category: NdsServiceErrorCategory): string {
       return "Fix the strict mutation manifest schema and keep the manifest and all referenced artifacts inside the configured workspace.";
     case "unsupported-mutation-target":
       return "Use a supported canonical ARM9, ARM7, overlay, or NitroFS selector; Milestone 1 does not expose arbitrary ROM offsets or output paths.";
+    case "unsupported-rebuild-target":
+      return "Use a canonical non-overlay NitroFS target for variable-size file rebuilding; overlay-backed files require the dedicated decoded-overlay rebuild path.";
     case "structural-metadata-mutation":
       return "Move the requested edit outside immutable NDS header/FAT/FNT/overlay-table structure; structural rebuilding is not supported in Milestone 1.";
     case "ambiguous-runtime-target":
@@ -60,9 +62,25 @@ function correctiveAction(category: NdsServiceErrorCategory): string {
     case "mutation-no-op":
       return "Remove the no-op operation or provide replacement bytes that actually differ from the guarded source bytes.";
     case "mutation-overlap":
-      return "Resolve the manifest conflict so no two operations modify overlapping physical ROM bytes.";
+      return "Resolve the manifest conflict so no fixed mutation overlaps another operation or a component selected for relocation.";
     case "compressed-overlay-invalid":
       return "Provide a valid exact-size stored compressed-overlay replacement whose BLZ payload decodes to the canonical runtime geometry.";
+    case "filesystem-extension-invalid":
+      return "Add files only beneath a new source-absent top-level NitroFS extension subtree and keep artifacts within Core 2 size and containment limits.";
+    case "filesystem-path-collision":
+      return "Choose a unique new NitroFS path that does not collide with any source file, source directory, or other manifest addition.";
+    case "filesystem-id-capacity-exceeded":
+      return "Reduce new NitroFS files or directories so deterministic append-only IDs remain within the FNT/FAT representation limits.";
+    case "fnt-rebuild-failed":
+      return "Preserve all source NitroFS directory/file ID semantics and reduce the extension if the deterministic rebuilt FNT exceeds its structural limits.";
+    case "fat-rebuild-failed":
+      return "Use contiguous file IDs and valid non-overlapping unsigned 32-bit FAT ranges within the bounded rebuilt ROM geometry.";
+    case "header-rebuild-failed":
+      return "Use a verified NDS source header and only canonical rebuild-owned pointer, size, capacity, and checksum fields.";
+    case "header-checksum-invalid":
+      return "Re-read the exact source or rebuilt ROM and require a valid Nintendo DS header CRC16 before continuing.";
+    case "rom-capacity-exceeded":
+      return "Reduce planned ROM growth so the deterministic rebuilt output fits the repository-owned Nintendo DS capacity limit.";
     case "staging-failed":
       return "Check workspace/output permissions and source identity, then retry so RE-MCP can create a fresh controlled staging copy.";
     case "post-build-parse-failed":

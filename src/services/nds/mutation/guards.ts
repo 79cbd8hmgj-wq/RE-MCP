@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { lstat, open, stat } from "node:fs/promises";
-import path from "node:path";
+import { open } from "node:fs/promises";
 
-import { resolveInside } from "../../../security/paths.js";
 import { decodeNdsBlz } from "../blz.js";
 import { NdsError } from "../errors.js";
 import { hashFileSha256, readExact } from "../io.js";
 import type { NdsOverlay } from "../overlays.js";
 import type { NdsRomMap } from "../rom-map.js";
+import {
+  resolveNdsArtifactMetadata,
+  verifyNdsArtifactSha256,
+} from "./artifacts.js";
 import type {
   NdsMutationOperation,
   NdsReplaceBytesOperation,
@@ -53,14 +55,6 @@ export interface GuardedNdsComponentOperation extends GuardedNdsMutationBase {
 export type GuardedNdsMutationOperation =
   | GuardedNdsByteOperation
   | GuardedNdsComponentOperation;
-
-interface ResolvedReplacementArtifact {
-  readonly absolutePath: string;
-  readonly workspacePath: string;
-  readonly size: number;
-  readonly device: number;
-  readonly inode: number;
-}
 
 function sourceMismatch(message: string): NdsError<"source-rom-mismatch"> {
   return new NdsError("source-rom-mismatch", message);
@@ -125,13 +119,6 @@ async function hashFileRangeSha256(
     await handle.close();
   }
   return hash.digest("hex");
-}
-
-function workspaceRelativePath(workspaceRoot: string, absolutePath: string): string {
-  return path
-    .relative(path.resolve(workspaceRoot), absolutePath)
-    .split(path.sep)
-    .join("/");
 }
 
 function overlayForOwner(
@@ -238,46 +225,6 @@ async function guardByteOperation(
   };
 }
 
-async function resolveReplacementArtifact(
-  workspaceRoot: string,
-  requestedPath: string,
-): Promise<ResolvedReplacementArtifact> {
-  try {
-    const absolutePath = resolveInside(workspaceRoot, requestedPath);
-    const info = await lstat(absolutePath);
-    if (!info.isFile() || info.isSymbolicLink()) {
-      throw new Error("replacement artifact must be a regular non-symlink file");
-    }
-    return {
-      absolutePath,
-      workspacePath: workspaceRelativePath(workspaceRoot, absolutePath),
-      size: info.size,
-      device: info.dev,
-      inode: info.ino,
-    };
-  } catch (error) {
-    throw new NdsError(
-      "replacement-artifact-missing",
-      `Replacement artifact ${JSON.stringify(requestedPath)} is unavailable inside the workspace: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-async function assertArtifactIsNotSource(
-  map: NdsRomMap,
-  artifact: ResolvedReplacementArtifact,
-): Promise<void> {
-  const sourceInfo = await stat(map.romPath);
-  const samePath = path.resolve(artifact.absolutePath) === path.resolve(map.romPath);
-  const sameFile = artifact.device === sourceInfo.dev && artifact.inode === sourceInfo.ino;
-  if (samePath || sameFile) {
-    throw new NdsError(
-      "unsupported-mutation-target",
-      "Replacement artifact may not alias the immutable source ROM",
-    );
-  }
-}
-
 async function guardComponentOperation(
   map: NdsRomMap,
   workspaceRoot: string,
@@ -299,34 +246,28 @@ async function guardComponentOperation(
     );
   }
 
-  const artifact = await resolveReplacementArtifact(
+  const options = {
+    label: `Mutation operation ${index} replacement artifact`,
+    aliasCategory: "unsupported-mutation-target" as const,
+  };
+  const metadata = await resolveNdsArtifactMetadata(
+    map,
     workspaceRoot,
     operation.replacement.artifact,
+    options,
   );
-  await assertArtifactIsNotSource(map, artifact);
-  if (artifact.size !== component.size) {
+  if (metadata.size !== component.size) {
     throw new NdsError(
       "replacement-size-mismatch",
-      `Mutation operation ${index} replacement is ${artifact.size} bytes, expected exact stored size ${component.size}`,
+      `Mutation operation ${index} replacement is ${metadata.size} bytes, expected exact stored size ${component.size}`,
     );
   }
-
-  let artifactSha256: string;
-  try {
-    artifactSha256 = await hashFileSha256(artifact.absolutePath);
-  } catch (error) {
-    throw new NdsError(
-      "replacement-artifact-missing",
-      `Unable to hash replacement artifact: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (artifactSha256 !== operation.replacement.sha256) {
-    throw new NdsError(
-      "replacement-artifact-hash-mismatch",
-      `Mutation operation ${index} replacement SHA-256 is ${artifactSha256}, expected ${operation.replacement.sha256}`,
-    );
-  }
-  if (artifactSha256 === originalSha256) {
+  const artifact = await verifyNdsArtifactSha256(
+    metadata,
+    operation.replacement.sha256,
+    options,
+  );
+  if (artifact.sha256 === originalSha256) {
     throw new NdsError(
       "mutation-no-op",
       `Mutation operation ${index} replacement is byte-identical to the source component`,
@@ -348,7 +289,7 @@ async function guardComponentOperation(
     replacement: {
       absolutePath: artifact.absolutePath,
       workspacePath: artifact.workspacePath,
-      sha256: artifactSha256,
+      sha256: artifact.sha256,
       size: artifact.size,
     },
   };
