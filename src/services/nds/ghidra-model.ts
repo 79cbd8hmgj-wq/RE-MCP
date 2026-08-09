@@ -17,7 +17,7 @@ import type { NdsOverlay, NdsProcessor } from "./overlays.js";
 import type { NdsRomMap } from "./rom-map.js";
 
 export const GHIDRA_BRIDGE_FORMAT = "re-mcp-nds-ghidra" as const;
-export const GHIDRA_BRIDGE_FORMAT_VERSION = 1 as const;
+export const GHIDRA_BRIDGE_FORMAT_VERSION = 2 as const;
 export const GHIDRA_ARM9_LANGUAGE = "ARM:LE:32:v5t" as const;
 export const GHIDRA_ARM7_LANGUAGE = "ARM:LE:32:v4t" as const;
 
@@ -41,7 +41,11 @@ export interface GhidraMainManifest {
 
 export type GhidraOverlayImportStatus =
   | "importable"
-  | "not-imported-compressed";
+  | "importable-derived";
+
+export type GhidraOverlayRepresentation =
+  | "rom-file-backed"
+  | "derived-blz";
 
 export interface GhidraOverlayManifest {
   readonly processor: NdsProcessor;
@@ -49,13 +53,17 @@ export interface GhidraOverlayManifest {
   readonly spaceName: string;
   readonly artifactPath: string;
   readonly fileId: number;
-  readonly romOffset: number;
   readonly runtimeAddress: number;
   readonly ramSize: number;
-  readonly fileBackedSize: number;
   readonly bssSize: number;
-  readonly compressed: boolean;
+  readonly representation: GhidraOverlayRepresentation;
+  readonly initializedSize: number;
+  readonly storedRomOffset: number;
+  readonly storedSize: number;
   readonly compressedSize: number | null;
+  readonly storedSha256: string;
+  readonly runtimeSha256: string;
+  readonly compressed: boolean;
   readonly importStatus: GhidraOverlayImportStatus;
 }
 
@@ -89,6 +97,7 @@ export interface GhidraBridgeManifest {
 }
 
 const PROCESSORS: readonly NdsProcessor[] = ["arm9", "arm7"];
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function portable(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
@@ -151,49 +160,132 @@ export function ghidraOverlaySpaceName(
   return `RE_MCP_${processor.toUpperCase()}_OVL_${overlayId}`;
 }
 
+export function ghidraStoredOverlayArtifactPath(
+  processor: NdsProcessor,
+  overlayId: number,
+): string {
+  return portable(path.join("..", "overlays", processor, `overlay_${overlayId}.bin`));
+}
+
+export function ghidraDerivedOverlayArtifactPath(
+  processor: NdsProcessor,
+  overlayId: number,
+): string {
+  return portable(path.join("..", "runtime", "overlays", processor, `overlay_${overlayId}.bin`));
+}
+
 function languageFor(processor: NdsProcessor): GhidraLanguage {
   return processor === "arm9"
     ? GHIDRA_ARM9_LANGUAGE
     : GHIDRA_ARM7_LANGUAGE;
 }
 
-function overlayArtifactPath(overlay: NdsOverlay): string {
-  return portable(
-    path.join(
-      "..",
-      "overlays",
-      overlay.processor,
-      `overlay_${overlay.overlayId}.bin`,
-    ),
-  );
+function canonicalOverlays(map: NdsRomMap): readonly NdsOverlay[] {
+  return [...map.overlays.arm9, ...map.overlays.arm7];
 }
 
-function overlayManifest(overlay: NdsOverlay): GhidraOverlayManifest {
-  return {
-    processor: overlay.processor,
-    overlayId: overlay.overlayId,
-    spaceName: ghidraOverlaySpaceName(overlay.processor, overlay.overlayId),
-    artifactPath: overlayArtifactPath(overlay),
-    fileId: overlay.fileId,
-    romOffset: overlay.romOffset,
-    runtimeAddress: overlay.ramAddress,
-    ramSize: overlay.ramSize,
-    fileBackedSize: overlay.romSize,
-    bssSize: overlay.bssSize,
-    compressed: overlay.compressed,
-    compressedSize: overlay.compressed ? overlay.compressedSize : null,
-    importStatus: overlay.compressed
-      ? "not-imported-compressed"
-      : "importable",
-  };
+function overlayKey(processor: NdsProcessor, overlayId: number): string {
+  return `${processor}:${overlayId}`;
+}
+
+function validateOverlayHash(value: string, label: string): void {
+  if (!SHA256_PATTERN.test(value)) {
+    throw new Error(`${label} must be a lowercase SHA-256 digest`);
+  }
+}
+
+function validatePreparedOverlay(
+  canonical: NdsOverlay,
+  prepared: GhidraOverlayManifest,
+): void {
+  const expectedRepresentation: GhidraOverlayRepresentation = canonical.compressed
+    ? "derived-blz"
+    : "rom-file-backed";
+  const expectedImportStatus: GhidraOverlayImportStatus = canonical.compressed
+    ? "importable-derived"
+    : "importable";
+  const expectedInitializedSize = canonical.compressed
+    ? canonical.ramSize
+    : Math.min(canonical.ramSize, canonical.romSize);
+  const expectedArtifactPath = canonical.compressed
+    ? ghidraDerivedOverlayArtifactPath(canonical.processor, canonical.overlayId)
+    : ghidraStoredOverlayArtifactPath(canonical.processor, canonical.overlayId);
+
+  if (
+    prepared.processor !== canonical.processor
+    || prepared.overlayId !== canonical.overlayId
+    || prepared.spaceName !== ghidraOverlaySpaceName(canonical.processor, canonical.overlayId)
+    || prepared.artifactPath !== expectedArtifactPath
+    || prepared.fileId !== canonical.fileId
+    || prepared.runtimeAddress !== canonical.ramAddress
+    || prepared.ramSize !== canonical.ramSize
+    || prepared.bssSize !== canonical.bssSize
+    || prepared.representation !== expectedRepresentation
+    || prepared.initializedSize !== expectedInitializedSize
+    || prepared.storedRomOffset !== canonical.romOffset
+    || prepared.storedSize !== canonical.romSize
+    || prepared.compressedSize !== (canonical.compressed ? canonical.compressedSize : null)
+    || prepared.compressed !== canonical.compressed
+    || prepared.importStatus !== expectedImportStatus
+  ) {
+    throw new Error(
+      `Prepared Ghidra overlay metadata does not match canonical ${canonical.processor.toUpperCase()} overlay ${canonical.overlayId}`,
+    );
+  }
+  if (prepared.initializedSize <= 0) {
+    throw new Error(
+      `Ghidra overlay ${canonical.processor}:${canonical.overlayId} has no initialized runtime bytes`,
+    );
+  }
+  validateOverlayHash(prepared.storedSha256, "Stored overlay hash");
+  validateOverlayHash(prepared.runtimeSha256, "Runtime overlay hash");
+}
+
+function canonicalPreparedOverlays(
+  map: NdsRomMap,
+  prepared: readonly GhidraOverlayManifest[] | undefined,
+): readonly GhidraOverlayManifest[] {
+  const canonical = canonicalOverlays(map);
+  if (prepared === undefined) {
+    if (canonical.length === 0) {
+      return [];
+    }
+    throw new Error("Ghidra overlay manifests are required when canonical overlays are present");
+  }
+
+  const byKey = new Map<string, GhidraOverlayManifest>();
+  for (const entry of prepared) {
+    const key = overlayKey(entry.processor, entry.overlayId);
+    if (byKey.has(key)) {
+      throw new Error(`Duplicate prepared Ghidra overlay manifest: ${key}`);
+    }
+    byKey.set(key, entry);
+  }
+
+  if (byKey.size !== canonical.length) {
+    throw new Error("Prepared Ghidra overlay count does not match the canonical ROM map");
+  }
+
+  const result: GhidraOverlayManifest[] = [];
+  for (const overlay of canonical) {
+    const entry = byKey.get(overlayKey(overlay.processor, overlay.overlayId));
+    if (entry === undefined) {
+      throw new Error(
+        `Prepared Ghidra overlay is missing ${overlay.processor}:${overlay.overlayId}`,
+      );
+    }
+    validatePreparedOverlay(overlay, entry);
+    result.push(entry);
+  }
+  return result;
 }
 
 function processorManifest(
   map: NdsRomMap,
   processor: NdsProcessor,
+  overlays: readonly GhidraOverlayManifest[],
 ): GhidraProcessorManifest {
   const executable = processor === "arm9" ? map.header.arm9 : map.header.arm7;
-  const overlays = processor === "arm9" ? map.overlays.arm9 : map.overlays.arm7;
   return {
     processor,
     language: languageFor(processor),
@@ -205,9 +297,9 @@ function processorManifest(
       entryAddress: executable.entryAddress,
       fileBackedSize: executable.size,
     },
-    overlays: [...overlays]
-      .sort((left, right) => left.overlayId - right.overlayId)
-      .map(overlayManifest),
+    overlays: overlays
+      .filter((entry) => entry.processor === processor)
+      .sort((left, right) => left.overlayId - right.overlayId),
   };
 }
 
@@ -260,11 +352,13 @@ export function buildGhidraBridgeManifest(input: {
   readonly arm9: DiscoverNdsFunctionsResult;
   readonly arm7: DiscoverNdsFunctionsResult;
   readonly artifacts: readonly GhidraBridgeArtifact[];
+  readonly overlays?: readonly GhidraOverlayManifest[];
 }): GhidraBridgeManifest {
   if (input.arm9.processor !== "arm9" || input.arm7.processor !== "arm7") {
     throw new Error("Ghidra bridge discovery results must match ARM9 and ARM7 processors");
   }
 
+  const overlays = canonicalPreparedOverlays(input.map, input.overlays);
   const discoveryByProcessor: Readonly<Record<NdsProcessor, DiscoverNdsFunctionsResult>> = {
     arm9: input.arm9,
     arm7: input.arm7,
@@ -275,7 +369,7 @@ export function buildGhidraBridgeManifest(input: {
     formatVersion: GHIDRA_BRIDGE_FORMAT_VERSION,
     sourceRomSha256: input.map.sha256,
     sha256Prefix: input.map.sha256Prefix,
-    processors: PROCESSORS.map((processor) => processorManifest(input.map, processor)),
+    processors: PROCESSORS.map((processor) => processorManifest(input.map, processor, overlays)),
     discovery: PROCESSORS.map((processor) =>
       discoveryManifest(discoveryByProcessor[processor])),
     artifacts: [...input.artifacts].sort(compareArtifact),
