@@ -71,6 +71,7 @@ test("manual Ghidra inspection acceptance verifies derived overlays and read-onl
   assert.match(source, /projectFilesVerified/);
   assert.match(source, /read-only\/no-analysis inspection changed persistent project bytes/);
   assert.match(source, /REMCP_ACCEPTANCE_ANALYST_MARKER/);
+  assert.match(source, /runtimeAddress:\s*0x02000004,\s*direction:\s*"from"/);
   assert.match(source, /0x02000010/);
   assert.match(source, /0x02210000/);
   assert.match(source, /0x02210020/);
