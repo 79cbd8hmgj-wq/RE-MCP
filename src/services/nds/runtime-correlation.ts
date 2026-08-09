@@ -1,16 +1,27 @@
 import type { ArmDisassemblyBackend } from "../disassembly/backend.js";
 import type { StopContext } from "../stop-context.js";
 import {
+  disassembleNdsRange,
+  type StaticInstruction,
+} from "./disassembly.js";
+import {
   NdsError,
   type NdsRuntimeCorrelationErrorCategory,
 } from "./errors.js";
+import {
+  analyzeNdsFunction,
+  type AnalyzeFunctionProofStatus,
+} from "./function-analysis.js";
+import type { FunctionProof } from "./function-model.js";
 import { hashFileSha256 } from "./io.js";
+import { listNdsReferences } from "./reference-list.js";
+import type { StaticReference } from "./references.js";
 import {
   resolveRuntimeAddress,
   type RuntimeCandidate,
   type RuntimeResolution,
 } from "./resolver.js";
-import { readNdsRomMap } from "./rom-map.js";
+import { readNdsRomMap, type NdsRomMap } from "./rom-map.js";
 
 export interface NdsRuntimeCorrelationOptions {
   readonly nearbyInstructions: number;
@@ -29,6 +40,18 @@ export interface NdsRuntimeCorrelationInput {
 }
 
 export type NdsRuntimeStaticCorrelation =
+  | {
+      readonly status: "available";
+      readonly instructions: readonly StaticInstruction[];
+      readonly references: readonly StaticReference[];
+      readonly functionEntry: {
+        readonly proofStatus: AnalyzeFunctionProofStatus;
+        readonly runtimeMode: "arm" | "thumb";
+        readonly staticMode: "arm" | "thumb";
+        readonly modeConsistent: boolean;
+        readonly evidence: readonly FunctionProof[];
+      };
+    }
   | { readonly status: "runtime-only"; readonly reason: string }
   | { readonly status: "not-decodable"; readonly reason: string };
 
@@ -67,6 +90,23 @@ export interface NdsRuntimeCorrelationResult {
   readonly candidates: readonly NdsRuntimeCandidateCorrelation[];
 }
 
+const FUNCTION_PROOF_LIMITS = {
+  proof: {
+    maxComponents: 32,
+    maxBlocks: 128,
+    maxInstructions: 2048,
+    maxBytes: 8192,
+    maxEdges: 512,
+    maxXrefs: 256,
+  },
+  cfg: {
+    maxBlocks: 64,
+    maxInstructions: 512,
+    maxBytes: 2048,
+    maxEdges: 128,
+  },
+} as const;
+
 function correlationError(
   category: NdsRuntimeCorrelationErrorCategory,
   message: string,
@@ -94,22 +134,90 @@ function canonicalStatus(
   return "resolved";
 }
 
-function initialStatic(candidate: RuntimeCandidate): NdsRuntimeStaticCorrelation {
+async function correlateStaticCandidate(
+  map: NdsRomMap,
+  candidate: RuntimeCandidate,
+  input: NdsRuntimeCorrelationInput,
+  backend: ArmDisassemblyBackend,
+): Promise<NdsRuntimeStaticCorrelation> {
   if (candidate.representation === "runtime-only") {
     return {
       status: "runtime-only",
       reason: "Canonical runtime candidate has no initialized executable bytes",
     };
   }
+
+  const runtimeMode = input.stopContext.registers.mode;
+  const location = {
+    processor: "arm9" as const,
+    runtimeAddress: candidate.runtimeAddress,
+    mode: runtimeMode,
+    ...(candidate.overlayId === null ? {} : { overlayId: candidate.overlayId }),
+  };
+  const maxBytes = Math.min(128, input.options.nearbyInstructions * 4);
+  const disassembly = await disassembleNdsRange(
+    map,
+    location,
+    {
+      maxInstructions: input.options.nearbyInstructions,
+      maxBytes,
+    },
+    backend,
+  );
+  if (!("instructions" in disassembly) || disassembly.instructions.length === 0) {
+    return {
+      status: "not-decodable",
+      reason: disassembly.status,
+    };
+  }
+
+  let references: readonly StaticReference[] = [];
+  if (input.options.referenceLimit > 0) {
+    const listed = await listNdsReferences(
+      map,
+      location,
+      {
+        maxInstructions: input.options.nearbyInstructions,
+        maxBytes,
+      },
+      backend,
+    );
+    if ("references" in listed) {
+      references = listed.references.slice(0, input.options.referenceLimit);
+    }
+  }
+
+  const functionAnalysis = await analyzeNdsFunction(
+    map,
+    {
+      processor: "arm9",
+      runtimeAddress: candidate.runtimeAddress,
+      mode: runtimeMode,
+      ...(candidate.overlayId === null ? {} : { overlayId: candidate.overlayId }),
+      proofScope: { kind: "all-executable-components" },
+      seeds: [],
+    },
+    FUNCTION_PROOF_LIMITS,
+    backend,
+  );
+
   return {
-    status: "not-decodable",
-    reason: "Static evidence has not been attached to this correlation result",
+    status: "available",
+    instructions: disassembly.instructions,
+    references,
+    functionEntry: {
+      proofStatus: functionAnalysis.proofStatus,
+      runtimeMode,
+      staticMode: functionAnalysis.entry.mode,
+      modeConsistent: functionAnalysis.entry.mode === runtimeMode,
+      evidence: functionAnalysis.evidence,
+    },
   };
 }
 
 export async function correlateNdsStopContext(
   input: NdsRuntimeCorrelationInput,
-  _backend: ArmDisassemblyBackend,
+  backend: ArmDisassemblyBackend,
 ): Promise<NdsRuntimeCorrelationResult> {
   const map = await readNdsRomMap(input.romPath);
   if (map.sha256 !== input.expectedRomSha256) {
@@ -125,6 +233,15 @@ export async function correlateNdsStopContext(
     "arm9",
   );
   const candidates = candidatesForResolution(resolution);
+  const correlatedCandidates: NdsRuntimeCandidateCorrelation[] = [];
+  for (const candidate of candidates) {
+    correlatedCandidates.push({
+      canonical: candidate,
+      static: await correlateStaticCandidate(map, candidate, input, backend),
+      ghidraDerived: { status: "not-requested" },
+    });
+  }
+
   const result: NdsRuntimeCorrelationResult = {
     runtimeObserved: {
       capturedAt: input.stopContext.capturedAt,
@@ -147,11 +264,7 @@ export async function correlateNdsStopContext(
       status: canonicalStatus(resolution),
       candidateCount: candidates.length,
     },
-    candidates: candidates.map((candidate) => ({
-      canonical: candidate,
-      static: initialStatic(candidate),
-      ghidraDerived: { status: "not-requested" },
-    })),
+    candidates: correlatedCandidates,
   };
 
   const finalSha256 = await hashFileSha256(input.romPath);
