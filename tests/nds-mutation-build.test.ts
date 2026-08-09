@@ -97,6 +97,63 @@ test("writes deterministic evidence without absolute workspace paths", async () 
   assert.equal(checksum, `${result.outputSha256}  published.nds\n`);
 });
 
+test("verification evidence explicitly records lineage, counts, parse proof, and operation proof", async () => {
+  const { fixture, loaded, result } = await buildFixture();
+  const report = JSON.parse(
+    await readFile(path.join(result.outputRoot, "verification.json"), "utf8"),
+  ) as {
+    status: string;
+    source: { rom: string; sha256: string; size: number; unchanged: boolean };
+    output: { rom: string; sha256: string; size: number };
+    manifestSha256: string;
+    buildId: string;
+    operationCount: number;
+    changedComponentCount: number;
+    changedByteCount: number;
+    structuralMetadataUnchanged: boolean;
+    structuralMapUnchanged: boolean;
+    canonicalOutputParse: string;
+    unexpectedChangedBytes: number;
+    operations: Array<{
+      index: number;
+      status: string;
+      target: { component: string };
+      romStart: number;
+      romEnd: number;
+      guard: { expected: string };
+      replacement: { bytes: string };
+    }>;
+  };
+
+  assert.equal(report.status, "passed");
+  assert.equal(report.source.rom, fixture.map.romPath.split(path.sep).pop());
+  assert.equal(report.source.sha256, fixture.sourceSha256);
+  assert.equal(report.source.size, fixture.map.fileSize);
+  assert.equal(report.source.unchanged, true);
+  assert.equal(
+    report.output.rom,
+    `output/nds/${fixture.map.sha256Prefix}/${result.buildId}/published.nds`,
+  );
+  assert.equal(report.output.sha256, result.outputSha256);
+  assert.equal(report.output.size, fixture.map.fileSize);
+  assert.equal(report.manifestSha256, loaded.sha256);
+  assert.equal(report.buildId, result.buildId);
+  assert.equal(report.operationCount, 1);
+  assert.equal(report.changedComponentCount, 1);
+  assert.ok(report.changedByteCount > 0);
+  assert.equal(report.structuralMetadataUnchanged, true);
+  assert.equal(report.structuralMapUnchanged, true);
+  assert.equal(report.canonicalOutputParse, "passed");
+  assert.equal(report.unexpectedChangedBytes, 0);
+  assert.equal(report.operations[0]?.index, 0);
+  assert.equal(report.operations[0]?.status, "passed");
+  assert.equal(report.operations[0]?.target.component, "arm9");
+  assert.equal(report.operations[0]?.romStart, fixture.arm9Offset);
+  assert.equal(report.operations[0]?.romEnd, fixture.arm9Offset + 2);
+  assert.equal(report.operations[0]?.guard.expected, "a9a9");
+  assert.equal(report.operations[0]?.replacement.bytes, "1234");
+});
+
 test("identical inputs in different absolute workspaces produce byte-identical ROM and evidence", async () => {
   const firstFixture = await createMutationFixture();
   const secondFixture = await createMutationFixture();
