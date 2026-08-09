@@ -3,13 +3,15 @@ import {
   lstat as nativeLstat,
   open,
   readFile as nativeReadFile,
-  stat,
 } from "node:fs/promises";
-import path from "node:path";
 
-import { resolveInside } from "../../../security/paths.js";
 import { NdsError } from "../errors.js";
 import type { NdsRomMap } from "../rom-map.js";
+import {
+  readVerifiedNdsArtifact,
+  resolveNdsArtifactMetadata,
+  type NdsArtifactIo,
+} from "./artifacts.js";
 import type {
   NdsAddNitroFsFileOperation,
   NdsReplaceNitroFsFileOperation,
@@ -63,14 +65,7 @@ export interface NdsRelocatedFilePlan {
   readonly replacementSize: number;
 }
 
-export interface NdsFilesystemPlanningIo {
-  lstat(filePath: string): Promise<{
-    isFile(): boolean;
-    isSymbolicLink(): boolean;
-    readonly size: number;
-    readonly dev?: number;
-    readonly ino?: number;
-  }>;
+export interface NdsFilesystemPlanningIo extends NdsArtifactIo {
   readFile(filePath: string): Promise<Buffer>;
 }
 
@@ -86,8 +81,7 @@ interface PendingAddedFile {
   readonly operation: NdsAddNitroFsFileOperation;
   readonly directoryPath: string;
   readonly filename: string;
-  readonly absolutePath: string;
-  readonly size: number;
+  readonly metadata: Awaited<ReturnType<typeof resolveNdsArtifactMetadata>>;
 }
 
 function lexical(left: string, right: string): number {
@@ -104,17 +98,6 @@ function rebuildTargetError(message: string): NdsError<"unsupported-rebuild-targ
 
 function capacityError(message: string): NdsError<"filesystem-id-capacity-exceeded"> {
   return new NdsError("filesystem-id-capacity-exceeded", message);
-}
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-function workspaceRelativePath(workspaceRoot: string, absolutePath: string): string {
-  return path
-    .relative(path.resolve(workspaceRoot), path.resolve(absolutePath))
-    .split(path.sep)
-    .join("/");
 }
 
 async function hashFileRangeSha256(
@@ -154,23 +137,6 @@ async function hashFileRangeSha256(
   return hash.digest("hex");
 }
 
-async function assertArtifactDoesNotAliasSource(
-  map: NdsRomMap,
-  absolutePath: string,
-  artifactInfo: { readonly dev?: number; readonly ino?: number },
-): Promise<void> {
-  if (path.resolve(absolutePath) === path.resolve(map.romPath)) {
-    throw rebuildTargetError("Replacement artifact may not alias the immutable source ROM");
-  }
-  if (artifactInfo.dev === undefined || artifactInfo.ino === undefined) {
-    return;
-  }
-  const sourceInfo = await stat(map.romPath);
-  if (artifactInfo.dev === sourceInfo.dev && artifactInfo.ino === sourceInfo.ino) {
-    throw rebuildTargetError("Replacement artifact may not hard-link to the immutable source ROM");
-  }
-}
-
 function sourceTopLevelNames(map: NdsRomMap): ReadonlySet<string> {
   const names = new Set<string>();
   for (const directory of map.filesystem.directories) {
@@ -206,14 +172,49 @@ function sourcePaths(map: NdsRomMap): {
 
 function directoryPathsFor(filePath: string): readonly string[] {
   const segments = filePath.split("/");
-  const directories: string[] = [];
+  const result: string[] = [];
   for (let length = 1; length < segments.length; length += 1) {
-    directories.push(segments.slice(0, length).join("/"));
+    result.push(segments.slice(0, length).join("/"));
   }
-  return directories;
+  return result;
 }
 
-async function inspectArtifacts(
+function parentPath(directoryPath: string): string {
+  const separator = directoryPath.lastIndexOf("/");
+  return separator < 0 ? "" : directoryPath.slice(0, separator);
+}
+
+function lexicographicDirectoryPreorder(
+  directoryPaths: ReadonlySet<string>,
+): readonly string[] {
+  const children = new Map<string, string[]>();
+  for (const directoryPath of directoryPaths) {
+    const parent = parentPath(directoryPath);
+    const siblings = children.get(parent) ?? [];
+    siblings.push(directoryPath);
+    children.set(parent, siblings);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((left, right) => lexical(left, right));
+  }
+
+  const ordered: string[] = [];
+  function visit(parent: string): void {
+    for (const child of children.get(parent) ?? []) {
+      ordered.push(child);
+      visit(child);
+    }
+  }
+  visit("");
+  if (ordered.length !== directoryPaths.size) {
+    throw extensionError(
+      "New NitroFS directory tree traversal did not account for every planned directory",
+    );
+  }
+  return ordered;
+}
+
+async function inspectNewArtifacts(
   map: NdsRomMap,
   workspaceRoot: string,
   operations: readonly { index: number; operation: NdsAddNitroFsFileOperation }[],
@@ -229,40 +230,35 @@ async function inspectArtifacts(
         `New NitroFS path ${operation.path} must be beneath a new top-level extension directory`,
       );
     }
-    const filename = segments.at(-1)!;
-    const directoryPath = segments.slice(0, -1).join("/");
-    const absolutePath = resolveInside(workspaceRoot, operation.replacement.artifact);
-
-    let info;
-    try {
-      info = await io.lstat(absolutePath);
-    } catch (error) {
-      throw new NdsError(
-        "replacement-artifact-missing",
-        `Unable to inspect new NitroFS artifact ${operation.replacement.artifact}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (!info.isFile() || info.isSymbolicLink()) {
-      throw new NdsError(
-        "replacement-artifact-missing",
-        `New NitroFS artifact ${operation.replacement.artifact} must be a regular non-symlink file`,
-      );
-    }
-    await assertArtifactDoesNotAliasSource(map, absolutePath, info);
-    if (!Number.isSafeInteger(info.size) || info.size < 1 || info.size > MAX_ARTIFACT_BYTES) {
+    const metadata = await resolveNdsArtifactMetadata(
+      map,
+      workspaceRoot,
+      operation.replacement.artifact,
+      {
+        label: `New NitroFS artifact ${operation.replacement.artifact}`,
+        aliasCategory: "unsupported-rebuild-target",
+      },
+      io,
+    );
+    if (metadata.size < 1 || metadata.size > MAX_ARTIFACT_BYTES) {
       throw extensionError(
-        `New NitroFS artifact ${operation.replacement.artifact} size ${info.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
+        `New NitroFS artifact ${operation.replacement.artifact} size ${metadata.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
       );
     }
-    aggregateSize += info.size;
+    aggregateSize += metadata.size;
     if (!Number.isSafeInteger(aggregateSize) || aggregateSize > MAX_AGGREGATE_NEW_FILE_BYTES) {
       throw extensionError(
         `New NitroFS artifacts total ${aggregateSize} bytes, above the ${MAX_AGGREGATE_NEW_FILE_BYTES}-byte aggregate limit`,
       );
     }
-    pending.push({ index, operation, directoryPath, filename, absolutePath, size: info.size });
+    pending.push({
+      index,
+      operation,
+      directoryPath: segments.slice(0, -1).join("/"),
+      filename: segments.at(-1)!,
+      metadata,
+    });
   }
-
   return pending;
 }
 
@@ -308,8 +304,7 @@ function validatePathOwnership(
       );
     }
   }
-
-  return [...newDirectories].sort(lexical);
+  return lexicographicDirectoryPreorder(newDirectories);
 }
 
 function assignDirectoryIds(
@@ -317,10 +312,7 @@ function assignDirectoryIds(
   directoryPaths: readonly string[],
 ): ReadonlyMap<string, number> {
   const sourceCount = map.filesystem.directories.length;
-  if (
-    sourceCount < 1
-    || map.filesystem.directories[0]?.directoryId !== ROOT_DIRECTORY_ID
-  ) {
+  if (sourceCount < 1 || map.filesystem.directories[0]?.directoryId !== ROOT_DIRECTORY_ID) {
     throw extensionError("NitroFS extension requires a canonical source FNT root directory");
   }
   const finalCount = sourceCount + directoryPaths.length;
@@ -329,11 +321,12 @@ function assignDirectoryIds(
       `NitroFS extension would create ${finalCount} directories, above the ${MAX_DIRECTORY_COUNT} directory limit`,
     );
   }
-  const result = new Map<string, number>();
-  for (let index = 0; index < directoryPaths.length; index += 1) {
-    result.set(directoryPaths[index]!, ROOT_DIRECTORY_ID + sourceCount + index);
-  }
-  return result;
+  return new Map(
+    directoryPaths.map((directoryPath, index) => [
+      directoryPath,
+      ROOT_DIRECTORY_ID + sourceCount + index,
+    ]),
+  );
 }
 
 export async function planNdsFilesystemExtensions(
@@ -361,26 +354,25 @@ export async function planNdsFilesystemExtensions(
     };
   }
 
-  const pending = await inspectArtifacts(map, workspaceRoot, operations, io);
+  const pending = await inspectNewArtifacts(map, workspaceRoot, operations, io);
   const directoryPaths = validatePathOwnership(map, pending);
   const directoryIds = assignDirectoryIds(map, directoryPaths);
-
   const pendingByDirectory = new Map<string, PendingAddedFile[]>();
   for (const item of pending) {
-    const entries = pendingByDirectory.get(item.directoryPath) ?? [];
-    entries.push(item);
-    pendingByDirectory.set(item.directoryPath, entries);
+    const files = pendingByDirectory.get(item.directoryPath) ?? [];
+    files.push(item);
+    pendingByDirectory.set(item.directoryPath, files);
   }
-  for (const entries of pendingByDirectory.values()) {
-    entries.sort((left, right) => lexical(left.filename, right.filename));
+  for (const files of pendingByDirectory.values()) {
+    files.sort((left, right) => lexical(left.filename, right.filename));
   }
 
   const firstFileIds = new Map<string, number>();
-  const assigned = new Map<number, { fileId: number; directoryId: number }>();
+  const assigned = new Map<number, { readonly fileId: number; readonly directoryId: number }>();
   let nextFileId = map.fat.length;
   for (const directoryPath of directoryPaths) {
-    const directoryId = directoryIds.get(directoryPath)!;
     firstFileIds.set(directoryPath, nextFileId);
+    const directoryId = directoryIds.get(directoryPath)!;
     for (const item of pendingByDirectory.get(directoryPath) ?? []) {
       assigned.set(item.index, { fileId: nextFileId, directoryId });
       nextFileId += 1;
@@ -391,11 +383,10 @@ export async function planNdsFilesystemExtensions(
   }
 
   const addedDirectories: NdsAddedDirectoryPlan[] = directoryPaths.map((directoryPath) => {
-    const separator = directoryPath.lastIndexOf("/");
-    const parentPath = separator < 0 ? "" : directoryPath.slice(0, separator);
-    const parentDirectoryId = parentPath.length === 0
+    const parent = parentPath(directoryPath);
+    const parentDirectoryId = parent.length === 0
       ? ROOT_DIRECTORY_ID
-      : directoryIds.get(parentPath);
+      : directoryIds.get(parent);
     if (parentDirectoryId === undefined) {
       throw extensionError(`Missing planned parent directory for ${directoryPath}`);
     }
@@ -413,28 +404,24 @@ export async function planNdsFilesystemExtensions(
     if (identity === undefined) {
       throw extensionError(`Missing planned file ID for ${item.operation.path}`);
     }
-    const bytes = await io.readFile(item.absolutePath);
-    if (bytes.length !== item.size) {
-      throw extensionError(
-        `New NitroFS artifact ${item.operation.replacement.artifact} changed size during planning`,
-      );
-    }
-    const actualSha256 = sha256(bytes);
-    if (actualSha256 !== item.operation.replacement.sha256) {
-      throw new NdsError(
-        "replacement-artifact-hash-mismatch",
-        `New NitroFS artifact ${item.operation.replacement.artifact} SHA-256 is ${actualSha256}, expected ${item.operation.replacement.sha256}`,
-      );
-    }
+    const { bytes, verified } = await readVerifiedNdsArtifact(
+      item.metadata,
+      item.operation.replacement.sha256,
+      {
+        label: `New NitroFS artifact ${item.operation.replacement.artifact}`,
+        aliasCategory: "unsupported-rebuild-target",
+      },
+      io,
+    );
     addedFiles.push({
       operationIndex: item.index,
       path: item.operation.path,
       fileId: identity.fileId,
       directoryId: identity.directoryId,
       filename: item.filename,
-      replacementWorkspacePath: workspaceRelativePath(workspaceRoot, item.absolutePath),
-      replacementAbsolutePath: item.absolutePath,
-      replacementSha256: actualSha256,
+      replacementWorkspacePath: verified.workspacePath,
+      replacementAbsolutePath: verified.absolutePath,
+      replacementSha256: verified.sha256,
       replacementSize: bytes.length,
     });
   }
@@ -448,9 +435,7 @@ export async function planNdsFilesystemExtensions(
   };
 }
 
-function variableFileSelector(
-  target: NdsReplaceNitroFsFileOperation["target"],
-) {
+function variableFileSelector(target: NdsReplaceNitroFsFileOperation["target"]) {
   return "fileId" in target
     ? { component: "nitrofs-file" as const, fileId: target.fileId }
     : { component: "nitrofs-path" as const, filePath: target.filePath };
@@ -490,43 +475,31 @@ export async function planNdsVariableFileReplacement(
     );
   }
 
-  const absolutePath = resolveInside(workspaceRoot, operation.replacement.artifact);
-  let info;
-  try {
-    info = await io.lstat(absolutePath);
-  } catch (error) {
-    throw new NdsError(
-      "replacement-artifact-missing",
-      `Replacement artifact ${operation.replacement.artifact} is unavailable inside the workspace: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!info.isFile() || info.isSymbolicLink()) {
-    throw new NdsError(
-      "replacement-artifact-missing",
-      `Replacement artifact ${operation.replacement.artifact} must be a regular non-symlink file`,
-    );
-  }
-  await assertArtifactDoesNotAliasSource(map, absolutePath, info);
-  if (!Number.isSafeInteger(info.size) || info.size < 1 || info.size > MAX_ARTIFACT_BYTES) {
+  const metadata = await resolveNdsArtifactMetadata(
+    map,
+    workspaceRoot,
+    operation.replacement.artifact,
+    {
+      label: `Mutation operation ${index} replacement artifact`,
+      aliasCategory: "unsupported-rebuild-target",
+    },
+    io,
+  );
+  if (metadata.size < 1 || metadata.size > MAX_ARTIFACT_BYTES) {
     throw rebuildTargetError(
-      `Mutation operation ${index} replacement size ${info.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
+      `Mutation operation ${index} replacement size ${metadata.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
     );
   }
-
-  const replacementBytes = await io.readFile(absolutePath);
-  if (replacementBytes.length !== info.size) {
-    throw rebuildTargetError(
-      `Mutation operation ${index} replacement artifact changed size during planning`,
-    );
-  }
-  const replacementSha256 = sha256(replacementBytes);
-  if (replacementSha256 !== operation.replacement.sha256) {
-    throw new NdsError(
-      "replacement-artifact-hash-mismatch",
-      `Mutation operation ${index} replacement SHA-256 is ${replacementSha256}, expected ${operation.replacement.sha256}`,
-    );
-  }
-  if (replacementSha256 === sourceSha256) {
+  const { bytes, verified } = await readVerifiedNdsArtifact(
+    metadata,
+    operation.replacement.sha256,
+    {
+      label: `Mutation operation ${index} replacement artifact`,
+      aliasCategory: "unsupported-rebuild-target",
+    },
+    io,
+  );
+  if (verified.sha256 === sourceSha256) {
     throw new NdsError(
       "mutation-no-op",
       `Mutation operation ${index} replacement is byte-identical to the source NitroFS file`,
@@ -540,9 +513,9 @@ export async function planNdsVariableFileReplacement(
     sourceStart: component.romStart,
     sourceEnd: component.romEnd,
     sourceSha256,
-    replacementWorkspacePath: workspaceRelativePath(workspaceRoot, absolutePath),
-    replacementAbsolutePath: absolutePath,
-    replacementSha256,
-    replacementSize: replacementBytes.length,
+    replacementWorkspacePath: verified.workspacePath,
+    replacementAbsolutePath: verified.absolutePath,
+    replacementSha256: verified.sha256,
+    replacementSize: bytes.length,
   };
 }
