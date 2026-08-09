@@ -1,5 +1,15 @@
 import { NdsError } from "../errors.js";
+import type { NdsRelocatedFilePlan } from "./filesystem-plan.js";
 import type { GuardedNdsMutationOperation } from "./guards.js";
+
+function rangesOverlap(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+): boolean {
+  return leftStart < rightEnd && rightStart < leftEnd;
+}
 
 export function assertNoNdsMutationConflicts(
   operations: readonly GuardedNdsMutationOperation[],
@@ -21,6 +31,41 @@ export function assertNoNdsMutationConflicts(
         "mutation-overlap",
         `Mutation operations ${previous.index} and ${current.index} overlap physical ROM bytes 0x${Math.max(previous.romStart, current.romStart).toString(16)}..0x${Math.min(previous.romEnd, current.romEnd).toString(16)}`,
       );
+    }
+  }
+}
+
+export function assertNoNdsRebuildLogicalConflicts(
+  fixedOperations: readonly GuardedNdsMutationOperation[],
+  relocatedFiles: readonly NdsRelocatedFilePlan[],
+): void {
+  assertNoNdsMutationConflicts(fixedOperations);
+
+  const byFileId = new Map<number, NdsRelocatedFilePlan>();
+  for (const relocated of relocatedFiles) {
+    const existing = byFileId.get(relocated.fileId);
+    if (existing !== undefined) {
+      throw new NdsError(
+        "unsupported-rebuild-target",
+        `Mutation operations ${existing.operationIndex} and ${relocated.operationIndex} both replace NitroFS file ${relocated.fileId}`,
+      );
+    }
+    byFileId.set(relocated.fileId, relocated);
+
+    for (const fixed of fixedOperations) {
+      if (
+        rangesOverlap(
+          fixed.romStart,
+          fixed.romEnd,
+          relocated.sourceStart,
+          relocated.sourceEnd,
+        )
+      ) {
+        throw new NdsError(
+          "mutation-overlap",
+          `Fixed mutation operation ${fixed.index} overlaps variable replacement operation ${relocated.operationIndex} within source NitroFS file ${relocated.fileId}`,
+        );
+      }
     }
   }
 }
