@@ -50,18 +50,20 @@ A Ghidra inference never becomes a canonical RE-MCP fact merely because it appea
 
 `desmume_start` continues using the existing narrow ARM9-header compatibility path for executable-range derivation. It must not begin requiring a fully valid FAT/FNT/overlay model just to launch the emulator.
 
-In addition, start computes the full SHA-256 of the ROM and stores it in the owned process metadata for that exact process generation.
+In addition, start computes the full SHA-256 of the ROM immediately before process launch and stores it in the owned process metadata for that exact process generation. After the process is created, start re-hashes the same ROM before returning success. The pre-launch and post-start hashes must match.
+
+If they differ, start fails, stops the newly owned process, and resets the debugger instead of recording an uncertain runtime/static identity.
 
 The debugger session therefore records both:
 
 ```text
-rom path
+workspace-contained ROM path
 launch-time full ROM SHA-256
 ```
 
 `nds_correlate_stop_context` reparses/re-hashes the current ROM through the canonical NDS model and requires its full SHA-256 to match the launch-time SHA before static evidence is correlated with the live process.
 
-If the ROM file changed after DeSmuME started, correlation fails instead of mixing live evidence from one image with static evidence from another.
+If the ROM file changes after DeSmuME starts, correlation fails instead of mixing live evidence from one image with static evidence from another.
 
 This metadata addition does not change GDB packet behavior, execution-state behavior, breakpoint behavior, or the existing ARM9 executable-range policy.
 
@@ -71,7 +73,7 @@ A runtime address can statically belong to multiple mutually exclusive overlays.
 
 If the observed PC has multiple canonical candidates, the response returns all candidates.
 
-Each candidate may receive its own static interpretation by explicitly selecting that canonical overlay for analysis, but the top-level ownership remains ambiguous.
+Each candidate may receive its own static interpretation by explicitly selecting that canonical overlay internally for analysis, but the top-level ownership remains ambiguous.
 
 Example:
 
@@ -99,7 +101,17 @@ It does not:
 - treat BSS as initialized executable bytes;
 - guess an overlay when several overlap.
 
-### 5. The existing debugger API remains intact
+If existing RE-MCP proof establishes an exact function entry at the same PC with a mode that conflicts with the observed CPSR mode, the correlation result reports that evidence conflict. Runtime mode does not silently overwrite static proof, and static proof does not overwrite the observed runtime mode.
+
+### 5. The observed PC is never adjusted heuristically
+
+Correlation uses the PC exactly as returned by the existing ARM9 register decoder.
+
+It does not subtract 2 or 4 bytes, rewind to a software-breakpoint address, or apply any DeSmuME-specific trap-PC correction heuristic.
+
+The physical Catalina acceptance gate exists in part to validate DeSmuME's real stop-PC semantics. If native acceptance reveals a stub-specific PC rule, that rule must be designed and fixed in the debugger layer rather than hidden inside correlation.
+
+### 6. The existing debugger API remains intact
 
 The existing tools continue to return their current result shapes:
 
@@ -121,28 +133,36 @@ Extend the owned DeSmuME metadata written by `desmume_start` with:
 romSha256: string
 ```
 
-The hash is computed over the complete ROM before process launch or before the start operation returns success. The existing narrow ARM9 range parsing remains independent.
+The complete ROM is hashed immediately before launch and again after the owned process is created but before `desmume_start` returns success. Both hashes must be identical.
+
+The existing narrow ARM9 range parsing remains independent from the full canonical NDS parser.
 
 A successful owned process generation therefore has a stable tuple:
 
 ```text
 process generation
-ROM path
+workspace-contained ROM path
 launch-time ROM SHA-256
 ARM9 GDB port
 ```
 
-The correlation layer refuses sessions that predate this metadata or otherwise lack a valid 64-hex-character SHA-256.
+The correlation layer refuses sessions that predate this metadata or otherwise lack a valid lowercase 64-hex-character SHA-256.
 
 ### B. Runtime correlation service
 
-Add a focused service, conceptually:
+Add a focused service:
+
+```text
+src/services/nds/runtime-correlation.ts
+```
+
+with a core operation conceptually shaped as:
 
 ```ts
 correlateNdsStopContext(input): Promise<NdsRuntimeCorrelationResult>
 ```
 
-The service accepts already-captured runtime evidence and explicit dependencies for canonical/static/Ghidra analysis. It contains no socket or MCP registration logic, which makes it testable with deterministic fixtures.
+The service accepts already-captured runtime evidence and explicit dependencies for canonical/static/Ghidra analysis. It contains no socket, process-manager, or MCP registration logic, which keeps it deterministic and testable.
 
 Inputs include:
 
@@ -164,13 +184,24 @@ The service performs:
 4. candidate-specific static instruction decoding using the observed runtime mode;
 5. bounded deterministic reference classification around PC where exact code exists;
 6. exact function-entry proof query at PC, without inventing a containing function;
-7. optional read-only Ghidra enrichment;
-8. final source-ROM SHA revalidation before return;
-9. serialized output-bound enforcement.
+7. mode-consistency comparison when exact static function-entry mode proof exists;
+8. optional read-only Ghidra enrichment;
+9. final source-ROM SHA revalidation before return;
+10. serialized output-bound enforcement.
 
 ### C. Live MCP orchestration
 
-`nds_correlate_stop_context` derives the active ROM from the single server-owned DeSmuME session; the caller does not provide a separate ROM path.
+Add a small cross-layer registration module:
+
+```text
+src/tools/nds-runtime.ts
+```
+
+rather than expanding either `src/tools/nds.ts` or `src/tools/desmume.ts` into a mixed-responsibility module.
+
+`nds_correlate_stop_context` receives the existing `OwnedProcessManager` and `DebugController` instances from server composition.
+
+The tool derives the active ROM from the single server-owned DeSmuME session; the caller does not provide a separate ROM path.
 
 The tool:
 
@@ -179,7 +210,8 @@ The tool:
 3. requires a stopped debugger state;
 4. captures the current stop context through the existing controller;
 5. passes that context and exact owned ROM identity to the correlation service;
-6. returns one bounded structured result.
+6. converts the internal absolute ROM path to a validated workspace-relative path for MCP output;
+7. returns one bounded structured result.
 
 It never resumes execution.
 
@@ -189,15 +221,15 @@ It never resumes execution.
 
 Purpose: explain the current stopped ARM9 state using the exact ROM and existing RE-MCP analysis layers.
 
-Suggested inputs:
+Inputs:
 
 ```ts
 {
-  timeoutMs?: number;              // 100..30000, default 3000
-  nearbyInstructions?: number;     // 1..32, default 8
-  referenceLimit?: number;         // 0..64, default 16
-  includeGhidra?: boolean;         // default false
-  decompileGhidraFunction?: boolean; // default false, requires includeGhidra
+  timeoutMs?: number;                // 100..30000, default 3000
+  nearbyInstructions?: number;       // 1..32, default 8
+  referenceLimit?: number;           // 0..64, default 16; 0 disables reference work
+  includeGhidra?: boolean;           // default false
+  decompileGhidraFunction?: boolean; // default false; requires includeGhidra
 }
 ```
 
@@ -229,7 +261,7 @@ Conceptual result:
     "breakpoint": null
   },
   "rom": {
-    "path": "game.nds",
+    "workspacePath": "game.nds",
     "sha256": "...",
     "launchSha256": "...",
     "identityMatched": true
@@ -237,18 +269,24 @@ Conceptual result:
   "canonical": {
     "processor": "arm9",
     "status": "resolved",
-    "ownership": { "kind": "arm9-main" }
+    "candidateCount": 1
   },
   "candidates": [
     {
-      "canonical": { "kind": "arm9-main", "runtimeAddress": 33558528 },
-      "static": {
+      "canonical": {
+        "kind": "arm9-main",
+        "runtimeAddress": 33558528
+      },
+      "reMcpEvidence": {
         "status": "available",
         "instructions": [],
         "references": [],
-        "functionEntryProof": {}
+        "functionEntryProof": {},
+        "modeConsistency": "not-proven"
       },
-      "ghidraDerived": { "status": "not-requested" }
+      "ghidraDerived": {
+        "status": "not-requested"
+      }
     }
   ]
 }
@@ -264,13 +302,23 @@ For overlapping overlays:
     "candidateCount": 2
   },
   "candidates": [
-    { "canonical": { "kind": "overlay", "overlayId": 12 }, "static": {} },
-    { "canonical": { "kind": "overlay", "overlayId": 19 }, "static": {} }
+    {
+      "canonical": { "kind": "overlay", "overlayId": 12 },
+      "reMcpEvidence": {},
+      "ghidraDerived": { "status": "not-requested" }
+    },
+    {
+      "canonical": { "kind": "overlay", "overlayId": 19 },
+      "reMcpEvidence": {},
+      "ghidraDerived": { "status": "not-requested" }
+    }
   ]
 }
 ```
 
 No field named `loadedOverlay`, `bestMatch`, or equivalent is produced in this milestone.
+
+The MCP result exposes only a workspace-relative ROM path. Internal absolute filesystem paths are not added to the new public response.
 
 ## Canonical Candidate Semantics
 
@@ -291,13 +339,13 @@ where appropriate.
 
 ### Overlay BSS/runtime-only region
 
-BSS can be a canonical runtime ownership candidate, but no static instruction stream is fabricated. Candidate static status is explicitly runtime-only/non-decodable.
+BSS can be a canonical runtime ownership candidate, but no static instruction stream is fabricated. Candidate evidence status is explicitly runtime-only/non-decodable.
 
 ### Unmapped address
 
 The tool still returns the runtime observation, ROM identity, and an explicit canonical `unmapped` status. It does not fail merely because the PC is not statically mappable, provided the runtime capture itself is valid.
 
-## Static Evidence at PC
+## RE-MCP Evidence at PC
 
 ### Nearby instructions
 
@@ -309,13 +357,27 @@ The default is 8 instructions; maximum 32. Existing code-byte bounds remain auth
 
 Classify only the existing deterministic single-instruction/static-window reference classes. The correlation layer does not broaden the reference model.
 
+A `referenceLimit` of 0 skips reference analysis entirely.
+
 ### Function evidence
 
 The canonical layer may report whether the exact PC is a proven function entry under existing rules.
 
 It must not label an arbitrary mid-function PC as belonging to a canonical containing function because RE-MCP does not currently claim function-body ownership ranges.
 
-If the exact PC is not a proven function entry, the result says so or reports inconclusive proof coverage using the existing function-analysis semantics.
+If the exact PC is not a proven function entry, the result reports the existing negative/inconclusive proof semantics.
+
+### Runtime/static mode consistency
+
+When exact function-entry proof exists at the observed PC, correlation compares its proven ARM/Thumb mode with the CPSR-derived runtime mode and reports one of:
+
+```text
+match
+conflict
+not-proven
+```
+
+A conflict is evidence to investigate. It is not auto-corrected.
 
 A later milestone may add bounded containing-function correlation with a separately designed evidence model.
 
@@ -359,7 +421,7 @@ Required checks:
 1. launch-time SHA exists;
 2. canonical parse SHA equals launch-time SHA;
 3. existing static readers continue their own before/after SHA checks;
-4. correlation recomputes or otherwise verifies full source identity immediately before returning.
+4. correlation verifies full source identity immediately before returning.
 
 A source-ROM mismatch is a top-level failure because the core purpose of the tool is to correlate the running process to that exact static image.
 
@@ -367,7 +429,7 @@ The running emulator is not claimed to reflect later on-disk edits.
 
 ## Error Model
 
-Add narrow correlation categories, conceptually:
+Add narrow correlation categories:
 
 ```text
 runtime-correlation-no-owned-process
@@ -380,7 +442,7 @@ runtime-correlation-output-limit
 
 Existing NDS parse/resolver/code-source/decompression/Ghidra categories remain authoritative for their own layers.
 
-Errors should identify:
+Errors identify:
 
 ```text
 operation
@@ -425,12 +487,13 @@ Use synthetic NDS fixtures and constructed stop contexts to cover:
 - exact nearby instruction decoding;
 - deterministic reference classification;
 - exact PC function-entry proof;
+- function-entry mode match and conflict reporting;
 - a PC that is not a proven function entry;
 - overlapping overlay candidates preserved without selection;
 - candidate-specific decoding for overlapping overlays;
 - compressed-overlay candidate decoded from exact derived runtime bytes;
 - compressed-overlay instructions retaining no fabricated ROM offset;
-- overlay BSS returning runtime-only static status;
+- overlay BSS returning runtime-only evidence status;
 - unmapped PC returning a valid unmapped correlation;
 - output-limit enforcement;
 - ROM mutation before final return causing failure.
@@ -442,6 +505,8 @@ Characterize and preserve the current `desmume_start` narrow ARM9-header behavio
 Add tests proving:
 
 - full ROM SHA is recorded in owned process metadata;
+- pre-launch and post-start ROM hashes must match;
+- a hash change during startup stops the new owned process and fails start;
 - unrelated malformed FAT/FNT/overlay structures do not become a new launch blocker merely because correlation metadata was added;
 - a new process generation gets a fresh ROM identity;
 - old process-generation identity cannot be reused.
@@ -452,8 +517,10 @@ Using the existing deterministic fake GDB server patterns, verify:
 
 - correlation requires stopped state;
 - current PC/mode comes from decoded live registers, not caller input;
+- no PC rewind/correction is performed;
 - correlation captures without resuming execution;
 - exact owned ROM path/SHA is used;
+- MCP output contains only a workspace-relative ROM path;
 - current stop/breakpoint metadata is retained;
 - existing debugger tools keep their response contracts.
 
@@ -467,7 +534,7 @@ Unit/contract tests verify:
 - ambiguous overlays are enriched per explicit candidate rather than guessed;
 - Ghidra-derived information remains authority-separated.
 
-Real Ghidra acceptance may be added for the enrichment path using the existing Ghidra 12.1.2/JDK 21 acceptance infrastructure.
+PR B must run real Ghidra 12.1.2/JDK 21 acceptance using the existing pinned acceptance infrastructure. The native test must cover at least one main-code candidate and one overlay candidate, including compressed-overlay inspection where the fixture supports it.
 
 ### Repository regression
 
@@ -502,7 +569,7 @@ Native failure in the underlying debugger is fixed at that layer rather than wor
 
 ## Delivery Topology
 
-Use two independently reviewable implementation PRs after the design/plan is approved.
+Use two independently reviewable implementation PRs after the design and implementation plan are approved.
 
 ### PR A — Runtime identity + canonical static correlation
 
@@ -510,11 +577,12 @@ Includes:
 
 - launch-time full ROM SHA binding;
 - pure runtime-correlation service;
-- current-stop MCP orchestration;
+- dedicated `src/tools/nds-runtime.ts` orchestration;
+- current-stop MCP tool registration;
 - canonical ownership candidate output;
 - nearby static instruction decoding;
 - deterministic references;
-- exact function-entry proof;
+- exact function-entry proof and mode-consistency reporting;
 - compressed-overlay support through the existing runtime-image layer;
 - fake-RSP/static fixture coverage;
 - no Ghidra enrichment yet.
@@ -528,7 +596,7 @@ Includes:
 - per-candidate overlay-safe inspection;
 - decompiler option under existing limits;
 - package/docs/capability updates;
-- real-Ghidra acceptance for the enrichment path;
+- mandatory real-Ghidra acceptance for the enrichment path;
 - final cross-layer regression and trust-boundary review.
 
 PR B starts from current `main` only after PR A merges.
@@ -558,12 +626,14 @@ Not part of this milestone:
 The milestone is complete when, for one stopped server-owned DeSmuME ARM9 session, RE-MCP can return a bounded correlation result that:
 
 1. proves it is using the same full ROM identity that was launched;
-2. reports the observed PC and CPSR-derived execution mode;
+2. reports the observed PC and CPSR-derived execution mode without breakpoint-PC heuristics;
 3. maps the PC into canonical NDS main/overlay/BSS/unmapped candidates without guessing overlapping overlays;
 4. decodes exact candidate-specific static instructions when initialized code exists, including compressed-overlay runtime images;
 5. reports existing deterministic references and exact function-entry proof semantics without broadening them;
-6. optionally adds authority-separated information from an already-current Ghidra project without mutating or bootstrapping it;
-7. revalidates source-ROM identity before returning;
-8. preserves every existing debugger and Ghidra safety restriction;
-9. passes CI/package verification, plus real-Ghidra acceptance for PR B;
-10. leaves physical Catalina/DeSmuME debugger acceptance explicitly separate until run on the target machine.
+6. explicitly reports runtime/static function-entry mode consistency when such proof exists;
+7. optionally adds authority-separated information from an already-current Ghidra project without mutating or bootstrapping it;
+8. revalidates source-ROM identity before returning;
+9. exposes only a workspace-relative ROM path in the new MCP result;
+10. preserves every existing debugger and Ghidra safety restriction;
+11. passes CI/package verification and mandatory real-Ghidra acceptance for PR B;
+12. leaves physical Catalina/DeSmuME debugger acceptance explicitly separate until run on the target machine.
