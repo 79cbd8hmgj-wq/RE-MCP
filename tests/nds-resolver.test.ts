@@ -65,6 +65,8 @@ test("resolves ARM9 main runtime addresses directly to ROM bytes", async () => {
       processor: "arm9",
       runtimeAddress: 0x02000040,
       relativeOffset: 0x40,
+      runtimeImageOffset: 0x40,
+      representation: "rom-file-backed",
       overlayId: null,
       fileId: null,
       romOffset: 0x240,
