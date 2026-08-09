@@ -4,51 +4,50 @@
 
 **Goal:** Correlate one current stopped server-owned DeSmuME ARM9 state with the exact launched NDS ROM, canonical static ownership, bounded ARM/Thumb analysis, existing proven function evidence, and optional already-ready read-only Ghidra context.
 
-**Architecture:** PR A binds each owned emulator process generation to a full ROM SHA-256, adds a pure canonical/static correlation service, and exposes one stopped-state MCP tool. PR B adds opt-in candidate-scoped Ghidra enrichment only after canonical ownership is established; Ghidra never bootstraps automatically, mutates state, or selects a loaded overlay.
+**Architecture:** PR A binds each owned emulator generation to a full ROM SHA-256, adds a pure canonical/static correlation service, and exposes one stopped-state MCP tool. PR B adds opt-in Ghidra enrichment after canonical candidate identity is established; Ghidra never bootstraps automatically, mutates state, or chooses a loaded overlay.
 
-**Tech Stack:** Node.js 20+, TypeScript 5.7, existing MCP SDK/Zod, existing Capstone.js ARM backend, existing NDS parser/resolver/disassembly/reference/function services, existing Ghidra 12.1.2/JDK 21 inspection infrastructure, Node test runner with `tsx`.
+**Tech Stack:** Node.js 20+, TypeScript 5.7, MCP SDK/Zod, existing Capstone.js backend, existing NDS parser/resolver/disassembly/reference/function services, existing Ghidra 12.1.2/JDK 21 inspection infrastructure, Node test runner with `tsx`.
 
 ## Global Constraints
 
-- Read-only milestone: no watchpoints, register writes, memory writes, arbitrary GDB packets, conditional breakpoint scripting, repeated-step tracing, ROM mutation, or Ghidra mutation.
-- `nds_correlate_stop_context` accepts no caller-selected ROM path, processor, PC, register set, overlay ID, arbitrary memory region, Ghidra project/program/script path, or loaded-overlay hint.
-- Processor is fixed to `arm9` because the existing owned DeSmuME debugger is ARM9-only.
+- Read-only only: no watchpoints, register writes, memory writes, arbitrary GDB packets, conditional breakpoint scripting, repeated-step tracing, ROM mutation, or Ghidra mutation.
+- Public tool accepts no caller-selected ROM path, processor, PC, register set, overlay ID, memory region, Ghidra project/program/script path, or loaded-overlay hint.
+- Processor is fixed to `arm9`.
 - Launch identity is the full lowercase SHA-256 of the exact ROM used by that owned process generation.
-- Hash the ROM before `OwnedProcessManager.start()` and again after process creation. A mismatch stops that owned generation, resets debugger state, and fails start.
-- Keep `readArm9ExecutableRange()` as the narrow launch compatibility path. Do not make `desmume_start` depend on valid FAT/FNT/overlay structures.
-- Correlation reparses with `readNdsRomMap()` and requires `map.sha256 === launchSha256`.
-- Rehash immediately before returning a successful correlation result.
-- Preserve every `RuntimeCandidate` from `resolveRuntimeAddress()`. Never guess among overlapping overlays.
-- PC and execution mode come directly from decoded live registers/CPSR. Do not rewind or correct PC for breakpoint semantics.
-- Static decoding uses the exact observed ARM/Thumb mode; never decode both modes and choose one.
+- Hash before `OwnedProcessManager.start()` and after process creation. A mismatch stops that owned generation, resets debugger state, and fails start.
+- Keep `readArm9ExecutableRange()` as the narrow launch compatibility path; invalid FAT/FNT/overlay data must not become a new `desmume_start` blocker.
+- Correlation reparses with `readNdsRomMap()` and requires `map.sha256 === launchSha256`, then rehashes immediately before return.
+- Preserve every `RuntimeCandidate` returned by `resolveRuntimeAddress()`; never guess overlapping loaded-overlay state.
+- PC/mode come directly from decoded live registers/CPSR. No breakpoint-PC rewind/correction.
+- Decode only the observed ARM/Thumb mode.
 - Compressed overlays retain `representation: "derived-overlay"` and `romOffset: null`.
-- BSS/runtime-only candidates get no fabricated instruction stream.
-- Function reporting is exact-entry proof only. Do not infer containing-function ownership for arbitrary mid-function PCs.
-- Ghidra stays under `ghidraDerived`; it never changes canonical ownership or RE-MCP function proof.
-- `includeGhidra: false` performs no Ghidra readiness check or subprocess work.
-- Ghidra enrichment may use only an already-current full-ROM-SHA-scoped project through existing read-only/no-analysis inspection.
-- No automatic Ghidra bootstrap, reconciliation, migration, or auto-analysis.
-- MCP output exposes only a workspace-relative ROM path.
+- BSS/runtime-only candidates get no fabricated code bytes.
+- Function reporting is exact-entry proof only; no containing-function inference for arbitrary mid-function PCs.
+- Ghidra remains under `ghidraDerived`; it cannot change canonical ownership or RE-MCP proof.
+- `includeGhidra: false` performs no Ghidra work.
+- Ghidra may use only an already-current full-ROM-SHA project via existing read-only/no-analysis inspection.
+- No automatic Ghidra bootstrap, reconcile, migration, or auto-analysis.
+- New MCP output exposes only a workspace-relative ROM path.
 - `timeoutMs`: default 3000, range 100..30000.
 - `nearbyInstructions`: default 8, range 1..32.
 - `referenceLimit`: default 16, range 0..64.
 - Final serialized response must fit `config.maxOutputBytes`.
-- Existing debugger tool result shapes remain unchanged.
-- Physical Intel Catalina/DeSmuME acceptance remains a separate outstanding gate.
+- Existing debugger tool response shapes remain unchanged.
+- Physical Intel Catalina/DeSmuME acceptance remains a separate gate.
 - No new production runtime dependency.
 
 ---
 
 ## Delivery topology
 
-1. **PR A — Runtime identity + canonical static correlation:** Tasks 1–4. Branch from current `main` after this design/plan documentation is accepted.
-2. **PR B — Controlled Ghidra enrichment + hardening:** Tasks 5–8. Branch from current `main` only after PR A merges.
+1. **PR A — Runtime identity + canonical static correlation:** Tasks 1–4, branched from current `main`.
+2. **PR B — Controlled Ghidra enrichment + hardening:** Tasks 5–8, branched from `main` only after PR A merges.
 
 ---
 
 # PR A — Runtime identity + canonical static correlation
 
-### Task 1: Bind each owned DeSmuME generation to the full ROM SHA-256
+### Task 1: Bind owned DeSmuME generations to full ROM SHA-256
 
 **Files:**
 - Modify: `src/tools/desmume.ts`
@@ -58,69 +57,37 @@
 - Test: `tests/desmume-debug-lifecycle.test.ts`
 
 **Interfaces:**
-- Consumes existing `hashFileSha256(filePath: string): Promise<string>` from `src/services/nds/io.ts`.
-- Produces owned-process metadata field `romSha256: string` alongside existing `rom` and `arm9GdbPort`.
-- Preserves existing `readArm9ExecutableRange(romPath)` launch semantics.
+- Consumes existing `hashFileSha256(filePath: string): Promise<string>`.
+- Adds owned-process metadata `romSha256: string` beside `rom` and `arm9GdbPort`.
 
-- [ ] **Step 1: Write RED start-metadata tests**
+- [ ] **Step 1: Write RED metadata/mutation tests**
 
-Add a valid synthetic ROM and assert the process-start request contains:
+Assert a valid start request includes a 64-hex `romSha256`. Add a manager test double that mutates the ROM during `start()` and assert the process is stopped, debugger state resets to `unavailable`, and the result reports `ROM changed during DeSmuME start`.
 
-```ts
-assert.equal(startRequest.metadata.rom, expectedAbsoluteRomPath);
-assert.equal(
-  startRequest.metadata.romSha256,
-  "a47e00f66bf37a7e8e6fc487572ef9c4679b0be5bef584d73eee9955bcd5be73",
-);
-```
+- [ ] **Step 2: Write RED narrow-launch regression**
 
-Use the bytes `Buffer.from("runtime-correlation-rom")` only in the dedicated hash fixture that independently proves the literal above. The actual `desmume_start` fixture must remain a valid ARM9-header ROM.
+Create a fixture with a valid ARM9 header but malformed unrelated FAT/FNT/overlay data. Assert `desmume_start` still reaches `OwnedProcessManager.start()`.
 
-- [ ] **Step 2: Write RED mutation-during-start test**
-
-Arrange a test process manager whose `start()` hook mutates the ROM after the pre-launch hash. Assert:
-
-```ts
-assert.equal(manager.status().running, false);
-assert.equal(debuggerController.status().state, "unavailable");
-assert.match(resultText, /ROM changed during DeSmuME start/i);
-```
-
-- [ ] **Step 3: Write RED narrow-launch regression**
-
-Create a fixture with a valid ARM9 header but deliberately invalid unrelated FAT/FNT/overlay bytes. Assert `desmume_start` still reaches `OwnedProcessManager.start()`. This prevents accidental replacement of `readArm9ExecutableRange()` with `readNdsRomMap()`.
-
-- [ ] **Step 4: Run RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
-node --test --import tsx \
-  tests/nds-runtime-identity.test.ts \
-  tests/desmume-start-race.test.ts
+node --test --import tsx tests/nds-runtime-identity.test.ts tests/desmume-start-race.test.ts
 ```
 
-Expected: FAIL because `romSha256` is not launch metadata and no post-start identity check exists.
+Expected: FAIL because launch metadata has no ROM SHA and no post-start verification.
 
-- [ ] **Step 5: Implement pre/post launch identity checks**
-
-Import existing `hashFileSha256` and structure the launch path as:
+- [ ] **Step 4: Implement pre/post hashing**
 
 ```ts
 const arm9Range = await readArm9ExecutableRange(romPath);
 const romSha256 = await hashFileSha256(romPath);
-
 const status = await manager.start({
   executable: launcherPath,
   args: buildDesmumeArguments(port, romPath),
   cwd: path.dirname(launcherPath),
   maxOutputBytes: config.maxOutputBytes,
-  metadata: {
-    emulator: "desmume",
-    arm9GdbPort: port,
-    rom: romPath,
-    romSha256,
-  },
+  metadata: { emulator: "desmume", arm9GdbPort: port, rom: romPath, romSha256 },
 });
-
 const verifiedSha256 = await hashFileSha256(romPath);
 if (verifiedSha256 !== romSha256) {
   await manager.stop();
@@ -129,9 +96,9 @@ if (verifiedSha256 !== romSha256) {
 }
 ```
 
-Keep the existing process-generation race check after this identity check.
+Keep the existing owned-process-generation race check after identity verification.
 
-- [ ] **Step 6: Run focused debugger regressions**
+- [ ] **Step 5: Run GREEN**
 
 ```bash
 node --test --import tsx \
@@ -142,9 +109,7 @@ node --test --import tsx \
 npm run typecheck
 ```
 
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/tools/desmume.ts tests/nds-runtime-identity.test.ts \
@@ -155,7 +120,7 @@ git commit -m "feat: bind DeSmuME sessions to ROM identity"
 
 ---
 
-### Task 2: Add runtime-correlation error categories and canonical ownership model
+### Task 2: Add correlation error categories and canonical ownership service
 
 **Files:**
 - Modify: `src/services/nds/errors.ts`
@@ -163,11 +128,8 @@ git commit -m "feat: bind DeSmuME sessions to ROM identity"
 - Test: `tests/nds-runtime-correlation.test.ts`
 
 **Interfaces:**
-- Consumes `readNdsRomMap(romPath): Promise<NdsRomMap>`.
-- Consumes `resolveRuntimeAddress(map, address, "arm9"): RuntimeResolution`.
-- Consumes `hashFileSha256(filePath): Promise<string>`.
-- Consumes `StopContext`.
-- Produces:
+
+Add:
 
 ```ts
 export type NdsRuntimeCorrelationErrorCategory =
@@ -179,7 +141,7 @@ export type NdsRuntimeCorrelationErrorCategory =
   | "runtime-correlation-output-limit";
 ```
 
-Add `NdsRuntimeCorrelationErrorCategory` to `AnyNdsErrorCategory` so correlation errors remain part of the non-Ghidra NDS service surface.
+Include this union in `AnyNdsErrorCategory`.
 
 Define:
 
@@ -188,8 +150,8 @@ export interface NdsRuntimeCorrelationOptions {
   readonly nearbyInstructions: number;
   readonly referenceLimit: number;
   readonly maxOutputBytes: number;
-  readonly includeGhidra: false;
-  readonly decompileGhidraFunction: false;
+  readonly includeGhidra: boolean;
+  readonly decompileGhidraFunction: boolean;
 }
 
 export interface NdsRuntimeCorrelationInput {
@@ -200,84 +162,25 @@ export interface NdsRuntimeCorrelationInput {
   readonly options: NdsRuntimeCorrelationOptions;
 }
 
-export interface NdsRuntimeCandidateCorrelation {
-  readonly canonical: RuntimeCandidate;
-  readonly static: NdsRuntimeStaticCorrelation;
-  readonly ghidraDerived: { readonly status: "not-requested" };
-}
-
-export interface NdsRuntimeCorrelationResult {
-  readonly runtimeObserved: {
-    readonly capturedAt: string;
-    readonly pc: number;
-    readonly sp: number;
-    readonly lr: number;
-    readonly cpsr: number;
-    readonly mode: "arm" | "thumb";
-    readonly stop: StopContext["stop"];
-    readonly breakpoint: StopContext["breakpoint"] | null;
-  };
-  readonly rom: {
-    readonly path: string;
-    readonly sha256: string;
-    readonly launchSha256: string;
-    readonly identityMatched: true;
-  };
-  readonly canonical: {
-    readonly processor: "arm9";
-    readonly status: "resolved" | "ambiguous" | "unmapped";
-    readonly candidateCount: number;
-  };
-  readonly candidates: readonly NdsRuntimeCandidateCorrelation[];
-}
-
 export async function correlateNdsStopContext(
   input: NdsRuntimeCorrelationInput,
   backend: ArmDisassemblyBackend,
 ): Promise<NdsRuntimeCorrelationResult>;
 ```
 
-- [ ] **Step 1: Write RED error-union/type tests**
+Result must separate `runtimeObserved`, `rom`, top-level `canonical`, candidate `canonical`, candidate `static`, and candidate `ghidraDerived`.
 
-Add a compile/runtime test that constructs:
+- [ ] **Step 1: Write RED identity/resolution tests**
 
-```ts
-const error = new NdsError<NdsRuntimeCorrelationErrorCategory>(
-  "runtime-correlation-rom-identity-mismatch",
-  "mismatch",
-);
-assert.equal(error.category, "runtime-correlation-rom-identity-mismatch");
-```
+Cover ARM9 main, ambiguous overlays, compressed initialized overlay, BSS, and unmapped PC. Assert `runtimeObserved.pc` and `mode` equal the `StopContext.registers` values exactly.
 
-- [ ] **Step 2: Write RED identity/resolution tests**
-
-Cover ARM9 main, ambiguous overlays, BSS, compressed overlay, and unmapped PC. Assert PC/mode are copied verbatim from `stopContext.registers`.
-
-For ambiguity:
-
-```ts
-assert.equal(result.canonical.status, "ambiguous");
-assert.deepEqual(
-  result.candidates.map((entry) => entry.canonical.overlayId),
-  [12, 19],
-);
-```
-
-Sorting by overlay ID is permitted only for deterministic output; the result must remain ambiguous.
-
-- [ ] **Step 3: Run RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-runtime-correlation.test.ts
 ```
 
-Expected: FAIL because correlation categories/module do not exist.
-
-- [ ] **Step 4: Implement categories and initial identity check**
-
-In `errors.ts`, add the new union and include it in `AnyNdsErrorCategory`.
-
-In `runtime-correlation.ts`:
+- [ ] **Step 3: Implement identity and canonical resolution**
 
 ```ts
 const map = await readNdsRomMap(input.romPath);
@@ -287,45 +190,17 @@ if (map.sha256 !== input.expectedRomSha256) {
     "Current ROM SHA-256 does not match the launch-time ROM SHA-256",
   );
 }
-```
-
-- [ ] **Step 5: Normalize canonical candidates without changing resolver semantics**
-
-```ts
-const resolution = resolveRuntimeAddress(
-  map,
-  input.stopContext.registers.pc,
-  "arm9",
-);
-
+const resolution = resolveRuntimeAddress(map, input.stopContext.registers.pc, "arm9");
 const candidates = resolution.status === "unmapped"
   ? []
   : resolution.status === "ambiguous-runtime-address"
-    ? [...resolution.candidates].sort(
-        (left, right) => (left.overlayId ?? -1) - (right.overlayId ?? -1),
-      )
+    ? [...resolution.candidates].sort((a, b) => (a.overlayId ?? -1) - (b.overlayId ?? -1))
     : [resolution.candidate];
 ```
 
-Retain candidates from `compressed-no-direct-rom-mapping` and `runtime-only-bss`; neither is a top-level correlation failure.
+Sorting is only deterministic presentation; top-level status remains `ambiguous` when resolver status is ambiguous.
 
-- [ ] **Step 6: Build runtime/canonical result without static enrichment yet**
-
-Every candidate initially gets:
-
-```ts
-{
-  canonical: candidate,
-  static: candidate.representation === "runtime-only"
-    ? { status: "runtime-only", reason: "canonical runtime candidate has no exact initialized code bytes" }
-    : { status: "not-decodable", reason: "static enrichment not performed yet" },
-  ghidraDerived: { status: "not-requested" },
-}
-```
-
-- [ ] **Step 7: Add final SHA/output-bound checks**
-
-Immediately before return:
+- [ ] **Step 4: Add final identity/output checks**
 
 ```ts
 const finalSha256 = await hashFileSha256(input.romPath);
@@ -343,7 +218,7 @@ if (Buffer.byteLength(JSON.stringify(result), "utf8") > input.options.maxOutputB
 }
 ```
 
-- [ ] **Step 8: Run GREEN and commit**
+- [ ] **Step 5: Run GREEN and commit**
 
 ```bash
 node --test --import tsx tests/nds-runtime-correlation.test.ts
@@ -355,7 +230,7 @@ git commit -m "feat: model canonical runtime stop correlation"
 
 ---
 
-### Task 3: Attach bounded static instructions, references, and exact function-entry proof
+### Task 3: Attach bounded static instructions, references, and exact function proof
 
 **Files:**
 - Modify: `src/services/nds/runtime-correlation.ts`
@@ -366,10 +241,8 @@ git commit -m "feat: model canonical runtime stop correlation"
 - Reuse: `tests/helpers/nds-compressed-code-fixture.ts`
 
 **Interfaces:**
-- Uses `disassembleNdsRange(map, location, options, backend)`.
-- Uses `listNdsReferences(map, location, options, backend)`.
-- Uses `analyzeNdsFunction(map, request, limits, backend)`.
-- Replaces candidate static type with:
+
+Candidate static output:
 
 ```ts
 export type NdsRuntimeStaticCorrelation =
@@ -385,42 +258,20 @@ export type NdsRuntimeStaticCorrelation =
         readonly evidence: readonly FunctionProof[];
       };
     }
-  | {
-      readonly status: "runtime-only" | "not-decodable";
-      readonly reason: string;
-    };
+  | { readonly status: "runtime-only" | "not-decodable"; readonly reason: string };
 ```
 
-- [ ] **Step 1: Write RED exact-mode disassembly tests**
+- [ ] **Step 1: Write RED static-evidence tests**
 
-For a known Thumb fixture:
+Cover observed Thumb and ARM, `referenceLimit: 0`, direct-call reference retention, exact program/direct-call function proof, non-proven mid-function PC, compressed-overlay `romOffset: null`, and BSS `runtime-only`.
 
-```ts
-assert.equal(candidate.static.status, "available");
-assert.equal(candidate.static.instructions[0]?.address, observedPc);
-assert.equal(candidate.static.instructions[0]?.mode, "thumb");
-assert.ok(candidate.static.instructions.length <= 8);
-```
-
-Add an ARM case and a deliberate mode-mismatch fixture. The service must not retry the opposite mode.
-
-- [ ] **Step 2: Write RED reference-limit tests**
-
-Assert `referenceLimit: 0` returns `[]` and does not invoke reference analysis when dependencies are instrumented. Assert `referenceLimit: 2` truncates only the response list, not canonical ownership.
-
-- [ ] **Step 3: Write RED exact function-entry tests**
-
-Cover `proven`, `not-proven-function-entry`, and `proof-inconclusive`. Assert a mid-function PC is never labeled as a containing function.
-
-- [ ] **Step 4: Run RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-runtime-correlation.test.ts
 ```
 
-Expected: FAIL because static evidence is still placeholder status.
-
-- [ ] **Step 5: Construct one candidate-specific disassembly location**
+- [ ] **Step 3: Build candidate-specific location using observed mode only**
 
 ```ts
 const location = {
@@ -431,9 +282,9 @@ const location = {
 };
 ```
 
-Do not include `overlayId` for ARM9 main. Return `runtime-only` immediately when `candidate.representation === "runtime-only"`.
+If `candidate.representation === "runtime-only"`, return `status: "runtime-only"` without invoking decoder services.
 
-- [ ] **Step 6: Reuse existing bounded disassembly/reference services**
+- [ ] **Step 4: Reuse bounded disassembly/reference services**
 
 ```ts
 const maxBytes = Math.min(128, input.options.nearbyInstructions * 4);
@@ -445,58 +296,36 @@ const disassembly = await disassembleNdsRange(
 );
 ```
 
-If `"instructions" in disassembly` is false, return `not-decodable` with `reason: disassembly.status`.
+If no `instructions` field exists, return `not-decodable` with `reason: disassembly.status`.
 
-When `referenceLimit > 0`:
+When `referenceLimit > 0`, call `listNdsReferences()` with the same location/window and slice returned references to `referenceLimit`; when limit is 0, do not call it.
 
-```ts
-const referenceResult = await listNdsReferences(
-  map,
-  location,
-  { maxInstructions: input.options.nearbyInstructions, maxBytes },
-  backend,
-);
-const references = "references" in referenceResult
-  ? referenceResult.references.slice(0, input.options.referenceLimit)
-  : [];
-```
+- [ ] **Step 5: Reuse exact function-entry proof with fixed existing-style bounds**
 
-- [ ] **Step 7: Reuse exact function-entry proof**
-
-Call `analyzeNdsFunction()` with the same processor/address/mode/overlay identity and conservative fixed limits copied from the existing public `nds_analyze_function` defaults. Do not create looser correlation-specific proof limits.
-
-Record:
+Call `analyzeNdsFunction()` using the same processor/address/mode/overlay identity. Use:
 
 ```ts
-functionEntry: {
-  proofStatus: analysis.proofStatus,
-  runtimeMode: input.stopContext.registers.mode,
-  staticMode: analysis.entry.mode,
-  modeConsistent: analysis.entry.mode === input.stopContext.registers.mode,
-  evidence: analysis.evidence,
-}
+proof: {
+  maxComponents: 32,
+  maxBlocks: 128,
+  maxInstructions: 2048,
+  maxBytes: 8192,
+  maxEdges: 512,
+  maxXrefs: 256,
+},
+cfg: {
+  maxBlocks: 64,
+  maxInstructions: 512,
+  maxBytes: 2048,
+  maxEdges: 128,
+},
 ```
 
-A mismatch is reported; it never triggers another decode.
+Use a proof scope/seeds equivalent to current public defaults for the candidate's canonical component. Do not broaden proof rules.
 
-- [ ] **Step 8: Add compressed-overlay/BSS assertions**
+Record `modeConsistent: analysis.entry.mode === input.stopContext.registers.mode`; never retry the other mode.
 
-Compressed initialized code:
-
-```ts
-assert.equal(candidate.canonical.representation, "derived-overlay");
-assert.equal(candidate.static.status, "available");
-assert.equal(candidate.static.instructions[0]?.romOffset, null);
-```
-
-BSS:
-
-```ts
-assert.equal(candidate.canonical.representation, "runtime-only");
-assert.equal(candidate.static.status, "runtime-only");
-```
-
-- [ ] **Step 9: Run GREEN and commit**
+- [ ] **Step 6: Run GREEN and commit**
 
 ```bash
 node --test --import tsx \
@@ -512,15 +341,14 @@ git commit -m "feat: attach static evidence to runtime stops"
 
 ---
 
-### Task 4: Expose `nds_correlate_stop_context` through shared live debugger state
+### Task 4: Expose `nds_correlate_stop_context` using shared manager/controller state
 
 **Files:**
 - Create: `src/tools/nds-runtime.ts`
 - Modify: `src/index.ts`
-- Modify: capability/install enumeration files required by current tests
+- Modify: explicit capability/install enumeration files required by current tests
 - Test: `tests/nds-runtime-tools.test.ts`
-- Test: `tests/desmume-debug-tools.test.ts`
-- Test: `tests/desmume-debug-lifecycle.test.ts`
+- Test: existing DeSmuME lifecycle/tool tests
 
 **Interfaces:**
 
@@ -530,11 +358,10 @@ export function registerNdsRuntimeTools(
   config: ServerConfig,
   manager: OwnedProcessManager,
   debuggerController: DebugController,
-  backend: ArmDisassemblyBackend,
 ): void;
 ```
 
-Public PR-A tool schema:
+Tool schema for PR A:
 
 ```ts
 {
@@ -544,68 +371,28 @@ Public PR-A tool schema:
 }
 ```
 
-- [ ] **Step 1: Write RED schema/registration tests**
+- [ ] **Step 1: Write RED schema/state tests**
 
-Assert registration of exactly `nds_correlate_stop_context` and rejection of out-of-range timeout/instruction/reference values. The schema must expose no ROM/PC/processor/overlay field.
+Cover registration, bounds, no-owned-process, missing launch identity, running debugger rejection, stopped success, and no caller ROM/PC/processor/overlay fields.
 
-- [ ] **Step 2: Write RED no-process, missing-identity, and running-state tests**
+- [ ] **Step 2: Write RED no-resume fake-RSP test**
 
-Expected categories:
+Correlation may use stopped-state `?`, `g`, and bounded `m...` reads through `captureCurrentStopContext`; fake server must observe no `c`, `s`, or interrupt byte.
 
-```text
-runtime-correlation-no-owned-process
-runtime-correlation-rom-identity-missing
-runtime-correlation-debugger-not-stopped
-```
+- [ ] **Step 3: Implement live state validation/capture**
 
-The tool must not auto-pause a running debugger.
-
-- [ ] **Step 3: Write RED stopped-state/no-resume test**
-
-Use the fake RSP server. Correlation may issue stopped-state `?`, `g`, and bounded `m...` reads through `captureCurrentStopContext`, but must send no `c`, `s`, or `0x03` interrupt.
-
-- [ ] **Step 4: Implement owned-session identity validation**
+Validate `manager.status()` and 64-hex `metadata.romSha256`; require `debuggerController.status().state === "stopped"`; then:
 
 ```ts
-const status = manager.status();
-if (!status.running) {
-  throw new NdsError<NdsRuntimeCorrelationErrorCategory>(
-    "runtime-correlation-no-owned-process",
-    "No owned DeSmuME process is running",
-  );
-}
-const romPath = status.metadata.rom;
-const launchSha256 = status.metadata.romSha256;
-if (
-  typeof romPath !== "string"
-  || typeof launchSha256 !== "string"
-  || !/^[0-9a-f]{64}$/.test(launchSha256)
-) {
-  throw new NdsError<NdsRuntimeCorrelationErrorCategory>(
-    "runtime-correlation-rom-identity-missing",
-    "Owned DeSmuME session does not contain a valid launch-time ROM identity",
-  );
-}
-```
-
-- [ ] **Step 5: Require stopped state and capture without PC adjustment**
-
-```ts
-if (debuggerController.status().state !== "stopped") {
-  throw new NdsError<NdsRuntimeCorrelationErrorCategory>(
-    "runtime-correlation-debugger-not-stopped",
-    "Runtime correlation requires the owned debugger to be stopped",
-  );
-}
 const context = await debuggerController.captureCurrentStopContext({
   timeoutMs,
   maxOutputBytes: config.maxOutputBytes,
 });
 ```
 
-Pass `context.registers.pc` and `context.registers.mode` through unchanged.
+Do not alter `context.registers.pc` or `mode`.
 
-- [ ] **Step 6: Compute safe display path and call correlation**
+- [ ] **Step 4: Compute workspace-relative display path**
 
 ```ts
 const displayPath = path.relative(config.workspaceRoot, romPath);
@@ -617,13 +404,37 @@ if (path.isAbsolute(displayPath) || displayPath === ".." || displayPath.startsWi
 }
 ```
 
-Call `correlateNdsStopContext()` with `includeGhidra: false` and `decompileGhidraFunction: false`.
+- [ ] **Step 5: Create/close Capstone backend per invocation**
 
-- [ ] **Step 7: Register from `src/index.ts` with the existing shared manager/controller/backend**
+Match existing NDS tool lifecycle:
 
-Do not instantiate a second `OwnedProcessManager`, `DebugController`, or ARM backend.
+```ts
+const backend = await createCapstoneArmBackend();
+try {
+  return await correlateNdsStopContext(input, backend);
+} finally {
+  backend.close();
+}
+```
 
-- [ ] **Step 8: Verify PR A**
+- [ ] **Step 6: Share the existing DebugController in `src/index.ts`**
+
+Change:
+
+```ts
+registerDesmumeTools(server, config, desmumeManager);
+```
+
+to:
+
+```ts
+const desmumeDebugger = registerDesmumeTools(server, config, desmumeManager);
+registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
+```
+
+Do not create a second manager/controller.
+
+- [ ] **Step 7: Verify PR A and open PR**
 
 ```bash
 node --test --import tsx \
@@ -636,48 +447,32 @@ node --test --import tsx \
 npm run check
 npm run build
 git diff --check main...HEAD
-```
-
-Also verify no production diff in:
-
-```bash
 git diff main...HEAD -- src/services/gdb-session.ts src/services/gdb-rsp.ts src/services/debug-controller.ts
 ```
 
-Expected: empty.
+Expected final diff command: empty.
 
-- [ ] **Step 9: Commit and open PR A**
+Commit:
 
 ```bash
-git add src/services/nds/errors.ts src/services/nds/runtime-correlation.ts \
-  src/tools/desmume.ts src/tools/nds-runtime.ts src/index.ts tests
+git add src tests
 git commit -m "feat: correlate stopped ARM9 state with NDS static analysis"
 ```
 
-Open PR title:
-
-```text
-Correlate stopped ARM9 state with NDS static analysis
-```
-
-PR body must state: no GDB packet behavior changes; no Ghidra dependency in PR A; no loaded-overlay guessing; no write capabilities; physical Catalina acceptance remains pending.
+Open PR: **`Correlate stopped ARM9 state with NDS static analysis`**. State explicitly: no GDB packet change, no Ghidra dependency in PR A, no loaded-overlay guessing, no writes, physical Catalina acceptance still pending.
 
 ---
 
 # PR B — Controlled Ghidra enrichment + hardening
 
-### Task 5: Add candidate-scoped already-ready Ghidra enrichment
+### Task 5: Add candidate-scoped already-current Ghidra enrichment
 
 **Files:**
 - Create: `src/services/nds/runtime-correlation-ghidra.ts`
 - Test: `tests/nds-runtime-correlation-ghidra.test.ts`
-- Reuse: `src/services/nds/ghidra-inspection-readiness.ts`
 - Reuse: `src/services/nds/ghidra-inspection-service.ts`
 
 **Interfaces:**
-- Reuse concrete `GhidraInspectionAuthorityResult`.
-- Reuse `inspectNdsGhidraFunction()` and `decompileNdsGhidraFunction()`.
-- Produces:
 
 ```ts
 export type RuntimeGhidraEnrichment =
@@ -688,18 +483,12 @@ export type RuntimeGhidraEnrichment =
       readonly function: GhidraInspectionAuthorityResult;
       readonly decompilation: GhidraInspectionAuthorityResult | null;
     }
-  | {
-      readonly status: "failed";
-      readonly category: string;
-      readonly message: string;
-    };
+  | { readonly status: "failed"; readonly category: string; readonly message: string };
 
 export interface RuntimeGhidraEnrichmentRequest {
   readonly romPath: string;
-  readonly map: NdsRomMap;
   readonly candidate: RuntimeCandidate;
   readonly decompileFunction: boolean;
-  readonly maxOutputBytes: number;
 }
 
 export type RuntimeGhidraEnricher = (
@@ -707,77 +496,38 @@ export type RuntimeGhidraEnricher = (
 ) => Promise<RuntimeGhidraEnrichment>;
 ```
 
-- [ ] **Step 1: Write RED absent/stale-project tests**
+- [ ] **Step 1: Write RED main/overlay/not-ready tests**
 
-Use the existing readiness dependency and assert absent/stale project maps to `status: "not-ready"`. The adapter must have no bootstrap/reconcile function in its dependency interface.
+Assert main selector omits `overlayId`; overlay selector includes the exact canonical ID. Assert `ghidra-project-not-current` becomes `status: "not-ready"`. Adapter dependency surface must contain no bootstrap/reconcile function.
 
-- [ ] **Step 2: Write RED main/overlay selector tests**
-
-Main:
-
-```ts
-assert.deepEqual(selector, {
-  processor: "arm9",
-  runtimeAddress: candidate.runtimeAddress,
-});
-```
-
-Overlay:
-
-```ts
-assert.deepEqual(selector, {
-  processor: "arm9",
-  runtimeAddress: candidate.runtimeAddress,
-  overlayId: candidate.overlayId,
-});
-```
-
-- [ ] **Step 3: Run RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-runtime-correlation-ghidra.test.ts
 ```
 
-Expected: FAIL because the adapter does not exist.
-
-- [ ] **Step 4: Implement readiness-only entry**
-
-Use `readTrustedGhidraInspectionState()` before any inspection. Catch only its current-project absence/staleness category and return `not-ready`; other malformed/trust failures become `failed`.
-
-- [ ] **Step 5: Run exact function inspection**
+- [ ] **Step 3: Implement exact selector and inspect function**
 
 ```ts
 const selector = {
   processor: "arm9" as const,
   runtimeAddress: request.candidate.runtimeAddress,
-  ...(request.candidate.overlayId === null
-    ? {}
-    : { overlayId: request.candidate.overlayId }),
+  ...(request.candidate.overlayId === null ? {} : { overlayId: request.candidate.overlayId }),
 };
-const functionResult = await inspectNdsGhidraFunction(
-  request.romPath,
-  selector,
-  config,
-);
+const functionResult = await inspectNdsGhidraFunction(request.romPath, selector, config);
 ```
 
-When `decompileFunction` is true, call `decompileNdsGhidraFunction()` with the same selector and existing configured/max-character bound. Do not search for a containing function when exact inspection says `found: false`.
+The inspection service itself enforces current-project readiness, exact canonical selector identity, read-only/no-analysis invocation, and ROM identity.
 
-- [ ] **Step 6: Preserve authority separation on errors**
+- [ ] **Step 4: Decompile only exact found function when requested**
 
-Return Ghidra errors as:
+If `request.decompileFunction` and `functionResult.ghidraDerived.found === true`, call `decompileNdsGhidraFunction()` with the same selector. Do not search for a containing function when `found` is false.
 
-```ts
-{
-  status: "failed",
-  category: error instanceof NdsError ? error.category : "ghidra-inspection-failed",
-  message: error instanceof Error ? error.message : String(error),
-}
-```
+- [ ] **Step 5: Preserve Ghidra failure category**
 
-Do not catch or rewrite a top-level ROM identity mismatch from the correlation service.
+Map `ghidra-project-not-current` to `not-ready`. Other Ghidra inspection errors become `failed` with original category/message. Do not rewrite canonical data.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [ ] **Step 6: Run GREEN and commit**
 
 ```bash
 node --test --import tsx \
@@ -792,7 +542,7 @@ git commit -m "feat: enrich runtime correlation from ready Ghidra projects"
 
 ---
 
-### Task 6: Wire opt-in Ghidra enrichment into the correlation service/tool
+### Task 6: Wire opt-in Ghidra enrichment into service/tool
 
 **Files:**
 - Modify: `src/services/nds/runtime-correlation.ts`
@@ -802,15 +552,6 @@ git commit -m "feat: enrich runtime correlation from ready Ghidra projects"
 
 **Interfaces:**
 
-Extend options:
-
-```ts
-readonly includeGhidra: boolean;
-readonly decompileGhidraFunction: boolean;
-```
-
-Extend service:
-
 ```ts
 export async function correlateNdsStopContext(
   input: NdsRuntimeCorrelationInput,
@@ -819,50 +560,36 @@ export async function correlateNdsStopContext(
 ): Promise<NdsRuntimeCorrelationResult>;
 ```
 
-- [ ] **Step 1: Write RED no-Ghidra-work test**
-
-With `includeGhidra: false`, inject an enricher that throws if called. Assert call count remains zero and every candidate has `ghidraDerived.status === "not-requested"`.
-
-- [ ] **Step 2: Write RED ambiguous-overlay enrichment test**
-
-For candidates 12 and 19, assert the enricher receives both explicit overlay IDs while top-level canonical status stays `ambiguous`.
-
-- [ ] **Step 3: Implement per-candidate dispatch after static correlation**
-
-```ts
-const ghidraDerived = !input.options.includeGhidra
-  ? { status: "not-requested" as const }
-  : ghidraEnricher === undefined
-    ? {
-        status: "failed" as const,
-        category: "ghidra-inspection-failed",
-        message: "Ghidra enrichment dependency is unavailable",
-      }
-    : await ghidraEnricher({
-        romPath: input.romPath,
-        map,
-        candidate,
-        decompileFunction: input.options.decompileGhidraFunction,
-        maxOutputBytes: input.options.maxOutputBytes,
-      });
-```
-
-Do this only after canonical/static ownership has been established.
-
-- [ ] **Step 4: Extend MCP schema**
+Tool adds:
 
 ```ts
 includeGhidra: z.boolean().default(false),
 decompileGhidraFunction: z.boolean().default(false),
 ```
 
-Reject `decompileGhidraFunction: true` with `includeGhidra: false`; never silently enable Ghidra.
+- [ ] **Step 1: Write RED no-work and ambiguity tests**
 
-- [ ] **Step 5: Construct production enricher lazily**
+With `includeGhidra: false`, an injected enricher must never be called. With overlapping overlays and Ghidra enabled, enricher receives every canonical candidate separately while top-level status remains ambiguous.
 
-The tool may close over `config`, but readiness/installation/subprocess work starts only inside the enricher after `includeGhidra === true`.
+- [ ] **Step 2: Implement dispatch after canonical/static evidence**
 
-- [ ] **Step 6: Run GREEN and commit**
+```ts
+const ghidraDerived = !input.options.includeGhidra
+  ? { status: "not-requested" as const }
+  : ghidraEnricher === undefined
+    ? { status: "failed" as const, category: "ghidra-inspection-failed", message: "Ghidra enrichment dependency is unavailable" }
+    : await ghidraEnricher({
+        romPath: input.romPath,
+        candidate,
+        decompileFunction: input.options.decompileGhidraFunction,
+      });
+```
+
+- [ ] **Step 3: Enforce option relationship**
+
+Reject `decompileGhidraFunction: true` when `includeGhidra: false`; never silently enable Ghidra.
+
+- [ ] **Step 4: Run GREEN and commit**
 
 ```bash
 node --test --import tsx \
@@ -870,8 +597,7 @@ node --test --import tsx \
   tests/nds-runtime-correlation-ghidra.test.ts \
   tests/nds-runtime-tools.test.ts
 npm run typecheck
-git add src/services/nds/runtime-correlation.ts src/tools/nds-runtime.ts \
-  tests/nds-runtime-correlation.test.ts tests/nds-runtime-tools.test.ts
+git add src/services/nds/runtime-correlation.ts src/tools/nds-runtime.ts tests
 git commit -m "feat: add opt-in Ghidra runtime correlation"
 ```
 
@@ -884,24 +610,9 @@ git commit -m "feat: add opt-in Ghidra runtime correlation"
 - Create: branch-scoped temporary workflow under `.github/workflows/`
 - Create: `tests/nds-runtime-ghidra-acceptance-source.test.ts`
 
-**Interfaces:**
-- Uses the same pinned Ghidra 12.1.2 archive URL/SHA-256 and Temurin JDK 21 as current real-Ghidra acceptance.
-- Exit 0 requires successful main and overlay correlation enrichment while preserving read-only project bytes.
+- [ ] **Step 1: Write RED source-contract test**
 
-- [ ] **Step 1: Write RED source-contract tests**
-
-Require the new script/workflow to contain assertions for:
-
-```text
-main-code candidate
-explicit overlay candidate
-compressed-overlay candidate when fixture supports it
-includeGhidra=true
-canonical candidate asserted before ghidraDerived
-read-only inspection
-persistent project unchanged
-hidden Ghidra exceptions rejected
-```
+Require pinned Ghidra 12.1.2 checksum/JDK 21 and assertions for main candidate, explicit overlay candidate, compressed overlay when fixture supports it, canonical-before-Ghidra authority, read-only project preservation, and hidden Ghidra exception rejection.
 
 - [ ] **Step 2: Run RED**
 
@@ -909,61 +620,31 @@ hidden Ghidra exceptions rejected
 node --test --import tsx tests/nds-runtime-ghidra-acceptance-source.test.ts
 ```
 
-Expected: FAIL because script/workflow do not exist.
+- [ ] **Step 3: Implement real-tool acceptance flow**
 
-- [ ] **Step 3: Implement real-tool acceptance script**
+Reuse existing synthetic Ghidra acceptance fixture. Explicitly bootstrap through the existing acceptance helper, snapshot persistent project, construct deterministic `StopContext` objects (no DeSmuME), run correlation with `includeGhidra: true`, assert canonical identity first and `ghidraDerived.status === "available"` second, test compressed-overlay `romOffset: null`, then verify project snapshot unchanged.
 
-Reuse existing synthetic NDS/Ghidra acceptance fixture generation. Sequence:
+- [ ] **Step 4: Add workflow and hidden-error check**
 
-```text
-create fixture
-explicitly bootstrap trusted project using existing acceptance path
-snapshot persistent project
-construct deterministic StopContext for ARM9 main
-correlate with includeGhidra=true
-assert canonical main identity then ghidraDerived available
-construct deterministic StopContext for explicit overlay
-correlate with includeGhidra=true
-assert canonical overlay identity then ghidraDerived available
-exercise compressed overlay when fixture provides one and assert romOffset remains null
-verify project snapshot unchanged
-```
-
-This script intentionally does not launch DeSmuME or claim native debugger acceptance.
-
-- [ ] **Step 4: Add hidden-error rejection**
-
-Use the established application-log check:
+Use `ubuntu-24.04`, Node 20, Temurin 21, existing pinned Ghidra 12.1.2 URL/SHA, `npm install`, `npm run check`, `npm run build`, `node --check`, acceptance execution, and:
 
 ```bash
 log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
-if grep -nE 'REPORT SCRIPT ERROR|Exception' "$log"; then
-  exit 1
-fi
+if grep -nE 'REPORT SCRIPT ERROR|Exception' "$log"; then exit 1; fi
 ```
 
-- [ ] **Step 5: Add branch-scoped workflow**
-
-Use `ubuntu-24.04`, Node 20, Temurin 21, pinned Ghidra 12.1.2 checksum, `npm install`, `npm run check`, `npm run build`, script syntax check, acceptance run, and hidden-error check.
-
-- [ ] **Step 6: Run local source verification**
+- [ ] **Step 5: Verify locally, commit, then require Actions GREEN**
 
 ```bash
 node --check scripts/ghidra-runtime-correlation-acceptance.mjs
 node --test --import tsx tests/nds-runtime-ghidra-acceptance-source.test.ts
 npm run check
 npm run build
-```
-
-- [ ] **Step 7: Commit and require Actions GREEN**
-
-```bash
-git add scripts/ghidra-runtime-correlation-acceptance.mjs \
-  .github/workflows tests/nds-runtime-ghidra-acceptance-source.test.ts
+git add scripts .github/workflows tests/nds-runtime-ghidra-acceptance-source.test.ts
 git commit -m "test: add real Ghidra runtime correlation acceptance"
 ```
 
-Do not mark PR B ready until this real Ghidra workflow passes on the exact current head. If head moves, rerun/reverify the new head.
+Do not mark PR B ready until real Ghidra acceptance passes on the exact current head.
 
 ---
 
@@ -971,46 +652,35 @@ Do not mark PR B ready until this real Ghidra workflow passes on the exact curre
 
 **Files:**
 - Modify: `README.md`
+- Modify: `src/index.ts` capability text/tool list
 - Modify: `docs/dynamic-debugging-catalina-acceptance.md`
 - Create: `docs/nds-runtime-correlation.md`
-- Modify: explicit capability/install enumeration files required by current tests
-- Test: current install/capability/package tests
+- Modify: install/package capability tests as required
 
-- [ ] **Step 1: Document the final tool contract**
+- [ ] **Step 1: Document final tool**
 
-Document:
+Document `timeoutMs`, `nearbyInstructions`, `referenceLimit`, `includeGhidra`, `decompileGhidraFunction`; stopped ARM9 only; exact launch/current SHA; no PC correction; overlapping ambiguity; compressed provenance; exact-entry proof; Ghidra optional/read-only/current-only.
 
-```text
-nds_correlate_stop_context
-  timeoutMs
-  nearbyInstructions
-  referenceLimit
-  includeGhidra
-  decompileGhidraFunction
-```
+- [ ] **Step 2: Extend Catalina native checklist**
 
-State explicitly: current stopped ARM9 only; exact launch/current SHA identity; no PC correction; overlap ambiguity preserved; compressed runtime provenance preserved; exact function-entry proof only; Ghidra optional/read-only/already-current only.
-
-- [ ] **Step 2: Extend Catalina acceptance with one final correlation check**
-
-After the existing real breakpoint/stop-context checks, add:
+After existing real breakpoint/stop-context checks add:
 
 ```text
 real breakpoint stop
 -> nds_correlate_stop_context
 -> launch/current SHA match
 -> observed PC/CPSR mode unchanged
--> valid canonical candidate(s)
+-> canonical candidate(s)
 -> bounded static evidence
 ```
 
-Keep wording explicit that CI/fake-RSP coverage is not native DeSmuME proof.
+State that CI/fake-RSP does not equal native DeSmuME proof.
 
-- [ ] **Step 3: Update tool enumeration/capability tests**
+- [ ] **Step 3: Update capability enumeration**
 
-Add exactly `nds_correlate_stop_context`; do not remove or rename existing tools.
+Add exactly `nds_correlate_stop_context`; preserve every existing tool name.
 
-- [ ] **Step 4: Run final focused/full verification**
+- [ ] **Step 4: Run final verification**
 
 ```bash
 node --test --import tsx \
@@ -1026,44 +696,22 @@ node --test --import tsx \
 npm run check
 npm run build
 git diff --check main...HEAD
+git diff main...HEAD -- src/services/gdb-session.ts src/services/gdb-rsp.ts src/services/debug-controller.ts
 ```
 
-- [ ] **Step 5: Verify no GDB transport/controller change**
+Expected final diff command: empty.
+
+- [ ] **Step 5: Trust-boundary search**
 
 ```bash
-git diff main...HEAD -- \
-  src/services/gdb-session.ts \
-  src/services/gdb-rsp.ts \
-  src/services/debug-controller.ts
-```
-
-Expected: empty.
-
-- [ ] **Step 6: Trust-boundary source review**
-
-Search production runtime-correlation code for forbidden behavior. Any match must be only a rejection/error/documentation string, not an implementation path:
-
-```bash
-grep -RniE 'loadedOverlay|bestMatch|watchpoint|register write|memory write|bootstrap|reconcile|pc[[:space:]_-]*(rewind|adjust|correct)' \
+grep -RniE 'loadedOverlay|bestMatch|watchpoint|register write|memory write|pc[[:space:]_-]*(rewind|adjust|correct)' \
   src/services/nds/runtime-correlation*.ts src/tools/nds-runtime.ts || true
 ```
 
-Manually verify no call to Ghidra bootstrap/reconciliation exists in `runtime-correlation-ghidra.ts`.
+Any match must be rejection text, not implementation. Manually confirm `runtime-correlation-ghidra.ts` imports/calls no bootstrap/reconcile function.
 
-- [ ] **Step 7: Verify exact-head checks and open/ready PR B**
+- [ ] **Step 6: Verify exact-head CI/Package/real-Ghidra checks and open PR B**
 
-Before marking ready, verify live head SHA has:
-
-- CI success;
-- Package success;
-- mandatory real Ghidra runtime-correlation acceptance success.
-
-Open/update PR title:
-
-```text
-Add controlled Ghidra enrichment to runtime correlation
-```
-
-PR body must state: canonical correlation comes from PR A; Ghidra enrichment is secondary; no auto-bootstrap/reconcile; no loaded-overlay inference; real Ghidra acceptance passed on exact head; physical Catalina/DeSmuME acceptance remains separate.
+Open/update PR title **`Add controlled Ghidra enrichment to runtime correlation`**. State: canonical correlation comes from PR A; Ghidra is secondary; no auto-bootstrap/reconcile; no loaded-overlay inference; real Ghidra acceptance passed on exact head; physical Catalina acceptance remains separate.
 
 Do not merge either PR without explicit user authorization.
