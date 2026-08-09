@@ -36,6 +36,14 @@ export type NdsBlzErrorCategory =
 export type NdsCompressedOverlayErrorCategory =
   | "compressed-overlay-runtime-unavailable";
 
+export type NdsRuntimeCorrelationErrorCategory =
+  | "runtime-correlation-no-owned-process"
+  | "runtime-correlation-rom-identity-missing"
+  | "runtime-correlation-rom-identity-mismatch"
+  | "runtime-correlation-debugger-not-stopped"
+  | "runtime-correlation-context-failed"
+  | "runtime-correlation-output-limit";
+
 export type NdsGhidraErrorCategory =
   | "ghidra-not-configured"
   | "invalid-ghidra-installation"
@@ -57,7 +65,7 @@ export type NdsGhidraInspectionErrorCategory =
   | "ghidra-inspection-timeout"
   | "ghidra-inspection-result-invalid";
 
-/** Error categories handled by the current pre-Ghidra NDS tool surfaces. */
+/** Error categories handled by the established static pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
@@ -66,9 +74,10 @@ export type AnyNdsErrorCategory =
   | NdsBlzErrorCategory
   | NdsCompressedOverlayErrorCategory;
 
-/** Complete service-layer category set, including compressed overlays and optional Ghidra integration. */
+/** Complete service-layer category set, including runtime correlation and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
+  | NdsRuntimeCorrelationErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
 
