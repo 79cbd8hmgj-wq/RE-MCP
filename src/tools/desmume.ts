@@ -201,13 +201,19 @@ export function registerDesmumeTools(
           },
         });
 
-        const verifiedSha256 = await hashFileSha256(romPath);
-        if (verifiedSha256 !== romSha256) {
+        try {
+          const verifiedSha256 = await hashFileSha256(romPath);
+          if (verifiedSha256 !== romSha256) {
+            throw new Error(
+              "ROM changed during DeSmuME start; restart with an unchanged ROM",
+            );
+          }
+        } catch (error) {
           await manager.stop();
-          await debuggerController.reset("ROM identity changed during DeSmuME start");
-          throw new Error(
-            "ROM changed during DeSmuME start; restart with an unchanged ROM",
+          await debuggerController.reset(
+            "ROM identity verification failed during DeSmuME start",
           );
+          throw error;
         }
 
         const sessionIdentity = ownedProcessIdentity(status);
