@@ -235,22 +235,26 @@ test("correlation preserves every overlapping overlay candidate without selectin
   assert.equal("bestMatch" in result, false);
 });
 
-test("correlation retains compressed initialized and BSS runtime provenance", async () => {
-  const { fixture, map } = await buildCorrelationMap();
-
-  const compressed = await correlateNdsStopContext(
-    input(fixture.romPath, map.sha256, stopContext(0x02210040)),
+test("correlation retains valid compressed initialized runtime provenance", async () => {
+  const { fixture, map, overlayId, runtimeAddress } = await createCompressedArmCodeFixture();
+  const result = await correlateNdsStopContext(
+    input(fixture.romPath, map.sha256, stopContext(runtimeAddress)),
     inertBackend,
   );
-  assert.equal(compressed.candidates[0]?.canonical.overlayId, 27);
-  assert.equal(compressed.candidates[0]?.canonical.representation, "derived-overlay");
-  assert.equal(compressed.candidates[0]?.canonical.romOffset, null);
-  assert.equal(compressed.candidates[0]?.canonical.compressed, true);
 
+  assert.equal(result.candidates[0]?.canonical.overlayId, overlayId);
+  assert.equal(result.candidates[0]?.canonical.representation, "derived-overlay");
+  assert.equal(result.candidates[0]?.canonical.romOffset, null);
+  assert.equal(result.candidates[0]?.canonical.compressed, true);
+});
+
+test("correlation retains BSS runtime-only provenance without decoding backing bytes", async () => {
+  const { fixture, map } = await buildCorrelationMap();
   const bss = await correlateNdsStopContext(
     input(fixture.romPath, map.sha256, stopContext(0x02210190)),
     inertBackend,
   );
+
   assert.equal(bss.candidates[0]?.canonical.kind, "overlay-bss");
   assert.equal(bss.candidates[0]?.canonical.representation, "runtime-only");
   assert.equal(bss.candidates[0]?.canonical.romOffset, null);
