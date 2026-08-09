@@ -56,6 +56,8 @@ test("package workflow requires and exercises the controlled mutation core", asy
 
 test("README documents Controlled NDS Mutation Milestone 1 and its exclusions", async () => {
   const readme = await source("README.md");
+  assert.match(readme, /Static-analysis extraction artifacts are restricted to `analysis\/generated\/nds\/<sha-prefix>\/`/u);
+  assert.doesNotMatch(readme, /Generated NDS artifacts are restricted to `analysis\/generated\/nds\/<sha-prefix>\/`/u);
   assert.match(readme, /Controlled NDS Mutation.*Milestone 1/iu);
   for (const tool of [
     "nds_mutation_validate",
