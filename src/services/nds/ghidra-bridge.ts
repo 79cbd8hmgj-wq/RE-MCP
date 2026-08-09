@@ -267,7 +267,12 @@ export async function generateNdsGhidraBridge(
 ): Promise<GeneratedGhidraBridge> {
   let temporaryRoot: string | null = null;
   try {
-    const bundle = await extractNdsAnalysisBundle(map, workspaceRoot);
+    const bundle = await extractNdsAnalysisBundle(
+      map,
+      workspaceRoot,
+      undefined,
+      { includeDerivedRuntimeArtifacts: false },
+    );
     const bridgeRoot = ghidraGeneratedBridgeRoot(map, workspaceRoot);
     if (path.dirname(bridgeRoot) !== path.resolve(bundle.outputRoot)) {
       throw new NdsError(
