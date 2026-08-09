@@ -21,6 +21,10 @@ import {
   type RuntimeCandidate,
   type RuntimeResolution,
 } from "./resolver.js";
+import type {
+  RuntimeGhidraEnricher,
+  RuntimeGhidraEnrichment,
+} from "./runtime-correlation-ghidra.js";
 import { readNdsRomMap, type NdsRomMap } from "./rom-map.js";
 
 export interface NdsRuntimeCorrelationOptions {
@@ -55,9 +59,7 @@ export type NdsRuntimeStaticCorrelation =
   | { readonly status: "runtime-only"; readonly reason: string }
   | { readonly status: "not-decodable"; readonly reason: string };
 
-export type NdsRuntimeGhidraCorrelation = {
-  readonly status: "not-requested";
-};
+export type NdsRuntimeGhidraCorrelation = RuntimeGhidraEnrichment;
 
 export interface NdsRuntimeCandidateCorrelation {
   readonly canonical: RuntimeCandidate;
@@ -218,7 +220,18 @@ async function correlateStaticCandidate(
 export async function correlateNdsStopContext(
   input: NdsRuntimeCorrelationInput,
   backend: ArmDisassemblyBackend,
+  ghidraEnricher?: RuntimeGhidraEnricher,
 ): Promise<NdsRuntimeCorrelationResult> {
+  if (
+    input.options.decompileGhidraFunction
+    && !input.options.includeGhidra
+  ) {
+    throw correlationError(
+      "runtime-correlation-context-failed",
+      "decompileGhidraFunction requires includeGhidra",
+    );
+  }
+
   const map = await readNdsRomMap(input.romPath);
   if (map.sha256 !== input.expectedRomSha256) {
     throw correlationError(
@@ -235,10 +248,24 @@ export async function correlateNdsStopContext(
   const candidates = candidatesForResolution(resolution);
   const correlatedCandidates: NdsRuntimeCandidateCorrelation[] = [];
   for (const candidate of candidates) {
+    const staticResult = await correlateStaticCandidate(map, candidate, input, backend);
+    const ghidraDerived: NdsRuntimeGhidraCorrelation = !input.options.includeGhidra
+      ? { status: "not-requested" }
+      : ghidraEnricher === undefined
+        ? {
+            status: "failed",
+            category: "ghidra-inspection-failed",
+            message: "Ghidra enrichment dependency is unavailable",
+          }
+        : await ghidraEnricher({
+            romPath: input.romPath,
+            candidate,
+            decompileFunction: input.options.decompileGhidraFunction,
+          });
     correlatedCandidates.push({
       canonical: candidate,
-      static: await correlateStaticCandidate(map, candidate, input, backend),
-      ghidraDerived: { status: "not-requested" },
+      static: staticResult,
+      ghidraDerived,
     });
   }
 
