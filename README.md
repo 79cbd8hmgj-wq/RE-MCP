@@ -40,7 +40,37 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
 - Optionally bootstrap and inspect a full-ROM-SHA-scoped Ghidra project through a configured local Ghidra 12.x installation
 
-The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
+The source ROM is read-only. Static-analysis extraction artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. The static-analysis tools do not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
+
+### Controlled NDS Mutation — Milestone 1
+
+RE-MCP now exposes a narrow manifest-driven write/build surface for exact Nintendo DS ROM revisions:
+
+- `nds_mutation_validate` validates the strict mutation manifest, exact source SHA-256, canonical component selectors, original-byte/component guards, replacement artifacts, conflicts, and deterministic build identity without publishing output.
+- `nds_mutation_build` applies the validated plan only to a temporary copy of the source ROM, reparses and verifies the result, attributes every changed byte to an approved operation, and atomically publishes the deterministic build.
+- `nds_mutation_verify` freshly revalidates an existing deterministic build and its evidence; it never silently repairs or overwrites a divergent/tampered build.
+
+The **source ROM remains immutable**. Milestone 1 supports only **same-size** guarded byte replacements and exact-size whole-component replacements selected through the canonical NDS model. Callers cannot provide an arbitrary ROM offset or caller-selected output paths.
+
+Successful builds are published beneath:
+
+```text
+output/nds/<source-sha-prefix>/<build-id>/
+```
+
+alongside the rebuilt `.nds` file and deterministic evidence:
+
+```text
+mutation-manifest.json
+resolved-plan.json
+verification.json
+changed-components.json
+output.sha256
+```
+
+Verification requires the rebuilt ROM to parse through the canonical NDS model, preserves immutable structural geometry, revalidates compressed-overlay runtime images when applicable, checks every requested operation, and requires zero unexpected changed bytes. Re-running the same exact build may reuse it only after fresh verification; a mismatched or tampered deterministic output fails closed as a publish collision.
+
+Milestone 1 deliberately does **not** provide variable-size rebuilding or relocation, FAT/FNT mutation, decoded compressed-overlay editing, BLZ recompression, generic source-ROM writes, arbitrary ROM offset writes, or caller-selected output paths. Those capabilities remain future controlled-build work rather than being inferred from this narrow mutation surface.
 
 ### DeSmuME and ARM9 GDB
 
