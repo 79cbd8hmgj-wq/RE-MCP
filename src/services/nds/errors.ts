@@ -47,6 +47,7 @@ export type NdsMutationErrorCategory =
   | "replacement-artifact-missing"
   | "replacement-artifact-hash-mismatch"
   | "replacement-size-mismatch"
+  | "mutation-no-op"
   | "mutation-overlap"
   | "compressed-overlay-invalid"
   | "staging-failed"
@@ -54,6 +55,7 @@ export type NdsMutationErrorCategory =
   | "structural-map-changed"
   | "unexpected-rom-diff"
   | "output-verification-failed"
+  | "publish-collision"
   | "publish-failed";
 
 export type NdsRuntimeCorrelationErrorCategory =
