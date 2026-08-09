@@ -27,15 +27,9 @@ const mutationInputSchema = {
 };
 
 type MutationToolResult = {
-  readonly content: readonly [{ readonly type: "text"; readonly text: string }];
-  readonly isError?: true;
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
 };
-
-function textResult(value: unknown): MutationToolResult {
-  return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-  };
-}
 
 function sanitizeMessage(workspaceRoot: string, message: string): string {
   const resolvedRoot = path.resolve(workspaceRoot);
