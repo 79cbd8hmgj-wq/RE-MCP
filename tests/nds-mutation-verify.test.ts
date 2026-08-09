@@ -240,3 +240,31 @@ test("fails if the immutable source changes after planning", async () => {
     await cleanupNdsMutationStage(stage);
   }
 });
+
+test("rejects a staged ROM that changes after diff verification", async () => {
+  const { fixture, plan, stage } = await appliedByteBuild();
+  try {
+    await assert.rejects(
+      verifyNdsMutationOutput(
+        fixture.map,
+        plan,
+        stage.stagedRomPath,
+        {
+          async afterDiff() {
+            const current = (await readFile(stage.stagedRomPath))
+              .readUInt8(fixture.unrelatedRomOffset);
+            await overwriteByte(
+              stage.stagedRomPath,
+              fixture.unrelatedRomOffset,
+              current ^ 0xff,
+            );
+          },
+        },
+      ),
+      (error: unknown) => error instanceof NdsError
+        && error.category === "output-verification-failed",
+    );
+  } finally {
+    await cleanupNdsMutationStage(stage);
+  }
+});
