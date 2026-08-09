@@ -33,6 +33,9 @@ export type NdsBlzErrorCategory =
   | "blz-output-size-mismatch"
   | "blz-output-limit";
 
+export type NdsCompressedOverlayErrorCategory =
+  | "compressed-overlay-runtime-unavailable";
+
 export type NdsGhidraErrorCategory =
   | "ghidra-not-configured"
   | "invalid-ghidra-installation"
@@ -61,10 +64,11 @@ export type AnyNdsErrorCategory =
   | NdsPatternSearchErrorCategory
   | NdsFunctionErrorCategory;
 
-/** Complete service-layer category set, including BLZ and optional Ghidra integration. */
+/** Complete service-layer category set, including compressed overlays and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
   | NdsBlzErrorCategory
+  | NdsCompressedOverlayErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
 
