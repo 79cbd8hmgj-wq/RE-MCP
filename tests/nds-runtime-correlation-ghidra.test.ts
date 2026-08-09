@@ -4,7 +4,10 @@ import test from "node:test";
 
 import type { ServerConfig } from "../src/config.js";
 import { NdsError } from "../src/services/nds/errors.js";
-import type { GhidraInspectionAuthorityResult } from "../src/services/nds/ghidra-inspection-service.js";
+import type {
+  GhidraAddressSelector,
+  GhidraInspectionAuthorityResult,
+} from "../src/services/nds/ghidra-inspection-service.js";
 import {
   createRuntimeGhidraEnricher,
   type RuntimeGhidraAdapterDependencies,
@@ -23,12 +26,12 @@ function config(): ServerConfig {
 
 function candidate(overlayId: number | null): RuntimeCandidate {
   return {
-    kind: overlayId === null ? "arm9-main" : "overlay",
+    kind: overlayId === null ? "arm9-main" : "arm9-overlay",
     processor: "arm9",
     runtimeAddress: overlayId === null ? 0x02000000 : 0x02200000,
     relativeOffset: 0,
     runtimeImageOffset: 0,
-    representation: "rom-backed",
+    representation: "rom-file-backed",
     overlayId,
     fileId: overlayId,
     romOffset: overlayId === null ? 0x4000 : 0x8000,
@@ -57,7 +60,7 @@ function dependencies(overrides: Partial<RuntimeGhidraAdapterDependencies> = {})
 test("runtime Ghidra enrichment inspects main without an overlay selector", async () => {
   let selector: Record<string, unknown> | null = null;
   const enrich = createRuntimeGhidraEnricher(config(), dependencies({
-    inspectFunction: async (_romPath, input) => {
+    inspectFunction: async (_romPath: string, input: GhidraAddressSelector) => {
       selector = { ...input };
       return authority(true);
     },
@@ -77,11 +80,11 @@ test("runtime Ghidra enrichment inspects main without an overlay selector", asyn
 test("runtime Ghidra enrichment keeps the exact canonical overlay ID", async () => {
   const selectors: Record<string, unknown>[] = [];
   const enrich = createRuntimeGhidraEnricher(config(), dependencies({
-    inspectFunction: async (_romPath, input) => {
+    inspectFunction: async (_romPath: string, input: GhidraAddressSelector) => {
       selectors.push({ ...input });
       return authority(true);
     },
-    decompileFunction: async (_romPath, input) => {
+    decompileFunction: async (_romPath: string, input: GhidraAddressSelector) => {
       selectors.push({ ...input });
       return authority(true);
     },
