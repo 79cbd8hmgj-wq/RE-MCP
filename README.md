@@ -29,7 +29,7 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Parse ARM9 and ARM7 overlay tables, including initialized range, BSS, file backing, compression metadata, and flags
 - Resolve ARM9/ARM7 runtime addresses against main executables and static overlay candidates
 - Reverse-map ROM offsets to structural, NitroFS, executable, and overlay relationships
-- Decode bounded ARM/Thumb instruction windows from deterministic file-backed NDS code sources
+- Decode bounded ARM/Thumb instruction windows from deterministic initialized NDS code sources, including validated derived runtime images for compressed overlays
 - Build bounded direct-control-flow graphs across deterministic same-processor branch targets without recursively traversing calls
 - Classify deterministic single-instruction direct branch/call, literal-pool-slot, and PC-relative address references
 - Find bounded reverse cross-references through proven code seeds with explicit component coverage and truncation status
@@ -102,9 +102,9 @@ FAT remains authoritative for physical file byte ranges. FNT remains authoritati
 
 BSS has no source ROM bytes, so BSS results return no ROM offset.
 
-Compressed overlay bytes also require special handling. The stored FAT-backed overlay file may be compressed, so a decompressed runtime byte does **not** receive a fabricated direct ROM-byte mapping. The resolver still reports the overlay ID, file ID, runtime-relative offset, and backing-file metadata. Exact compressed-ROM ↔ decompressed-runtime correlation is deferred until controlled decompression support exists.
+Compressed overlay bytes also require special handling. The stored FAT-backed overlay file may be compressed, so a decompressed runtime byte does **not** receive a fabricated direct ROM-byte mapping. For initialized compressed overlays, RE-MCP can build a bounded validated BLZ-derived runtime image. Runtime resolution preserves the overlay identity and runtime-image offset while keeping `romOffset: null`; the stored backing file ID, ROM offset, size, and hash remain separate provenance.
 
-`nds_resolve_rom_offset` performs the reverse classification and may return multiple valid relationships for one ROM byte, such as a NitroFS file plus an ARM9 overlay backing file. Compressed overlay backing bytes do not receive fabricated runtime addresses.
+`nds_resolve_rom_offset` remains a physical-storage classifier and may return multiple valid relationships for one ROM byte, such as a NitroFS file plus an ARM9 overlay backing file. Compressed overlay backing bytes do not receive fabricated decompressed runtime addresses.
 
 ### ARM/Thumb static disassembly
 
@@ -122,14 +122,14 @@ Initial `auto` mode succeeds only when the resolved source is the matching ARM9 
 
 ARM starts and deterministic ARM targets must be 4-byte aligned. Thumb starts and deterministic Thumb targets must be 2-byte aligned. Invalid alignment is rejected rather than rounded.
 
-Only exact file-backed code bytes are decodable:
+Decodable initialized code sources are:
 
 - ARM9 main
 - ARM7 main
-- uncompressed ARM9 overlays
-- uncompressed ARM7 overlays
+- uncompressed ARM9/ARM7 overlays through their exact file-backed initialized prefixes
+- compressed ARM9/ARM7 overlays through validated derived runtime images
 
-BSS returns `runtime-only-bss`. Compressed overlays return `compressed-overlay-not-decodable`; the stored compressed bytes are never decoded as if they were runtime instructions. If an uncompressed overlay's runtime initialized extent is larger than its physical backing file, only the exact file-backed prefix is eligible.
+BSS returns `runtime-only-bss` and is never decoded as initialized code. Stored compressed bytes are never interpreted directly as runtime instructions, and decoded compressed-overlay bytes never receive fabricated ROM offsets. If an uncompressed overlay's runtime initialized extent is larger than its physical backing file, only the exact file-backed prefix is eligible.
 
 If multiple static code mappings contain a requested address or branch target, RE-MCP returns or records `ambiguous-code-source` rather than guessing which overlay is loaded. Supplying `overlayId` can select one starting static source, but it never claims that overlay is loaded at runtime. A deterministic branch that stays within that already selected component preserves its static component identity; a cross-component branch is re-resolved and traversed only when the same processor, source bytes, and target mode are all deterministic.
 
@@ -183,7 +183,7 @@ Direct branch/call references also retain the canonical ARM/Thumb target mode wh
 | Instructions | 32 | 256 |
 | Source bytes | 128 | 1,024 |
 
-`nds_find_xrefs` is target → cross-reference analysis. It scans only caller-selected static scope for one processor, using deterministic FIFO traversal from proven code seeds. Main code has one implicit ARM seed at the processor's NDS header entry point. Overlays are scanned only when the caller supplies an explicit aligned ARM/Thumb seed for that uncompressed overlay or a proven direct branch/call from already scanned code reaches it. Selecting an overlay does not imply that it is loaded at runtime.
+`nds_find_xrefs` is target → cross-reference analysis. It scans only caller-selected static scope for one processor, using deterministic FIFO traversal from proven code seeds. Main code has one implicit ARM seed at the processor's NDS header entry point. Overlays are scanned when the caller supplies an explicit aligned ARM/Thumb seed for that initialized overlay or when a proven direct branch/call from already scanned code reaches it. Selecting an overlay does not imply that it is loaded at runtime.
 
 A direct call may expand **xref search coverage** because the purpose of this tool is to discover references in proven reachable code. This does not change `nds_analyze_control_flow`: the CFG tool still records direct calls without traversing their callees.
 
@@ -208,7 +208,6 @@ Per-component coverage is explicit:
 
 - `scanned`
 - `no-proven-seed`
-- `compressed-overlay-not-decodable`
 - `out-of-limit`
 
 A result containing zero xrefs is definitive for the selected static scope only when `status === "complete"`. A zero-result `partial-coverage` or `truncated` response is intentionally not presented as proof that no xref exists.
@@ -259,9 +258,9 @@ Each individual function CFG is also capped independently:
 
 Aggregate budgets always dominate. Before a CFG is analyzed, its local limits are clipped to the remaining whole-operation budget so one function cannot overshoot a global cap before returning control.
 
-Discovery status is `complete`, `partial-coverage`, or `truncated`. Component coverage uses the same explicit vocabulary as xref search: `scanned`, `no-proven-seed`, `compressed-overlay-not-decodable`, and `out-of-limit`. Selecting an overlay does not disambiguate overlapping runtime ownership by itself. A call target becomes a proven function only when the canonical control-flow resolver actually produces one exact source.
+Discovery status is `complete`, `partial-coverage`, or `truncated`. Component coverage uses the same explicit vocabulary as xref search: `scanned`, `no-proven-seed`, and `out-of-limit`. Selecting an overlay does not disambiguate overlapping runtime ownership by itself. A call target becomes a proven function only when the canonical control-flow resolver actually produces one exact source.
 
-`nds_analyze_function` focuses on one requested processor/address/mode/optional overlay identity. It first requires that identity to resolve uniquely to exact initialized, uncompressed file-backed code. It then returns one proof status:
+`nds_analyze_function` focuses on one requested processor/address/mode/optional overlay identity. It first requires that identity to resolve uniquely to exact initialized code, which may be file-backed or a validated derived compressed-overlay runtime image. It then returns one proof status:
 
 - `proven`: program-entry or at least one exact direct-call proof exists;
 - `not-proven-function-entry`: the selected proof search completed with no qualifying proof;
@@ -364,7 +363,7 @@ The caller cannot provide a raw ROM offset, byte length, or output destination. 
 analysis/generated/nds/<first-16-sha256-hex>/
 ```
 
-Before extraction, RE-MCP verifies that the source ROM still matches the SHA-256 used to construct the canonical map. Extracted artifacts record both the source ROM SHA-256 and their own SHA-256. Compressed overlays are extracted exactly as their stored FAT-backed bytes and remain compressed.
+Before extraction, RE-MCP verifies that the source ROM still matches the SHA-256 used to construct the canonical map. Extracted artifacts record both the source ROM SHA-256 and their own SHA-256. `nds_extract_component` always extracts an overlay's exact stored FAT-backed bytes, so a compressed overlay remains compressed in this raw extraction path.
 
 `nds_extract_analysis_bundle` builds the complete static-analysis package transactionally:
 
@@ -376,12 +375,16 @@ analysis/generated/nds/<sha-prefix>/
 ├── overlays.json
 ├── arm9.bin
 ├── arm7.bin
-└── overlays/
-    ├── arm9/
-    └── arm7/
+├── overlays/
+│   ├── arm9/
+│   └── arm7/
+└── runtime/
+    └── overlays/
+        ├── arm9/
+        └── arm7/
 ```
 
-The bundle is assembled in a temporary sibling directory and promoted only when complete. If replacement of an existing completed bundle fails, RE-MCP attempts to restore the previous complete bundle. The bundle intentionally does not extract every NitroFS asset; individual assets remain opt-in through `nds_extract_component`.
+Raw overlay artifacts remain under `overlays/`. For compressed overlays, the bundle additionally writes only the decoded initialized runtime image under `runtime/overlays/` and records separate `runtimeArtifacts` provenance. BSS is not zero-appended or written as initialized bytes. The bundle is assembled in a temporary sibling directory and promoted only when complete. If replacement of an existing completed bundle fails, RE-MCP attempts to restore the previous complete bundle. The bundle intentionally does not extract every NitroFS asset; individual assets remain opt-in through `nds_extract_component`.
 
 ### Example static-analysis workflow
 
@@ -395,16 +398,21 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 8. Call `nds_discover_functions` to turn program-entry/direct-call evidence into a bounded proven-function call graph, or `nds_analyze_function` to prove and inspect one exact entry.
 9. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-The canonical static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra-to-RE-MCP evidence promotion, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+The canonical static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, a generic decompression/compression surface, graphics decoding, runtime overlay-loaded-state detection, Ghidra-to-RE-MCP evidence promotion, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Controlled Ghidra Integration
 
-Ghidra support is optional and deliberately sits **on top of** the canonical static-analysis layer. It exposes exactly two MCP tools:
+Ghidra support is optional and deliberately sits **on top of** the canonical static-analysis layer. It exposes seven controlled MCP tools:
 
 - `nds_ghidra_bootstrap`
 - `nds_ghidra_status`
+- `nds_ghidra_inspect_function`
+- `nds_ghidra_decompile_function`
+- `nds_ghidra_search_symbols`
+- `nds_ghidra_list_references`
+- `nds_ghidra_list_calls`
 
-Both accept only `{ "rom": "..." }`. There is no generic Ghidra command, arbitrary script runner, caller-selected project path, loader/language selector, raw Ghidra argument list, arbitrary environment map, or caller-selected output path.
+Bootstrap and status accept only `{ "rom": "..." }`. The five read-only inspection tools accept canonical processor/address/overlay selectors plus operation-specific bounded query or pagination fields. There is no generic Ghidra command, arbitrary script runner, caller-selected project path, loader/language selector, raw Ghidra argument list, arbitrary environment map, or caller-selected output path.
 
 ### Configuration
 
@@ -442,11 +450,15 @@ analysis/generated/nds/<sha-prefix>/ghidra-bridge/
 └── scripts/
 ```
 
-The ARM9 program uses `ARM:LE:32:v5t`; ARM7 uses `ARM:LE:32:v4t`. Uncompressed NDS overlays are represented as true Ghidra overlay address spaces at their canonical runtime offsets, so overlapping overlay addresses remain distinct. Compressed overlays are reported as `not-imported-compressed` and are never decoded or imported as executable runtime bytes.
+The ARM9 program uses `ARM:LE:32:v5t`; ARM7 uses `ARM:LE:32:v4t`. Every importable overlay is represented as a true Ghidra overlay address space at its canonical runtime offset, so overlapping overlay addresses remain distinct. Uncompressed overlays import their validated initialized file-backed prefix. Compressed overlays import the validated Node-generated decoded runtime artifact with `representation: "derived-blz"`; their stored and runtime SHA-256 identities remain separate, and BSS is created as a separate uninitialized block.
+
+Existing trusted v1 projects reconcile to bridge v2 without discarding analyst-owned state. RE-MCP verifies owned block geometry and bytes before reuse and fails closed on ownership conflicts rather than replacing a mismatched block.
 
 ### Evidence and analyst-work rules
 
 RE-MCP imports only facts it has already established: canonical mappings, exact ARM/Thumb proven entries, program-entry/direct-call proof, and deterministic direct-call evidence. It does **not** invent function-body or function-end boundaries for Ghidra. Normal Ghidra auto-analysis runs after RE-MCP evidence is installed; functions, labels, strings, types, references, switch recovery, decompiler output, and other analysis that Ghidra derives remain non-authoritative to RE-MCP.
+
+Read-only inspection reopens only the current trusted project with fixed RE-MCP scripts under `-readOnly -noanalysis`. Returned data separates `canonical`, `reMcpEvidence`, and `ghidraDerived` authority. A numeric target that Ghidra reports in its default address space is not relabeled as an overlay merely because the same numeric address exists in a canonical overlay space.
 
 Reruns reconcile only RE-MCP-owned metadata and evidence. Analyst-created labels, comments, bookmarks, types, namespaces, function names/signatures, and Ghidra-only discoveries are preserved. If project ownership/state cannot be reconciled safely, RE-MCP returns `project-state-mismatch` instead of overwriting the project.
 
@@ -502,7 +514,7 @@ The existing `desmume_read_register_packet`, `desmume_read_memory`, `desmume_pro
 - Node.js 20 or newer
 - An MCP host that can launch local stdio servers
 - A dedicated workspace containing the intended repositories and private ROM-development inputs
-- For Ghidra bootstrap, a supported local Ghidra 12.x installation; Ghidra 12.1.2 is the reference acceptance release
+- For Ghidra bootstrap and inspection, a supported local Ghidra 12.x installation; Ghidra 12.1.2 is the reference acceptance release
 - For emulator tools, a verified DeSmuME debug bundle
 
 ## Downloadable RE-MCP bundle
@@ -516,7 +528,7 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra Java resources and controlled tool registration, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The package check does not require a Ghidra installation or external disassembler download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra Java resources and controlled tool registration, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, runs a packaged ARM9 `BL` fixture through proven-function discovery, and verifies the compressed-overlay analysis-bundle raw/derived split using built code. The package check does not require a Ghidra installation or external disassembler download.
 
 After downloading and extracting the archive:
 
@@ -525,7 +537,7 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, assembled function/Ghidra-tool registration, Ghidra bridge resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
+The same self-check verifies the required package files, assembled function/Ghidra-tool registration, Ghidra bridge resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, packaged proven-function discovery path, and compressed-overlay bundle behavior before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace the required workspace/server paths, and either set the optional Ghidra paths for Ghidra bootstrap or remove those optional environment entries when Ghidra tools are not needed.
 
@@ -583,7 +595,7 @@ RE_MCP_GHIDRA_TIMEOUT_MS=900000 \
 node dist/index.js
 ```
 
-The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra bootstrap is requested.
+The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra bootstrap or inspection is requested.
 
 ## DeSmuME launcher contract
 
@@ -639,17 +651,19 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Function entries are proven only by NDS program-entry or exact deterministic direct-call evidence; direct branches, indirect calls, returns, explicit seeds, alignment, and prologue-like bytes do not prove functions
 - Function tools do not infer end addresses, tail calls, shared-epilogue ownership, or exclusive function byte ranges
 - Function proof preserves exact processor/component/overlay/address/mode identity; scope selection never turns ambiguous overlay ownership into proof
-- Explicit function seeds provide coverage only; unseeded/compressed components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
+- Explicit function seeds provide coverage only; unseeded components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
 - No persistent pattern/xref/function index or heuristic pointer/function discovery
 - Indirect targets are never guessed
-- Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
+- Compressed overlay initialized runtime bytes are decoded only through bounded validated derived images and retain `romOffset: null`; BSS is never disassembled or treated as initialized bytes
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
 - Static overlay selection/disassembly/reference/function search never claims that an overlay is loaded at runtime
 - Static operations revalidate the source ROM SHA-256 before and after decoding/searching
 - Ghidra bootstrap derives one `analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME`; callers cannot provide executable paths, project paths, loaders, languages, scripts, raw Ghidra arguments, environment maps, or output paths
 - Ghidra projects are isolated by full source ROM SHA-256; generated bridge inputs remain separate from persistent analyst state
-- Uncompressed NDS overlays use distinct Ghidra overlay address spaces; compressed overlays are never decoded/imported as executable runtime bytes
+- NDS overlays use distinct Ghidra overlay address spaces; compressed overlays import only validated Node-generated derived runtime images, preserve separate stored/runtime hashes, and keep BSS uninitialized
 - RE-MCP imports proven entries/modes/direct-call evidence only and does not promote Ghidra-derived functions, bodies, types, or other heuristics into canonical RE-MCP evidence
+- Read-only Ghidra inspection is restricted to the current trusted project, fixed RE-MCP scripts, `-readOnly -noanalysis`, canonical selectors, bounded output, and authority-separated results
+- Ghidra numeric targets in the default address space are never reclassified as overlay-space ownership merely because the numeric address overlaps an overlay
 - Ghidra reruns preserve analyst-created state and fail `project-state-mismatch` instead of destructively repairing unrecognized ownership
 - Ghidra headless execution is shell-free, timeout-bounded, output-bounded, and source-ROM identity is revalidated during bootstrap
 - `nds_ghidra_status` is non-mutating and does not invoke Ghidra
