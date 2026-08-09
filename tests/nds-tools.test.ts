@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { ServerConfig } from "../src/config.js";
 import { registerNdsPatternTools } from "../src/tools/nds-pattern.js";
 import { registerNdsTools } from "../src/tools/nds.js";
+import { createCompressedArmCodeFixture } from "./helpers/nds-compressed-code-fixture.js";
 import {
   createNdsFixture,
   encodeFntFileEntry,
@@ -732,11 +733,19 @@ test("component selector validation is strict and controlled extraction works", 
 });
 
 test("analysis bundle tool returns controlled deterministic paths", async () => {
-  const { fixture, rom } = await buildToolRom();
+  const { fixture } = await createCompressedArmCodeFixture();
+  const rom = path.basename(fixture.romPath);
   const server = register(fixture.directory);
-  const body = resultBody(await server.invoke("nds_extract_analysis_bundle", { rom }));
+  const result = await server.invoke("nds_extract_analysis_bundle", { rom });
+  assert.equal(resultIsError(result), false);
+  const body = resultBody(result);
   assert.equal(String(body.outputRoot).startsWith(path.join(fixture.directory, "analysis", "generated", "nds")), true);
-  await readFile(String(body.manifestPath));
+  const manifest = JSON.parse(await readFile(String(body.manifestPath), "utf8")) as {
+    runtimeArtifacts: Array<{ representation: string; romOffset: number | null }>;
+  };
+  assert.equal(manifest.runtimeArtifacts.length, 1);
+  assert.equal(manifest.runtimeArtifacts[0]?.representation, "derived-blz");
+  assert.equal(manifest.runtimeArtifacts[0]?.romOffset, null);
 });
 
 test("index capability declaration includes all twelve NDS tool names", async () => {
