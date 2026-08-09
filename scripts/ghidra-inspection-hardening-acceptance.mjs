@@ -134,10 +134,30 @@ const markerResult = await searchNdsGhidraSymbols(
 );
 assert.ok(derived(markerResult).results.some((entry) => entry.ghidraDerived?.name === analystMarker));
 
-// RE-MCP's proven main-to-overlay call is verified by the bootstrap acceptance
-// through the owned call-evidence property map. The importer deliberately does
-// not synthesize a Ghidra cross-address-space flow reference, so this harness
-// only asserts Ghidra-native references that Ghidra itself is expected to derive.
+const entryReferencesResult = await listNdsGhidraReferences(
+  romPath,
+  { processor: "arm9", runtimeAddress: 0x02000000, direction: "from", limit: 100, offset: 0 },
+  config,
+);
+const entryReferences = derived(entryReferencesResult).results;
+const defaultSpaceCrossOverlayReference = entryReferences.find((reference) =>
+  String(reference.ghidraDerived?.type).includes("CALL")
+  && reference.ghidraDerived?.to?.offset === 0x02210000
+  && reference.ghidraDerived?.to?.defaultSpace === true);
+assert.ok(
+  defaultSpaceCrossOverlayReference,
+  "expected Ghidra default-space call reference to compressed overlay runtime address",
+);
+assert.equal(defaultSpaceCrossOverlayReference.canonical?.from?.component, "main");
+assert.equal(
+  defaultSpaceCrossOverlayReference.canonical?.to,
+  null,
+  "default-space cross-overlay references must not receive fabricated canonical ownership",
+);
+
+// The authoritative main-to-overlay relationship is verified by the bootstrap
+// acceptance through RE-MCP's owned call-evidence property map. The default-space
+// Ghidra reference above remains Ghidra-derived and non-authoritative.
 const thumbReferencesResult = await listNdsGhidraReferences(
   romPath,
   { processor: "arm9", runtimeAddress: 0x02000004, direction: "from", limit: 100, offset: 0 },
@@ -271,7 +291,7 @@ process.stdout.write(JSON.stringify({
   functionName: functionDerived.name,
   decompilerCharacters: decompileDerived.c.length,
   derivedDecompilerCharacters: derivedDecompileResult.ghidraDerived.c.length,
-  references: thumbReferences.length,
+  references: entryReferences.length + thumbReferences.length,
   calls: calls.edges.length,
   derivedReferences: derivedReferences.length,
   derivedCalls: derivedCalls.edges.length,
