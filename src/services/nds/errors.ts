@@ -62,13 +62,13 @@ export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
-  | NdsFunctionErrorCategory;
+  | NdsFunctionErrorCategory
+  | NdsBlzErrorCategory
+  | NdsCompressedOverlayErrorCategory;
 
 /** Complete service-layer category set, including compressed overlays and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
-  | NdsBlzErrorCategory
-  | NdsCompressedOverlayErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
 
