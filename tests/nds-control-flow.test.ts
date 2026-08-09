@@ -10,6 +10,7 @@ import {
   analyzeNdsControlFlow,
   type StaticControlFlowGraph,
 } from "../src/services/nds/control-flow.js";
+import { NdsError } from "../src/services/nds/errors.js";
 import {
   createNdsFixture,
   writeFatEntry,
@@ -300,7 +301,7 @@ test("unique cross-component same-processor branches traverse into uncompressed 
   assert.equal(graph.blocks[1]?.source.overlayId, 7);
 });
 
-test("ambiguous and compressed branch targets are recorded but never queued", async () => {
+test("ambiguous branch targets stay unresolved and malformed compressed targets fail closed", async () => {
   const overlap = await overlappingOverlayMap();
   const ambiguousBackend = new FakeBackend(new Map([
     [0x02000000, branch(0x02000000, 0x02200000)],
@@ -337,16 +338,15 @@ test("ambiguous and compressed branch targets are recorded but never queued", as
   const compressedBackend = new FakeBackend(new Map([
     [0x02000000, branch(0x02000000, 0x02300000)],
   ]));
-  const compressed = requireGraph(await analyzeNdsControlFlow(
-    compressedMap,
-    { processor: "arm9", runtimeAddress: 0x02000000, mode: "arm" },
-    DEFAULT_LIMITS,
-    compressedBackend,
-  ));
-  assert.equal(compressed.blocks.length, 1);
-  assert.equal(
-    compressed.unresolvedEdges[0]?.kind,
-    "compressed-overlay-not-decodable",
+  await assert.rejects(
+    () => analyzeNdsControlFlow(
+      compressedMap,
+      { processor: "arm9", runtimeAddress: 0x02000000, mode: "arm" },
+      DEFAULT_LIMITS,
+      compressedBackend,
+    ),
+    (error: unknown) => error instanceof NdsError
+      && String(error.category) === "malformed-blz",
   );
 });
 
