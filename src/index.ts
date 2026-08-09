@@ -13,6 +13,7 @@ import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
 import { registerNdsFunctionTools } from "./tools/nds-functions.js";
 import { registerNdsGhidraTools } from "./tools/nds-ghidra.js";
+import { registerNdsMutationTools } from "./tools/nds-mutation.js";
 import { registerNdsPatternTools } from "./tools/nds-pattern.js";
 import { registerNdsRuntimeTools } from "./tools/nds-runtime.js";
 import { registerNdsTools } from "./tools/nds.js";
@@ -87,6 +88,7 @@ const desmumeDebugger = registerDesmumeTools(server, config, desmumeManager);
 registerNdsTools(server, config);
 registerNdsPatternTools(server, config);
 registerNdsFunctionTools(server, config);
+registerNdsMutationTools(server, config);
 registerNdsGhidraTools(server, config);
 registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
 registerRuntimeEvidenceTools(server, config, desmumeManager);
@@ -101,13 +103,23 @@ server.tool(
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
       arbitraryShell: false,
-      mutationPolicy: "Milestone 6E install is dry-run only",
+      mutationPolicy:
+        "Controlled manifest-driven NDS build operations may publish verified deterministic outputs beneath output/nds; source ROMs remain immutable. Milestone 1 permits only same-size guarded canonical byte/component replacements, with no arbitrary ROM offsets and no caller-selected output paths.",
       processPolicy: "One DeSmuME process owned by this server instance",
       debuggerPolicy:
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection and current-stop NDS static correlation with opt-in already-current Ghidra enrichment; no register writes, general memory writes, watchpoints, arbitrary GDB packets, automatic execution during correlation, or Ghidra bootstrap/reconciliation during correlation",
-      evidencePolicy: "Atomic raw evidence under project analysis/generated only",
+      evidencePolicy:
+        "Atomic raw evidence under project analysis/generated plus deterministic NDS mutation evidence under controlled output/nds build directories",
       ndsStaticAnalysisPolicy:
-        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, bounded proven function-entry/call-graph analysis, and exact-ROM-SHA current-stop ARM9 correlation over canonical executable components; current-stop correlation may opt in to read-only already-current Ghidra enrichment, but performs no Ghidra bootstrap, reconciliation, migration, auto-analysis, or mutation; runtime correlation preserves overlapping overlay candidates and uses the observed CPSR mode without guessing loaded overlay state; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, ROM mutation/rebuild, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled output/project paths",
+        "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, bounded proven function-entry/call-graph analysis, and exact-ROM-SHA current-stop ARM9 correlation over canonical executable components; current-stop correlation may opt in to read-only already-current Ghidra enrichment, but performs no Ghidra bootstrap, reconciliation, migration, auto-analysis, or mutation; runtime correlation preserves overlapping overlay candidates and uses the observed CPSR mode without guessing loaded overlay state; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled Ghidra output/project paths",
+      ndsMutationTools: {
+        nds_mutation_validate:
+          "Preflight the exact source ROM and strict mutation manifest, compile guards/selectors/conflicts/build identity, and publish nothing.",
+        nds_mutation_build:
+          "Apply the validated same-size plan only to a staged source copy, reparse and verify all changes, then atomically publish a deterministic output/nds build.",
+        nds_mutation_verify:
+          "Freshly revalidate the deterministic published build, evidence, source identity, canonical structure, requested changes, and zero unexpected changed bytes.",
+      },
       tools: [
         "get_project_status",
         "run_project_verification",
@@ -147,6 +159,9 @@ server.tool(
         "nds_search_pattern",
         "nds_discover_functions",
         "nds_analyze_function",
+        "nds_mutation_validate",
+        "nds_mutation_build",
+        "nds_mutation_verify",
         "nds_correlate_stop_context",
         "nds_ghidra_bootstrap",
         "nds_ghidra_status",
