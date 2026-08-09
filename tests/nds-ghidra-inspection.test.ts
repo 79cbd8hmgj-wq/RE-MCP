@@ -130,17 +130,20 @@ test("Ghidra inspection selector resolves main through default space and explici
   }
 });
 
-test("Ghidra inspection selector refuses compressed code and limits BSS to address-level references", async () => {
+test("Ghidra inspection selector accepts derived compressed code and limits BSS to address-level references", async () => {
   const setup = await inspectionMap();
   try {
-    assert.throws(
-      () => resolveGhidraInspectionSelector(
-        setup.map,
-        { processor: "arm9", runtimeAddress: 0x02002004, overlayId: 3 },
-        "inspect-function",
-      ),
-      errorCategory("ghidra-address-not-inspectable"),
+    const compressed = resolveGhidraInspectionSelector(
+      setup.map,
+      { processor: "arm9", runtimeAddress: 0x02002004, overlayId: 3 },
+      "inspect-function",
     );
+    assert.equal(compressed.component, "overlay");
+    assert.equal(compressed.overlayId, 3);
+    assert.equal(compressed.addressSpace, "RE_MCP_ARM9_OVL_3");
+    assert.equal(compressed.fileBacked, false);
+    assert.equal(compressed.bss, false);
+    assert.equal(compressed.compressed, true);
 
     const bss = resolveGhidraInspectionSelector(
       setup.map,
