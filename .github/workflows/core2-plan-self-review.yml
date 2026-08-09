@@ -1,0 +1,84 @@
+name: Core 2 plan self-review correction
+
+on:
+  push:
+    branches:
+      - design/nds-rebuild-core-2
+    paths:
+      - .github/workflows/core2-plan-self-review.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design/nds-rebuild-core-2
+      - name: Apply reviewed API corrections
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/superpowers/plans/2026-08-09-nds-rebuild-core-2.md')
+          text = p.read_text()
+          old = '''export interface NdsResolvedMutationPlanV1 {
+            readonly formatVersion: 1;
+            // Preserve every current v1 field/meaning exactly.
+          }'''.replace('          ', '')
+          new = '''export interface NdsResolvedMutationPlanV1 {
+            readonly sourceRomPath: string;
+            readonly sourceWorkspacePath: string;
+            readonly sourceSha256: string;
+            readonly sourceSha256Prefix: string;
+            readonly sourceSize: number;
+            readonly manifestWorkspacePath: string;
+            readonly manifestSha256: string;
+            readonly outputFilename: string;
+            readonly buildId: string;
+            readonly operations: readonly GuardedNdsMutationOperation[];
+            readonly applicationOperations: readonly GuardedNdsMutationOperation[];
+            readonly immutableStructuralRanges: readonly NdsMutationPhysicalRange[];
+          }'''.replace('          ', '')
+          if old not in text:
+              raise SystemExit('v1 resolved-plan block not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''export interface NdsMutationVerificationResultV2 {'''
+          v1 = '''export interface NdsMutationVerificationResultV1 {
+            readonly status: "passed";
+            readonly sourceSha256: string;
+            readonly outputSha256: string;
+            readonly sourceSize: number;
+            readonly outputSize: number;
+            readonly sourceUnchanged: true;
+            readonly structuralMetadataUnchanged: true;
+            readonly structuralMapUnchanged: true;
+            readonly changedByteCount: number;
+            readonly unexpectedChangedBytes: 0;
+            readonly operations: readonly NdsMutationOperationVerification[];
+            readonly compressedOverlays: readonly NdsCompressedOverlayVerification[];
+          }
+
+          export interface NdsMutationVerificationResultV2 {'''.replace('          ', '')
+          if marker not in text:
+              raise SystemExit('v2 verification block not found')
+          text = text.replace(marker, v1, 1)
+
+          old_pkg = '''Using only built `dist/` modules, synthetic v2 ROM must exercise:'''
+          new_pkg = '''Using only built `dist/` modules, the synthetic v2 ROM must initialize a valid 0x160-byte rebuild header and matching header CRC before planning. It must exercise:'''
+          if old_pkg not in text:
+              raise SystemExit('package smoke sentence not found')
+          text = text.replace(old_pkg, new_pkg, 1)
+          p.write_text(text)
+          PY
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/core2-plan-self-review.yml
+      - name: Commit corrections
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/superpowers/plans/2026-08-09-nds-rebuild-core-2.md .github/workflows/core2-plan-self-review.yml
+          git commit -m "docs: fix Core 2 plan API contracts"
+          git push origin HEAD:design/nds-rebuild-core-2
