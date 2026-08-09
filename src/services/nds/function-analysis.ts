@@ -3,7 +3,7 @@ import type {
   ArmMode,
 } from "../disassembly/backend.js";
 import {
-  analyzeNdsControlFlow,
+  analyzeNdsControlFlowWithReader,
   type ControlFlowLimits,
   type StaticCallEdge,
   type StaticControlFlowGraph,
@@ -12,6 +12,7 @@ import {
 import {
   resolveNdsCodeSource,
   resolveNdsControlFlowTarget,
+  withValidatedNdsCodeReader,
   type NdsCodeSource,
 } from "./disassembly-source.js";
 import {
@@ -38,7 +39,7 @@ import type {
   ReferenceSearchSeed,
 } from "./xref-source.js";
 import {
-  findNdsXrefs,
+  findNdsXrefsWithReader,
   type ReferenceComponentCoverage,
   type ReferenceScanLimits,
 } from "./xrefs.js";
@@ -279,7 +280,7 @@ function deduplicateProofs(proofs: readonly FunctionProof[]): FunctionProof[] {
 }
 
 function graphForResult(
-  result: Awaited<ReturnType<typeof analyzeNdsControlFlow>>,
+  result: Awaited<ReturnType<typeof analyzeNdsControlFlowWithReader>>,
 ): StaticControlFlowGraph {
   if (!("blocks" in result)) {
     throw functionError(
@@ -310,88 +311,92 @@ export async function analyzeNdsFunction(
     request.seeds,
   );
 
-  const xrefs = await findNdsXrefs(
-    map,
-    {
-      processor: request.processor,
-      target: { targetRuntimeAddress: request.runtimeAddress },
-      scope: request.proofScope as ReferenceSearchScope,
-      seeds: request.seeds as readonly ReferenceSearchSeed[],
-    },
-    limits.proof,
-    backend,
-  );
+  return await withValidatedNdsCodeReader(map, async (read) => {
+    const xrefs = await findNdsXrefsWithReader(
+      map,
+      {
+        processor: request.processor,
+        target: { targetRuntimeAddress: request.runtimeAddress },
+        scope: request.proofScope as ReferenceSearchScope,
+        seeds: request.seeds as readonly ReferenceSearchSeed[],
+      },
+      limits.proof,
+      backend,
+      read,
+    );
 
-  const proofs: FunctionProof[] = [];
-  const programProof = programEntryProof(map, entry);
-  if (programProof !== null) {
-    proofs.push(programProof);
-  }
-  for (const reference of xrefs.xrefs) {
-    const proof = proofFromReference(map, reference, entry);
-    if (proof !== null) {
-      proofs.push(proof);
+    const proofs: FunctionProof[] = [];
+    const programProof = programEntryProof(map, entry);
+    if (programProof !== null) {
+      proofs.push(programProof);
     }
-  }
-  const evidence = deduplicateProofs(proofs);
-  const callers = evidence.filter(
-    (proof): proof is Extract<FunctionProof, { readonly kind: "direct-call" }> =>
-      proof.kind === "direct-call",
-  );
+    for (const reference of xrefs.xrefs) {
+      const proof = proofFromReference(map, reference, entry);
+      if (proof !== null) {
+        proofs.push(proof);
+      }
+    }
+    const evidence = deduplicateProofs(proofs);
+    const callers = evidence.filter(
+      (proof): proof is Extract<FunctionProof, { readonly kind: "direct-call" }> =>
+        proof.kind === "direct-call",
+    );
 
-  const proofStatus: AnalyzeFunctionProofStatus = evidence.length > 0
-    ? "proven"
-    : xrefs.status === "complete"
-      ? "not-proven-function-entry"
-      : "proof-inconclusive";
+    const proofStatus: AnalyzeFunctionProofStatus = evidence.length > 0
+      ? "proven"
+      : xrefs.status === "complete"
+        ? "not-proven-function-entry"
+        : "proof-inconclusive";
 
-  const proofSearch = {
-    status: xrefs.status,
-    coverage: xrefs.coverage,
-    truncationReasons: xrefs.truncationReasons,
-  } as const;
+    const proofSearch = {
+      status: xrefs.status,
+      coverage: xrefs.coverage,
+      truncationReasons: xrefs.truncationReasons,
+    } as const;
 
-  if (proofStatus !== "proven") {
+    if (proofStatus !== "proven") {
+      return {
+        proofStatus,
+        entry,
+        evidence,
+        proofSearch,
+        cfg: null,
+        callers,
+        outgoingCalls: [],
+        returnSites: [],
+        unresolvedExits: [],
+      };
+    }
+
+    const cfg = graphForResult(await analyzeNdsControlFlowWithReader(
+      map,
+      {
+        processor: requestedSource.processor,
+        runtimeAddress: requestedSource.runtimeAddress,
+        mode: requestedSource.mode,
+        ...(requestedSource.overlayId === null
+          ? {}
+          : { overlayId: requestedSource.overlayId }),
+      },
+      limits.cfg,
+      backend,
+      read,
+    ));
+    const returnSites = cfg.unresolvedEdges
+      .filter((edge) => edge.kind === "return")
+      .map((edge) => edge.instructionAddress)
+      .sort((left, right) => left - right);
+
     return {
       proofStatus,
       entry,
       evidence,
       proofSearch,
-      cfg: null,
+      cfg,
       callers,
-      outgoingCalls: [],
-      returnSites: [],
-      unresolvedExits: [],
+      outgoingCalls: cfg.calls,
+      returnSites,
+      unresolvedExits: cfg.unresolvedEdges,
     };
-  }
-
-  const cfg = graphForResult(await analyzeNdsControlFlow(
-    map,
-    {
-      processor: requestedSource.processor,
-      runtimeAddress: requestedSource.runtimeAddress,
-      mode: requestedSource.mode,
-      ...(requestedSource.overlayId === null
-        ? {}
-        : { overlayId: requestedSource.overlayId }),
-    },
-    limits.cfg,
-    backend,
-  ));
-  const returnSites = cfg.unresolvedEdges
-    .filter((edge) => edge.kind === "return")
-    .map((edge) => edge.instructionAddress)
-    .sort((left, right) => left - right);
-
-  return {
-    proofStatus,
-    entry,
-    evidence,
-    proofSearch,
-    cfg,
-    callers,
-    outgoingCalls: cfg.calls,
-    returnSites,
-    unresolvedExits: cfg.unresolvedEdges,
-  };
+  });
 }
