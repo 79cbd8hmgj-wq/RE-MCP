@@ -4,63 +4,63 @@
 
 **Goal:** Add RE-MCP's first generic write-capable Nintendo DS subsystem: strict same-size canonical mutations applied only to a staged ROM copy, followed by complete structural/diff verification and atomic publication of a complete `.nds` build.
 
-**Architecture:** Compile a strict workspace mutation manifest into a fully resolved, guarded, conflict-free plan before any write occurs. A separate staging/application layer may mutate only the staged copy, while an independent verifier reparses the output, proves structural immutability and complete byte-diff attribution, and permits atomic publication only after every check passes. Existing NDS parsing, resolver, BLZ/runtime-image, SHA, workspace-containment, and atomic-output patterns remain authoritative.
+**Architecture:** A read-only compiler turns one strict workspace manifest into a canonical, guarded, conflict-free physical mutation plan before any write occurs. A separate application layer may write only to a staged source copy; an independent verifier reparses the result, proves structural immutability, verifies every operation, attributes the complete source→output diff, and permits atomic publication only after all checks pass. Existing NDS parsing, address resolution, BLZ/runtime-image, SHA-256, workspace-containment, and atomic-output behavior remain authoritative.
 
-**Tech Stack:** Node.js >=20, TypeScript 5.7, Node `node:test`, Zod 3.23, existing RE-MCP NDS parser/resolver/BLZ services, MCP SDK, Node `fs/promises`/`crypto`/`path`.
+**Tech Stack:** Node.js >=20, TypeScript 5.7, Node `node:test`, Zod 3.23, MCP SDK, existing RE-MCP NDS services, Node `fs/promises`/`crypto`/`path`.
 
 ## Global Constraints
 
 - Source ROMs are immutable and are never opened with write access.
 - Every manifest requires the exact full lowercase SHA-256 of the source ROM.
 - Mutation input is a strict JSON manifest under `RE_MCP_WORKSPACE_ROOT`; no inline arbitrary mutation list is accepted.
-- Targets use canonical NDS ownership only: ARM9, ARM7, exact ARM9/ARM7 overlay ID, NitroFS file ID, or exact NitroFS path.
+- Canonical targets only: ARM9, ARM7, exact ARM9/ARM7 overlay ID, NitroFS file ID, or exact NitroFS path.
 - No bare absolute-ROM-offset mutation primitive exists.
 - `replace-bytes` requires exact expected original bytes and same-length replacement bytes.
-- `replace-component` requires exact original component SHA-256 plus a workspace-contained replacement artifact pinned by exact SHA-256 and exact stored size.
-- All physical mutation overlap is rejected; Milestone 1 has no ordered layering semantics.
-- Core NDS header, FAT, FNT, ARM9 overlay table, ARM7 overlay table, component boundaries, file counts, and overlay counts remain immutable.
-- Output ROM size must equal source ROM size exactly.
-- Compressed overlays may only be replaced as prebuilt exact-size stored components. Decoded-runtime edits and BLZ recompression are excluded.
-- A NitroFS selector that aliases overlay backing bytes must obey the overlay's compression rules; aliases cannot bypass compressed-overlay safety.
-- The complete source→output byte diff must attribute every changed byte to exactly one approved operation; unexpected changed bytes must equal zero.
+- `replace-component` requires exact original component SHA-256 and a workspace-contained replacement artifact pinned by exact SHA-256 and exact stored size.
+- All physical overlap is rejected; Milestone 1 has no ordered layering semantics.
+- The first `0x200` header bytes, FAT, FNT, ARM9 overlay table, ARM7 overlay table, component boundaries, file counts, and overlay counts are immutable.
+- Output ROM size equals source ROM size exactly.
+- Compressed overlays may only be replaced as prebuilt exact-size stored components. Decoded-runtime mutation and BLZ recompression are excluded.
+- NitroFS aliases of overlay backing bytes obey the overlay's compression rules; aliases cannot bypass compressed-overlay safety.
+- Every changed output byte must belong to exactly one approved physical operation range; unexpected changed bytes must equal zero.
 - Final output is confined to `output/nds/<source-sha-prefix>/<build-id>/` beneath the configured workspace.
-- The manifest supplies only a simple lowercase-`.nds` output filename, never a destination directory.
-- Build metadata used for reproducibility contains workspace-relative paths only and no timestamps, process IDs, or machine-specific absolute paths.
-- Identical inputs produce the same normalized manifest, full 64-hex build ID, ROM bytes, and deterministic evidence files.
-- If the deterministic final build already exists, it is reused only after full revalidation proves it is exactly the same valid build; divergent/corrupt content is never overwritten.
-- Preserve the existing distinction between stored compressed overlay bytes and derived runtime images with `romOffset: null`.
+- The manifest supplies only a simple `.nds` filename, never an output directory.
+- Deterministic evidence contains workspace-relative paths only and no timestamps, process IDs, random IDs, or machine-specific absolute paths.
+- Identical inputs produce the same normalized manifest, full 64-hex build ID, ROM bytes, and deterministic evidence.
+- A pre-existing deterministic build is reused only after fresh full revalidation; divergent/corrupt content is never overwritten or deleted automatically.
+- Preserve stored-compressed versus derived-runtime provenance; decoded overlay bytes retain `romOffset: null`.
+- Do not add runtime dependencies.
 - Do not alter debugger/GDB behavior or claim physical Catalina/DeSmuME acceptance from CI.
-- Do not add new runtime dependencies.
-- TDD is mandatory: each task begins with a focused failing test and ends with focused verification plus a commit.
-- Never merge a PR without explicit user authorization. At each PR gate, stop after exact-head CI/package verification and request merge approval.
+- TDD is mandatory: focused RED test → minimal implementation → focused GREEN → typecheck → commit.
+- Never merge a PR without explicit user authorization. At each PR gate, verify the exact head/checks/review state and stop for merge approval.
 
 ---
 
-## File Structure
+## File Map
 
-### New mutation service package
+### New services
 
 ```text
 src/services/nds/mutation/
-├── manifest.ts     # strict manifest model, canonical normalization, manifest hash
-├── selectors.ts    # canonical component/range resolution + structural exclusion
+├── manifest.ts     # schema, normalization, canonical JSON, manifest hash
+├── selectors.ts    # canonical ownership/range resolution + immutable regions
 ├── guards.ts       # source/original/replacement guards + compressed artifact preflight
 ├── conflicts.ts    # physical interval collision detection
-├── planner.ts      # all read-only preflight + deterministic build identity
-├── staging.ts      # temporary build tree and immutable source copy
-├── apply.ts        # the only module permitted to write staged ROM bytes
-├── verify.ts       # reparse, structural proof, per-op proof, whole-ROM diff attribution
+├── planner.ts      # full read-only preflight + deterministic build ID
+├── staging.ts      # controlled temporary/final output paths + source copy
+├── apply.ts        # only staged-ROM writer
+├── verify.ts       # canonical reparse, structure/op/diff/compressed verification
 ├── report.ts       # deterministic evidence serialization
-└── build.ts        # all-or-nothing orchestration, publication, idempotent reuse/reverify
+└── build.ts        # all-or-nothing build, publication, reverify/reuse
 ```
 
-### New MCP tool module
+### New public tool module
 
 ```text
 src/tools/nds-mutation.ts
 ```
 
-It owns only:
+Public surface at milestone completion:
 
 ```text
 nds_mutation_validate
@@ -83,7 +83,7 @@ tests/nds-mutation-tools.test.ts
 tests/nds-mutation-hardening.test.ts
 ```
 
-### Existing files changed by the milestone
+### Existing files changed
 
 ```text
 src/services/nds/errors.ts
@@ -92,17 +92,62 @@ scripts/check-install.mjs
 README.md
 ```
 
-## PR decomposition
+## Shared Test Fixture Contract
 
-- **PR A — Mutation planning foundation:** Tasks 1–4. Strict manifest, selectors, guards, conflict detection, deterministic resolved plan. No ROM writer and no public MCP registration.
-- **PR B — Transactional build engine:** Tasks 5–8. Staging/application, independent verification, deterministic reporting/publication, revalidation/idempotent reuse. Still no public tool registration.
-- **PR C — MCP/release integration:** Tasks 9–10. Register the three public tools, capability policy, package smoke checks, docs, final regression.
+Task 1 creates `tests/helpers/nds-mutation-fixture.ts`; later tasks may use only this explicitly defined fixture API, not undeclared convenience helpers.
 
-PR A should branch from the approved design branch `design/controlled-nds-mutation-core` so the spec and this plan travel with the first implementation PR. PR B must branch from updated `main` only after PR A is explicitly approved and merged. PR C must branch from updated `main` only after PR B is explicitly approved and merged.
+```ts
+export interface NdsMutationFixture {
+  readonly directory: string;
+  readonly romPath: string;
+  readonly sourceBytes: Buffer;
+  readonly sourceSha256: string;
+  readonly map: NdsRomMap;
+
+  readonly arm9RomOffset: number;                 // 0x0200
+  readonly arm7RomOffset: number;                 // 0x0600
+  readonly ordinaryFileId: number;                // 0
+  readonly ordinaryFileRomOffset: number;         // 0x1200
+  readonly ordinaryFileSize: number;              // 0x20
+  readonly uncompressedOverlayId: number;         // 2
+  readonly uncompressedOverlayFileId: number;     // 1
+  readonly uncompressedOverlayRomOffset: number;  // 0x1300
+  readonly uncompressedOverlaySize: number;       // 0x40
+  readonly compressedOverlayId: number;           // 7
+  readonly compressedOverlayFileId: number;       // 2
+  readonly compressedOverlayRomOffset: number;    // 0x1400
+  readonly compressedOverlaySize: number;         // 0x80
+  readonly unrelatedRomOffset: number;            // 0x1800
+
+  writeManifestDocument(document: unknown, relativePath?: string): Promise<string>;
+  writeArtifact(relativePath: string, bytes: Buffer): Promise<string>;
+  flipByte(filePath: string, offset: number): Promise<void>;
+}
+
+export async function createMutationFixture(): Promise<NdsMutationFixture>;
+```
+
+The fixture is a `0x5000`-byte valid synthetic NDS built with existing `tests/helpers/nds-fixture.ts`. FAT entries are:
+
+```text
+file 0: 0x1200..0x1220 ordinary NitroFS asset
+file 1: 0x1300..0x1340 ARM9 overlay 2, uncompressed, RAM 0x02200000, size 0x40
+file 2: 0x1400..0x1480 ARM9 overlay 7, compressed, RAM 0x02210000
+```
+
+FNT names are `asset.bin`, `overlay2.bin`, `overlay7.bin`. Overlay 7 uses `COMPRESSED_ARM_CODE_STORED`/`COMPRESSED_ARM_CODE_DECODED` from `tests/helpers/nds-compressed-code-fixture.ts`, padded to `0x80` stored bytes exactly as existing compressed-overlay tests do. `sourceBytes` is a copy of the bytes written to disk. `writeManifestDocument()` returns a workspace-relative forward-slash path; it only writes JSON and does not invoke production parsing. `writeArtifact()` likewise returns the workspace-relative path. `flipByte()` opens only the named test file and XORs one byte with `0xff`.
+
+## PR Decomposition
+
+- **PR A — Mutation planning foundation:** Tasks 1–4. No ROM write path and no public MCP registration.
+- **PR B — Transactional build engine:** Tasks 5–8. Internal staged writer/verifier/publication/revalidation; still no public MCP registration.
+- **PR C — MCP/release integration:** Tasks 9–10. Register all three public tools, capabilities, packaging smoke, docs, final regression.
+
+PR A branches from `design/controlled-nds-mutation-core` so the approved spec and this plan ship with the first implementation PR. PR B branches from updated `main` only after PR A is explicitly merged. PR C branches from updated `main` only after PR B is explicitly merged.
 
 ---
 
-### Task 1: Define Strict Manifest Parsing and Deterministic Normalization
+### Task 1: Strict Manifest Model, Normalization, and Error Taxonomy
 
 **Files:**
 - Create: `src/services/nds/mutation/manifest.ts`
@@ -111,89 +156,70 @@ PR A should branch from the approved design branch `design/controlled-nds-mutati
 - Create: `tests/nds-mutation-manifest.test.ts`
 
 **Interfaces:**
-- Consumes: `resolveInside(workspaceRoot, requestedPath)` from `src/security/paths.ts`.
-- Produces:
-  - `NdsMutationComponentSelector`
-  - `NdsMutationByteTarget`
-  - `NdsReplaceBytesOperation`
-  - `NdsReplaceComponentOperation`
-  - `NdsMutationManifestV1`
-  - `LoadedNdsMutationManifest`
-  - `loadNdsMutationManifest(workspaceRoot: string, requestedPath: string): Promise<LoadedNdsMutationManifest>`
-  - `serializeCanonicalMutationManifest(manifest: NdsMutationManifestV1): string`
-  - `NdsMutationErrorCategory` added to the service error union.
+- Produces `NdsMutationComponentSelector`, `NdsMutationByteTarget`, `NdsReplaceBytesOperation`, `NdsReplaceComponentOperation`, `NdsMutationManifestV1`, `LoadedNdsMutationManifest`.
+- Produces `loadNdsMutationManifest(workspaceRoot: string, requestedPath: string): Promise<LoadedNdsMutationManifest>`.
+- Produces `serializeCanonicalMutationManifest(manifest: NdsMutationManifestV1): string`.
+- Adds `NdsMutationErrorCategory` to `NdsServiceErrorCategory` but not to read-only `AnyNdsErrorCategory`.
 
-- [ ] **Step 1: Write the failing manifest tests**
+- [ ] **Step 1: Write the failing manifest tests and fixture**
 
-Create `tests/nds-mutation-manifest.test.ts` with focused cases for valid parsing, strict unknown-field rejection, lowercase SHA policy, byte normalization, no-op rejection, output filename containment, deterministic operation ordering, and workspace manifest containment.
+Create the shared fixture exactly as specified above. Then add tests including:
 
 ```ts
-import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import test from "node:test";
-
-import { NdsError } from "../src/services/nds/errors.js";
-import {
-  loadNdsMutationManifest,
-  serializeCanonicalMutationManifest,
-} from "../src/services/nds/mutation/manifest.js";
-import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
-
-test("loads and canonically normalizes one strict mutation manifest", async () => {
+test("normalizes byte hex and produces stable canonical JSON", async () => {
   const fixture = await createMutationFixture();
-  const manifestPath = path.join(fixture.directory, "plans", "mutation.json");
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  await writeFile(manifestPath, JSON.stringify({
+  const manifest = {
     format: "re-mcp-nds-mutation",
     formatVersion: 1,
     source: { sha256: fixture.sourceSha256 },
     output: { filename: "test-mod.nds" },
-    operations: [
-      {
-        type: "replace-bytes",
-        target: { component: "arm9", relativeOffset: 4 },
-        expected: "AABB",
-        replacement: "CCDD",
-      },
-    ],
-  }));
-
-  const loaded = await loadNdsMutationManifest(fixture.directory, "plans/mutation.json");
-  assert.equal(loaded.manifest.operations[0]?.type, "replace-bytes");
+    operations: [{
+      type: "replace-bytes",
+      target: { component: "arm9", relativeOffset: 4 },
+      expected: "AABB",
+      replacement: "CCDD",
+    }],
+  };
+  const relative = await fixture.writeManifestDocument(manifest);
+  const loaded = await loadNdsMutationManifest(fixture.directory, relative);
+  assert.match(loaded.canonicalJson, /"expected":"aabb"/u);
   assert.match(loaded.sha256, /^[0-9a-f]{64}$/u);
   assert.equal(loaded.canonicalJson, serializeCanonicalMutationManifest(loaded.manifest));
-  assert.match(loaded.canonicalJson, /"expected":"aabb"/u);
 });
 
-test("rejects uppercase source hashes and no-op byte operations", async () => {
+test("rejects uppercase source SHA and a byte-operation no-op", async () => {
   const fixture = await createMutationFixture();
+  const badSha = await fixture.writeManifestDocument({
+    format: "re-mcp-nds-mutation",
+    formatVersion: 1,
+    source: { sha256: fixture.sourceSha256.toUpperCase() },
+    output: { filename: "test.nds" },
+    operations: [{
+      type: "replace-bytes",
+      target: { component: "arm9", relativeOffset: 0 },
+      expected: "AABB",
+      replacement: "aabb",
+    }],
+  }, "plans/bad.json");
   await assert.rejects(
-    fixture.writeManifest({ sourceSha256: fixture.sourceSha256.toUpperCase() }),
-    (error: unknown) => error instanceof NdsError && error.category === "mutation-manifest-invalid",
-  );
-  await assert.rejects(
-    fixture.writeManifest({ expected: "aabb", replacement: "AABB" }),
-    (error: unknown) => error instanceof NdsError && error.category === "mutation-manifest-invalid",
+    loadNdsMutationManifest(fixture.directory, badSha),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "mutation-manifest-invalid",
   );
 });
 ```
 
-Create `tests/helpers/nds-mutation-fixture.ts` as a thin reusable wrapper around `createNdsFixture()`. It should build a small valid ROM containing ARM9, ARM7, one ordinary NitroFS file, one uncompressed overlay-backed FAT file, and one valid compressed overlay-backed FAT file using the existing compressed-code fixture. The helper should expose `directory`, `romPath`, `sourceSha256`, canonical component offsets, and helpers to write manifests/artifacts without hiding expected test values.
+Also test unknown fields at every object level, unsupported format/version, zero operations, odd/empty/nonhex byte strings, mismatched byte lengths, invalid selectors, absolute/traversal/backslash artifact paths, unsafe output filename, non-regular manifest path, manifest path escape, and operation-order canonicalization.
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
-
-Run:
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-manifest.test.ts
 ```
 
-Expected: FAIL because `src/services/nds/mutation/manifest.ts` and `createMutationFixture()` do not exist.
+Expected: module/helper missing.
 
-- [ ] **Step 3: Add mutation error categories**
-
-Extend `src/services/nds/errors.ts` with:
+- [ ] **Step 3: Add the mutation error union**
 
 ```ts
 export type NdsMutationErrorCategory =
@@ -217,11 +243,9 @@ export type NdsMutationErrorCategory =
   | "publish-failed";
 ```
 
-Add `NdsMutationErrorCategory` to `NdsServiceErrorCategory`, but do not add it to the established read-only `AnyNdsErrorCategory` alias.
+- [ ] **Step 4: Implement strict Zod parsing**
 
-- [ ] **Step 4: Implement the strict manifest model**
-
-In `manifest.ts`, define discriminated selectors and operations so impossible selector combinations do not survive parsing:
+Define:
 
 ```ts
 export type NdsMutationComponentSelector =
@@ -248,55 +272,36 @@ export interface NdsReplaceComponentOperation {
   readonly type: "replace-component";
   readonly target: NdsMutationComponentSelector;
   readonly expectedOriginalSha256: string;
-  readonly replacement: Readonly<{
-    artifact: string;
-    sha256: string;
-  }>;
+  readonly replacement: Readonly<{ artifact: string; sha256: string }>;
 }
 ```
 
-Use strict Zod objects/unions. Require source and component SHA strings to match `/^[0-9a-f]{64}$/`. Accept byte hex case-insensitively only at parse time, require even non-zero length, normalize byte hex to lowercase, require expected/replacement lengths to match, and reject an operation whose normalized expected/replacement strings are identical.
+All Zod objects are `.strict()`. Source/component/artifact hashes match `/^[0-9a-f]{64}$/`. Byte hex accepts `[0-9A-Fa-f]` only at input, must be even/non-zero/equal-length, then normalizes lowercase. Reject an entire `replace-bytes` operation when normalized expected equals replacement.
 
-Artifact references must be portable workspace-relative POSIX paths: reject NUL, backslash, absolute paths, empty/`.`/`..` path segments, and leading/trailing slash. Output filenames must match:
+Artifact references are portable workspace-relative POSIX strings: no NUL, `\\`, leading `/`, trailing `/`, empty segment, `.` segment, or `..` segment. Output name matches `/^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.nds$/` and contains no separator.
 
-```ts
-/^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.nds$/
-```
+- [ ] **Step 5: Implement canonical serialization and loading**
 
-and must contain no path separator.
-
-- [ ] **Step 5: Implement canonical serialization and manifest hashing**
-
-Normalize operations by canonical operation JSON, then sort that canonical string lexicographically. Serialize objects with lexicographically sorted object keys and arrays in their normalized order. The canonical manifest string has no whitespace and no trailing newline.
+Canonicalize objects by lexicographically sorted keys. Canonicalize each normalized operation independently, sort operations lexicographically by that canonical operation string, then serialize the normalized manifest without whitespace/newline.
 
 ```ts
 export interface LoadedNdsMutationManifest {
-  readonly manifestPath: string; // internal absolute path only
-  readonly workspaceRelativePath: string; // forward-slash normalized
+  readonly manifestPath: string;             // internal absolute only
+  readonly workspaceRelativePath: string;    // deterministic/report safe
   readonly manifest: NdsMutationManifestV1;
   readonly canonicalJson: string;
   readonly sha256: string;
 }
 ```
 
-`loadNdsMutationManifest()` must resolve the manifest through `resolveInside`, require a regular file, parse UTF-8 JSON, normalize it, and compute:
+`loadNdsMutationManifest()` resolves via `resolveInside`, requires a regular file, parses UTF-8 JSON, converts path/JSON/Zod failures to `mutation-manifest-invalid`, normalizes, and hashes canonical UTF-8 bytes with SHA-256.
 
-```ts
-createHash("sha256").update(canonicalJson, "utf8").digest("hex")
-```
-
-The deterministic report layer must later use `workspaceRelativePath`, never `manifestPath`.
-
-- [ ] **Step 6: Complete the shared mutation fixture helper and run GREEN**
-
-Run:
+- [ ] **Step 6: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-manifest.test.ts
 npm run typecheck
 ```
-
-Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -310,66 +315,62 @@ git commit -m "feat: define strict NDS mutation manifests"
 
 ---
 
-### Task 2: Resolve Canonical Mutation Targets and Immutable Structural Ranges
+### Task 2: Canonical Target Resolution and Structural Exclusion
 
 **Files:**
 - Create: `src/services/nds/mutation/selectors.ts`
 - Create: `tests/nds-mutation-selectors.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsRomMap`, `resolveRuntimeAddress()`, and manifest selector types from Task 1.
-- Produces:
-  - `NdsMutationOverlayOwner`
-  - `NdsResolvedMutationComponent`
-  - `NdsResolvedMutationRange`
-  - `resolveNdsMutationComponent(map, selector)`
-  - `resolveNdsMutationByteTarget(map, target, byteLength)`
-  - `ndsImmutableStructuralRanges(map)`
-  - `assertMutationRangeOutsideStructure(map, start, end)`
+- Consumes `NdsRomMap`, `resolveRuntimeAddress()`, Task-1 selectors.
+- Produces `NdsMutationPhysicalRange`, `NdsMutationOverlayOwner`, `NdsResolvedMutationComponent`, `NdsResolvedMutationRange`.
+- Produces `resolveNdsMutationComponent(map, selector)`, `resolveNdsMutationByteTarget(map, target, byteLength)`, `ndsImmutableStructuralRanges(map)`, `assertMutationRangeOutsideStructure(map, start, end)`.
 
-- [ ] **Step 1: Write failing selector tests**
-
-Cover ARM9/ARM7 relative targets, overlay targets, NitroFS ID/path targets, unique runtime targets, exact-overlay disambiguation, main-runtime ambiguity rejection, boundary crossing, compressed-overlay byte-edit rejection, and NitroFS aliases of compressed overlay backing.
+- [ ] **Step 1: Write RED selector tests**
 
 ```ts
-test("resolves an exact uncompressed overlay relative byte range", async () => {
-  const { map } = await createMutationFixture();
-  const target = resolveNdsMutationByteTarget(
-    map,
-    { component: "arm9-overlay", overlayId: 2, relativeOffset: 4 },
+test("resolves an uncompressed overlay relative byte range", async () => {
+  const fixture = await createMutationFixture();
+  const resolved = resolveNdsMutationByteTarget(
+    fixture.map,
+    { component: "arm9-overlay", overlayId: fixture.uncompressedOverlayId, relativeOffset: 4 },
     2,
   );
-  assert.equal(target.romStart, target.component.romStart + 4);
-  assert.equal(target.romEnd, target.romStart + 2);
-  assert.equal(target.component.overlayId, 2);
+  assert.equal(resolved.romStart, fixture.uncompressedOverlayRomOffset + 4);
+  assert.equal(resolved.romEnd, resolved.romStart + 2);
 });
 
-test("rejects byte edits through a NitroFS alias of a compressed overlay", async () => {
-  const { map, compressedFileId } = await createMutationFixture();
+test("rejects byte edits through a compressed-overlay NitroFS alias", async () => {
+  const fixture = await createMutationFixture();
   assert.throws(
     () => resolveNdsMutationByteTarget(
-      map,
-      { component: "nitrofs-file", fileId: compressedFileId, relativeOffset: 0 },
+      fixture.map,
+      { component: "nitrofs-file", fileId: fixture.compressedOverlayFileId, relativeOffset: 0 },
       2,
     ),
-    (error: unknown) => error instanceof NdsError && error.category === "unsupported-mutation-target",
+    (error: unknown) => error instanceof NdsError
+      && error.category === "unsupported-mutation-target",
   );
 });
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
+Also cover ARM9/ARM7 relative targets, NitroFS ID/path equivalence, unknown IDs/paths, unique runtime target, main runtime address overlapping an overlay, exact overlay-ID disambiguation, BSS/runtime-only address, derived compressed runtime address, range crossing component end, and structural overlap.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-selectors.test.ts
 ```
 
-Expected: FAIL because `selectors.ts` does not exist.
-
-- [ ] **Step 3: Implement canonical component resolution**
-
-Use the canonical map rather than accepting physical offsets from the manifest.
+- [ ] **Step 3: Implement physical/component types**
 
 ```ts
+export interface NdsMutationPhysicalRange {
+  readonly start: number;
+  readonly end: number;
+  readonly label: string;
+}
+
 export interface NdsMutationOverlayOwner {
   readonly processor: "arm9" | "arm7";
   readonly overlayId: number;
@@ -388,13 +389,7 @@ export interface NdsResolvedMutationComponent {
   readonly compressed: boolean;
   readonly overlayOwners: readonly NdsMutationOverlayOwner[];
 }
-```
 
-For NitroFS targets, derive `overlayOwners` by matching the selected FAT `fileId` against both overlay tables. Sort owners by processor then overlay ID for deterministic output.
-
-- [ ] **Step 4: Implement byte-range and runtime-address resolution**
-
-```ts
 export interface NdsResolvedMutationRange {
   readonly component: NdsResolvedMutationComponent;
   readonly relativeOffset: number;
@@ -404,89 +399,80 @@ export interface NdsResolvedMutationRange {
 }
 ```
 
-Rules:
+For NitroFS selection, derive overlay owners by file ID across both overlay tables. Sort owners by processor then ID. `compressed` is true for an exact compressed-overlay selector **or** a NitroFS component with any compressed overlay owner.
 
-- `relativeOffset` must be a non-negative safe integer and `relativeOffset + byteLength <= component.size`.
-- ARM9/ARM7 runtime addressing is accepted only when `resolveRuntimeAddress()` returns one exact `resolved` candidate matching that main component; if overlays overlap it, reject with `ambiguous-runtime-target`.
-- Exact overlay selectors may filter an `ambiguous-runtime-address` result only to their exact processor/overlay ID; exactly one matching `rom-file-backed` uncompressed candidate is required.
-- Runtime-only/BSS and `derived-overlay` candidates are not writable byte sources.
-- Any byte edit whose selected component is a compressed overlay, or whose NitroFS file is backing any compressed overlay, is rejected with `unsupported-mutation-target`.
+- [ ] **Step 4: Implement runtime/relative range rules**
 
-- [ ] **Step 5: Implement immutable structural range computation**
+- Relative offset is a non-negative safe integer; `relativeOffset + byteLength <= component.size`.
+- Main runtime selectors require `resolveRuntimeAddress()` to return one exact `resolved` candidate for that main component. Any main/overlay ambiguity fails `ambiguous-runtime-target`.
+- Exact overlay selectors may filter an `ambiguous-runtime-address` result to the requested processor/overlay ID; exactly one `rom-file-backed`, uncompressed candidate is required.
+- BSS/runtime-only/derived-overlay runtime candidates cannot become byte-write ranges.
+- Byte edits to a compressed overlay or NitroFS backing any compressed overlay fail `unsupported-mutation-target`.
 
-Use the exact ranges:
+- [ ] **Step 5: Implement immutable structural intervals**
 
-```ts
-header: [0, Math.min(0x200, map.fileSize))
-fnt: map.header.fnt
-fat: map.header.fat
-arm9-overlay-table: map.header.arm9OverlayTable
-arm7-overlay-table: map.header.arm7OverlayTable
+Generate, sort, and merge these non-empty intervals:
+
+```text
+[0, min(0x200, fileSize))
+FNT
+FAT
+ARM9 overlay table
+ARM7 overlay table
 ```
 
-Drop zero-length ranges, sort by start/end, merge overlapping/adjacent ranges for byte comparison, and make `assertMutationRangeOutsideStructure()` reject any intersection with `structural-metadata-mutation`.
+`assertMutationRangeOutsideStructure()` rejects any intersection with `structural-metadata-mutation`. Apply it to byte ranges and entire whole-component ranges.
 
-Apply this check to the complete physical range of both byte targets and whole components. This fails closed on malformed/custom layouts where an otherwise canonical file overlaps metadata.
-
-- [ ] **Step 6: Run selector tests and typecheck**
+- [ ] **Step 6: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-selectors.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/nds/mutation/selectors.ts \
-        tests/nds-mutation-selectors.test.ts
+git add src/services/nds/mutation/selectors.ts tests/nds-mutation-selectors.test.ts
 git commit -m "feat: resolve canonical NDS mutation targets"
 ```
 
 ---
 
-### Task 3: Enforce Original and Replacement Guards
+### Task 3: Source, Original-Byte, Component, Artifact, and Compressed Guards
 
 **Files:**
 - Create: `src/services/nds/mutation/guards.ts`
 - Create: `tests/nds-mutation-guards.test.ts`
 
 **Interfaces:**
-- Consumes: loaded manifest operations and resolved targets from Tasks 1–2; existing `readExact()`, `hashFileSha256()`, `decodeNdsBlz()`.
-- Produces:
-  - `GuardedNdsByteOperation`
-  - `GuardedNdsComponentOperation`
-  - `GuardedNdsMutationOperation`
-  - `guardNdsMutationOperation(map, workspaceRoot, index, operation): Promise<GuardedNdsMutationOperation>`
-  - `assertNdsMutationSourceIdentity(map, expectedSha256): Promise<void>`
+- Produces `GuardedNdsByteOperation`, `GuardedNdsComponentOperation`, `GuardedNdsMutationOperation`.
+- Produces `assertNdsMutationSourceIdentity(map, expectedSha256): Promise<void>`.
+- Produces `guardNdsMutationOperation(map, workspaceRoot, index, operation): Promise<GuardedNdsMutationOperation>`.
 
-- [ ] **Step 1: Write failing guard tests**
+- [ ] **Step 1: Write RED guard tests**
 
-Include exact byte success/failure, component SHA success/failure, missing artifact, artifact path escape, artifact hash mismatch, wrong size, no-op whole-component replacement, valid compressed stored replacement, malformed BLZ replacement, and compressed NitroFS alias validation.
+Use the explicit fixture API. Include exact byte pass/stale failure, source SHA mismatch, component SHA pass/stale failure, artifact missing, artifact hash mismatch, wrong artifact size, no-op whole-component replacement, valid compressed stored replacement, malformed compressed replacement, and compressed NitroFS alias validation.
 
 ```ts
-test("fails before mutation when expected original bytes are stale", async () => {
+test("fails a stale original-byte guard", async () => {
   const fixture = await createMutationFixture();
   await assert.rejects(
-    guardNdsMutationOperation(
-      fixture.map,
-      fixture.directory,
-      0,
-      {
-        type: "replace-bytes",
-        target: { component: "arm9", relativeOffset: 0 },
-        expected: "ffff",
-        replacement: "1234",
-      },
-    ),
-    (error: unknown) => error instanceof NdsError && error.category === "original-byte-guard-failed",
+    guardNdsMutationOperation(fixture.map, fixture.directory, 0, {
+      type: "replace-bytes",
+      target: { component: "arm9", relativeOffset: 0 },
+      expected: "ffff",
+      replacement: "1234",
+    }),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "original-byte-guard-failed",
   );
 });
 ```
 
-- [ ] **Step 2: Run the tests and confirm RED**
+Artifact traversal/absolute-path syntax is already rejected by Task 1 and should be tested there rather than bypassing the parsed manifest type here.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-guards.test.ts
@@ -494,62 +480,54 @@ node --test --import tsx tests/nds-mutation-guards.test.ts
 
 - [ ] **Step 3: Implement source and byte guards**
 
-`assertNdsMutationSourceIdentity()` must hash `map.romPath` and require both:
+`assertNdsMutationSourceIdentity()` requires both `map.sha256 === expectedSha256` and a fresh `hashFileSha256(map.romPath) === expectedSha256`; mismatch is `source-rom-mismatch`.
+
+A byte operation resolves through Task 2, opens source read-only, calls existing `readExact()`, and byte-compares against `Buffer.from(expected, "hex")`. Mismatch is `original-byte-guard-failed`.
+
+- [ ] **Step 4: Implement component/artifact guards**
+
+For `replace-component`:
+
+1. resolve the component and structural exclusion;
+2. hash exactly `[component.romStart, component.romEnd)` and compare to `expectedOriginalSha256`;
+3. resolve `replacement.artifact` with `resolveInside(workspaceRoot, ...)`;
+4. require a regular file;
+5. require actual replacement SHA equals the manifest SHA;
+6. require exact artifact size equals stored component size;
+7. reject replacement SHA equal to actual original component SHA as `mutation-manifest-invalid` no-op.
+
+Return both internal absolute artifact path and deterministic workspace-relative artifact path in the guarded operation; only the latter may be serialized later.
+
+- [ ] **Step 5: Validate compressed stored artifacts pre-write**
+
+For every compressed overlay owner, find the canonical overlay record, read the replacement bytes, select `replacementBytes.subarray(0, overlay.compressedSize)`, and call:
 
 ```ts
-map.sha256 === expectedSha256
-actualSha256 === expectedSha256
-```
-
-A byte operation must resolve through Task 2, open the source ROM read-only, read exactly the expected range, and compare to `Buffer.from(operation.expected, "hex")` with exact byte equality.
-
-- [ ] **Step 4: Implement component and replacement artifact guards**
-
-For whole-component replacement:
-
-1. resolve the exact canonical component;
-2. reject structural overlap;
-3. hash the exact stored source component range and compare to `expectedOriginalSha256`;
-4. resolve the artifact via `resolveInside(workspaceRoot, operation.replacement.artifact)`;
-5. require a regular file;
-6. require exact artifact SHA-256;
-7. require exact artifact size equal to component stored size;
-8. reject a replacement whose actual SHA equals the source component SHA as a no-op.
-
-Return only a workspace-relative forward-slash artifact path in deterministic evidence, while retaining an internal absolute artifact path for later application.
-
-- [ ] **Step 5: Validate compressed replacement artifacts without changing the source**
-
-For every compressed overlay owner of the physical component, read the replacement artifact and validate its stored prefix using the owner metadata:
-
-```ts
-const compressedPayload = replacementBytes.subarray(0, overlay.compressedSize);
 const decoded = decodeNdsBlz(compressedPayload, overlay.ramSize);
-assert.equal(decoded.bytes.length, overlay.ramSize);
+if (decoded.bytes.length !== overlay.ramSize) {
+  throw new NdsError("compressed-overlay-invalid", "Decoded overlay size mismatch");
+}
 ```
 
-Convert BLZ/geometry failures to `NdsError("compressed-overlay-invalid", ...)` at this mutation boundary. If one FAT file backs multiple compressed overlays, the artifact must validate for every such owner.
+Convert BLZ/geometry failures at this boundary to `compressed-overlay-invalid`. A shared FAT file must validate against every compressed owner.
 
-- [ ] **Step 6: Run guard tests and typecheck**
+- [ ] **Step 6: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-guards.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/nds/mutation/guards.ts \
-        tests/nds-mutation-guards.test.ts
+git add src/services/nds/mutation/guards.ts tests/nds-mutation-guards.test.ts
 git commit -m "feat: guard NDS mutation inputs"
 ```
 
 ---
 
-### Task 4: Compile the Conflict-Free Deterministic Mutation Plan
+### Task 4: Conflict Detection and Deterministic Read-Only Planning
 
 **Files:**
 - Create: `src/services/nds/mutation/conflicts.ts`
@@ -557,66 +535,50 @@ git commit -m "feat: guard NDS mutation inputs"
 - Create: `tests/nds-mutation-planner.test.ts`
 
 **Interfaces:**
-- Consumes: `LoadedNdsMutationManifest`, guarded operations, immutable structural ranges.
-- Produces:
-  - `assertNoNdsMutationConflicts(operations)`
-  - `NdsResolvedMutationPlan`
-  - `compileNdsMutationPlan(map, workspaceRoot, loadedManifest): Promise<NdsResolvedMutationPlan>`
-  - `serializeResolvedNdsMutationPlan(plan): unknown` for deterministic/redacted MCP/report output.
+- Produces `assertNoNdsMutationConflicts(operations): void`.
+- Produces `NdsResolvedMutationPlan`.
+- Produces `compileNdsMutationPlan(map, workspaceRoot, loadedManifest): Promise<NdsResolvedMutationPlan>`.
+- Produces `serializeResolvedNdsMutationPlan(plan): unknown`.
 
-- [ ] **Step 1: Write failing planner/conflict tests**
+- [ ] **Step 1: Write RED conflict/planner tests**
 
-Cover disjoint operations, one-byte overlap, containment, identical overlap, adjacent ranges, whole-component + byte overlap, selector aliases resolving to the same physical range, source SHA mismatch, source mutation during preflight, deterministic operation ordering, and build-ID stability.
+Test disjoint, adjacent, one-byte overlap, containment, identical overlap, whole-component + byte overlap, overlay-vs-NitroFS physical alias collision, source SHA mismatch, source change during preflight, operation-order normalization, plan serialization with no absolute path, and build-ID stability.
 
-```ts
-test("rejects physical aliases even when selectors differ", async () => {
-  const fixture = await createMutationFixture();
-  const loaded = await fixture.loadManifest({
-    operations: [
-      fixture.replaceUncompressedOverlayById(),
-      fixture.replaceSameBackingByNitroFsFileId(),
-    ],
-  });
-  await assert.rejects(
-    compileNdsMutationPlan(fixture.map, fixture.directory, loaded),
-    (error: unknown) => error instanceof NdsError && error.category === "mutation-overlap",
-  );
-});
-```
+For the alias collision test, create one replacement artifact and two `replace-component` operations: one targets `arm9-overlay` ID 2 and one targets NitroFS file ID 1. Both resolve to `0x1300..0x1340` and must fail `mutation-overlap`.
 
-- [ ] **Step 2: Run tests and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-planner.test.ts
 ```
 
-- [ ] **Step 3: Implement physical interval conflict detection**
+- [ ] **Step 3: Implement interval collision detection**
 
-Sort operations by `romStart`, then `romEnd`, then normalized operation index. Reject whenever:
+Sort guarded operations by physical start, physical end, normalized operation index. Reject whenever:
 
 ```ts
 next.romStart < previous.romEnd
 ```
 
-Adjacent ranges (`next.romStart === previous.romEnd`) are allowed. Do not special-case identical replacements: all overlap fails.
+Adjacent intervals pass. No identical-overlap exception exists.
 
-- [ ] **Step 4: Implement the read-only planner**
+- [ ] **Step 4: Implement planner sequencing**
 
-`compileNdsMutationPlan()` must:
+`compileNdsMutationPlan()`:
 
-1. call `assertNdsMutationSourceIdentity()` before operation work;
-2. compare `loadedManifest.manifest.source.sha256` to `map.sha256` and fail with `source-rom-mismatch`;
-3. guard every normalized operation;
-4. reject every physical conflict;
-5. compute immutable structural ranges;
-6. hash the source ROM again after preflight and require the same SHA;
-7. sort the application view by physical start without changing each normalized operation index.
-
-Define:
+```text
+assert source identity
+→ require manifest source SHA == map SHA
+→ guard every normalized operation
+→ reject all physical overlap
+→ compute immutable structural ranges
+→ fresh source SHA check again
+→ build deterministic plan
+```
 
 ```ts
 export interface NdsResolvedMutationPlan {
-  readonly sourceRomPath: string; // internal only
+  readonly sourceRomPath: string;             // internal only
   readonly sourceWorkspacePath: string;
   readonly sourceSha256: string;
   readonly sourceSha256Prefix: string;
@@ -630,34 +592,33 @@ export interface NdsResolvedMutationPlan {
 }
 ```
 
+Keep normalized operation indices stable; separately sort the returned application view by physical range so application order cannot affect output.
+
 - [ ] **Step 5: Lock the exact build-ID algorithm**
 
-Use the actual verified artifact SHA values from guarded component operations in normalized operation order. Let:
+Take actual verified replacement SHA values from component operations in normalized operation-index order:
 
 ```ts
-artifactShas = planOperations
-  .filter((op) => op.type === "replace-component")
+const artifactShas = operations
+  .filter((op): op is GuardedNdsComponentOperation => op.type === "replace-component")
+  .sort((a, b) => a.index - b.index)
   .map((op) => op.replacement.sha256);
 ```
 
-Compute the full 64-hex build ID as:
+Build ID is the full lowercase SHA-256 of UTF-8 bytes:
 
 ```ts
-sha256(
-  Buffer.from([
-    "re-mcp-nds-mutation-build-v1",
-    sourceSha256,
-    manifestSha256,
-    ...artifactShas,
-  ].join("\0"), "utf8"),
-)
+[
+  "re-mcp-nds-mutation-build-v1",
+  sourceSha256,
+  manifestSha256,
+  ...artifactShas,
+].join("\0")
 ```
 
-where `sha256()` is lowercase hex. No timestamps, paths outside normalized workspace-relative manifest data, process IDs, or random values participate.
+- [ ] **Step 6: Implement redacted deterministic plan serialization**
 
-- [ ] **Step 6: Implement deterministic/redacted plan serialization**
-
-`serializeResolvedNdsMutationPlan()` must omit internal absolute paths and Buffer objects. It should expose workspace-relative source/manifest/artifact paths, canonical identities, physical ranges, guards/hashes, structural ranges, source identity, manifest hash, build ID, and output filename in stable property order.
+`serializeResolvedNdsMutationPlan()` includes workspace-relative source/manifest/artifact paths, canonical component identities, physical ranges, guards, hashes, structural ranges, source identity, manifest hash, build ID, and output name. It must not expose `sourceRomPath` or internal absolute artifact paths.
 
 - [ ] **Step 7: Run PR-A verification**
 
@@ -673,8 +634,6 @@ npm run build
 git diff --check
 ```
 
-Expected: all pass. Confirm no file outside the new planning package/tests plus `errors.ts` and the approved docs changed.
-
 - [ ] **Step 8: Commit**
 
 ```bash
@@ -684,13 +643,13 @@ git add src/services/nds/mutation/conflicts.ts \
 git commit -m "feat: compile guarded NDS mutation plans"
 ```
 
-## PR A merge gate
+## PR A Merge Gate
 
-Create PR A from the implementation branch based on `design/controlled-nds-mutation-core` to `main`. The PR must contain the approved spec/plan plus Tasks 1–4 only. Verify the exact PR head with CI and Package; review changed filenames and unresolved threads; then **stop and request explicit merge authorization**. Do not begin PR B from a stacked branch.
+Open PR A to `main` containing the approved spec/plan and Tasks 1–4 only. Verify exact head, CI, Package, changed filenames, and unresolved review threads. **Stop for explicit merge authorization.** PR B must not branch from the unmerged PR-A head.
 
 ---
 
-### Task 5: Stage an Immutable ROM Copy and Apply Only Resolved Writes
+### Task 5: Controlled Staging and the Sole Staged-ROM Writer
 
 **Files:**
 - Create: `src/services/nds/mutation/staging.ts`
@@ -698,79 +657,75 @@ Create PR A from the implementation branch based on `design/controlled-nds-mutat
 - Create: `tests/nds-mutation-apply.test.ts`
 
 **Interfaces:**
-- Consumes: `NdsResolvedMutationPlan` from Task 4.
-- Produces:
-  - `NdsMutationStage`
-  - `createNdsMutationStage(plan, workspaceRoot): Promise<NdsMutationStage>`
-  - `cleanupNdsMutationStage(stage): Promise<void>`
-  - `applyNdsMutationPlan(plan, stage): Promise<void>`
+- Produces `NdsMutationStage`, `createNdsMutationStage(plan, workspaceRoot): Promise<NdsMutationStage>`, `cleanupNdsMutationStage(stage): Promise<void>`.
+- Produces `NdsMutationApplyIo`, `applyNdsMutationPlan(plan, stage, io?): Promise<void>`.
 
-- [ ] **Step 1: Write failing staging/application tests**
+- [ ] **Step 1: Write RED staging/application tests**
 
-Cover staged copy identity, source immutability, byte edits, whole-component replacement, multiple disjoint writes, exact output size, failure cleanup, and enforcement that the writer receives only resolved operations.
+Build a one-operation plan explicitly in the test:
 
 ```ts
-test("applies disjoint operations only to the staged ROM", async () => {
-  const fixture = await createMutationFixture();
-  const sourceBefore = await hashFileSha256(fixture.romPath);
-  const plan = await fixture.compilePlanWithArm9AndNitroFsEdits();
-  const stage = await createNdsMutationStage(plan, fixture.directory);
-  await applyNdsMutationPlan(plan, stage);
-
-  assert.equal(await hashFileSha256(fixture.romPath), sourceBefore);
-  assert.notEqual(await hashFileSha256(stage.stagedRomPath), sourceBefore);
+const expected = fixture.sourceBytes.subarray(
+  fixture.arm9RomOffset,
+  fixture.arm9RomOffset + 2,
+).toString("hex");
+const replacement = expected === "1234" ? "5678" : "1234";
+const manifestPath = await fixture.writeManifestDocument({
+  format: "re-mcp-nds-mutation",
+  formatVersion: 1,
+  source: { sha256: fixture.sourceSha256 },
+  output: { filename: "apply-test.nds" },
+  operations: [{
+    type: "replace-bytes",
+    target: { component: "arm9", relativeOffset: 0 },
+    expected,
+    replacement,
+  }],
 });
+const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+const plan = await compileNdsMutationPlan(fixture.map, fixture.directory, loaded);
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+Then assert source hash unchanged, staged initial hash equals source, staged hash changes after apply, output size unchanged, and expected staged bytes present. Add a second disjoint operation and a whole-component artifact case.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-apply.test.ts
 ```
 
-- [ ] **Step 3: Implement controlled staging paths**
+- [ ] **Step 3: Implement staging**
 
-Final path geometry is fixed:
+Final root:
 
 ```text
 output/nds/<source-sha-prefix>/<build-id>/
 ```
 
-The temporary root must be a sibling whose basename begins with `.<build-id>.tmp-`. Only `staging.ts` constructs these paths. The output ROM path inside staging is exactly `plan.outputFilename`.
+Temporary root is a sibling named `.<build-id>.tmp-<process-local-unique-suffix>`; the suffix is not serialized or used in build identity. `createNdsMutationStage()` resolves all paths inside workspace, requires staged/source paths differ, creates the temporary directory, copies source read-only to `plan.outputFilename`, fsyncs/closes the staged file, and verifies staged SHA equals `plan.sourceSha256`. Failures are `staging-failed` and remove temp best-effort.
 
-`createNdsMutationStage()` must:
-
-- resolve the final/staging roots inside `workspaceRoot`;
-- require staged and source ROM paths to differ;
-- create the temporary directory with exclusive semantics;
-- copy the source ROM without opening the source for write;
-- fsync/close the staged ROM;
-- verify its SHA equals `plan.sourceSha256` before returning.
-
-Convert staging failures to `staging-failed` and best-effort remove the temporary directory.
-
-- [ ] **Step 4: Implement the only staged-ROM writer**
-
-`apply.ts` is the only module permitted to open the staged ROM with `r+`.
-
-For `replace-bytes`, decode `replacement` and perform a complete positional write at the resolved `romStart`.
-
-For `replace-component`, open the already-guarded artifact read-only and copy it into the exact staged component range in bounded chunks. Never derive a new position from manifest data inside `apply.ts`.
-
-After all writes:
+- [ ] **Step 4: Implement the exact failure-injection seam and writer**
 
 ```ts
-await stagedHandle.sync();
-await stagedHandle.close();
+export interface NdsMutationApplyIo {
+  open(path: string, flags: "r" | "r+"): Promise<FileHandle>;
+}
 ```
 
-Then require `stat(stagedRomPath).size === plan.sourceSize`.
+`applyNdsMutationPlan(plan, stage, io = defaultApplyIo)` is the only mutation-package function that opens the staged ROM with `"r+"`.
 
-- [ ] **Step 5: Add failure injection and source-write regression coverage**
+- `replace-bytes`: positional full write of decoded replacement bytes at resolved `romStart`.
+- `replace-component`: open guarded artifact with `"r"`, copy exactly component size in bounded chunks to resolved staged range.
+- Do not reinterpret selectors or derive positions from raw manifest data.
+- Sync/close staged handle after all operations; require staged size equals `plan.sourceSize`.
 
-Expose a narrow injected filesystem/writer seam only if tests need it. A forced write failure after one successful staged operation must leave the source hash unchanged; higher-level build cleanup is tested later. Add a source-contract assertion that `apply.ts` never calls `open(plan.sourceRomPath, "r+")` or accepts a caller-selected destination.
+The test `NdsMutationApplyIo` throws on the second staged write after recording the first. Assert the source SHA is still unchanged. This seam is test-only injection support, not MCP surface.
 
-- [ ] **Step 6: Run focused tests and typecheck**
+- [ ] **Step 5: Add source-contract assertions**
+
+Read `src/services/nds/mutation/*.ts` in the test and assert only `apply.ts` contains an `"r+"` open and that no mutation service exports a generic `(romOffset, bytes)` write API.
+
+- [ ] **Step 6: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-apply.test.ts
@@ -788,129 +743,107 @@ git commit -m "feat: stage and apply NDS mutations"
 
 ---
 
-### Task 6: Independently Verify Structure, Operations, Compressed Overlays, and the Complete ROM Diff
+### Task 6: Independent Output Verification and Whole-ROM Diff Proof
 
 **Files:**
 - Create: `src/services/nds/mutation/verify.ts`
 - Create: `tests/nds-mutation-verify.test.ts`
 
 **Interfaces:**
-- Consumes: source `NdsRomMap`, `NdsResolvedMutationPlan`, staged/output ROM path, existing `readNdsRomMap()` and `createNdsOverlayRuntimeContext()`.
-- Produces:
-  - `NdsMutationVerificationResult`
-  - `verifyNdsMutationOutput(sourceMap, plan, outputRomPath): Promise<NdsMutationVerificationResult>`
+- Produces `NdsMutationOperationVerification`, `NdsCompressedOverlayVerification`, `NdsMutationVerificationResult`.
+- Produces `verifyNdsMutationOutput(sourceMap, plan, outputRomPath): Promise<NdsMutationVerificationResult>`.
 
-- [ ] **Step 1: Write failing verification tests**
+- [ ] **Step 1: Write RED verification tests**
 
-Minimum cases:
+Create a plan/stage/apply sequence explicitly using Task-5 code; do not use an undeclared fixture shortcut. Test valid output, size mismatch, output parse failure, header/FAT/FNT/overlay-table mutation, parser-valid geometry change, missing requested replacement, wrong component replacement hash, one unexpected unrelated byte, valid compressed replacement, invalid compressed output, and source mutation after planning.
 
-- valid byte-edit output passes;
-- output size mismatch fails;
-- output parse failure maps to `post-build-parse-failed`;
-- header/FAT/FNT/overlay-table corruption fails;
-- component geometry change fails even if parser accepts it;
-- requested byte output missing fails;
-- replacement component hash mismatch fails;
-- unexpected byte outside all operations fails;
-- valid compressed replacement decodes through the staged/output canonical map;
-- invalid compressed replacement fails;
-- source changed after planning fails;
-- valid output reports `unexpectedChangedBytes === 0`.
-
-```ts
-test("rejects one unexpected changed byte outside every approved operation", async () => {
-  const fixture = await createMutationFixture();
-  const { plan, stagedRomPath } = await fixture.buildUnverifiedStage();
-  await fixture.flipByte(stagedRomPath, fixture.unrelatedRomOffset);
-
-  await assert.rejects(
-    verifyNdsMutationOutput(fixture.map, plan, stagedRomPath),
-    (error: unknown) => error instanceof NdsError && error.category === "unexpected-rom-diff",
-  );
-});
-```
-
-- [ ] **Step 2: Run and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-verify.test.ts
 ```
 
-- [ ] **Step 3: Implement canonical output and structural verification**
-
-`verifyNdsMutationOutput()` must:
-
-1. hash the source and require `plan.sourceSha256` before output work;
-2. require exact output size;
-3. call `readNdsRomMap(outputRomPath)` and translate parser failures to `post-build-parse-failed`;
-4. compare every immutable structural byte range source→output;
-5. compare structural geometry excluding expected path/hash differences.
-
-Geometry comparison must include:
-
-```text
-header fields and executable ranges
-FAT entries
-filesystem file IDs/paths/start/end/size
-overlay metadata for ARM9 and ARM7
-executableRanges
-file count
-overlay counts
-```
-
-Any difference is `structural-map-changed`.
-
-- [ ] **Step 4: Implement per-operation verification**
-
-For byte operations, read the output range and require exact replacement bytes.
-
-For component replacements, hash the exact output stored component range and require the verified replacement SHA.
-
-For every compressed overlay owner of a replaced physical component, construct a fresh runtime context from the **output** map and call:
+- [ ] **Step 3: Define the exact verification result**
 
 ```ts
-await createNdsOverlayRuntimeContext(outputMap).getCompressedOverlay(processor, overlayId);
+export interface NdsMutationOperationVerification {
+  readonly index: number;
+  readonly status: "passed";
+  readonly romStart: number;
+  readonly romEnd: number;
+}
+
+export interface NdsCompressedOverlayVerification {
+  readonly processor: "arm9" | "arm7";
+  readonly overlayId: number;
+  readonly status: "passed";
+  readonly runtimeSha256: string;
+}
+
+export interface NdsMutationVerificationResult {
+  readonly status: "passed";
+  readonly sourceSha256: string;
+  readonly outputSha256: string;
+  readonly sourceSize: number;
+  readonly outputSize: number;
+  readonly sourceUnchanged: true;
+  readonly structuralMetadataUnchanged: true;
+  readonly structuralMapUnchanged: true;
+  readonly changedByteCount: number;
+  readonly unexpectedChangedBytes: 0;
+  readonly operations: readonly NdsMutationOperationVerification[];
+  readonly compressedOverlays: readonly NdsCompressedOverlayVerification[];
+}
 ```
 
-Require stored size/offset and derived runtime geometry to match canonical overlay metadata. Translate mutation-boundary failures to `compressed-overlay-invalid`.
+- [ ] **Step 4: Implement canonical parse/structure/per-operation checks**
 
-- [ ] **Step 5: Implement streaming complete-ROM diff attribution**
+Sequence:
 
-Read source and output in fixed-size chunks instead of loading whole ROMs. Maintain operations sorted by physical range. For every byte where source differs from output:
+1. fresh source SHA must equal plan SHA;
+2. output file size must equal source size (`output-verification-failed` otherwise);
+3. `readNdsRomMap(outputRomPath)`; parse errors become `post-build-parse-failed`;
+4. compare every immutable structural byte interval source→output;
+5. compare source/output structural geometry excluding paths and ROM SHA;
+6. verify exact replacement bytes for every byte operation;
+7. verify exact replacement SHA for every component operation.
 
-1. increment `changedByteCount`;
-2. find the one containing approved operation interval;
-3. if no interval contains it, increment unexpected count and retain at most the first 16 unexpected offsets for the error;
-4. because overlap was already rejected, more than one owner is an internal invariant failure.
+Geometry equality includes header fields/executable metadata, FAT entries, filesystem IDs/paths/ranges/sizes, ARM9/ARM7 overlay metadata, executable ranges, file count, and overlay counts. Structural byte/geometry mismatch is `structural-map-changed`; requested output mismatch is `output-verification-failed`.
 
-If unexpected count is non-zero, throw `unexpected-rom-diff`.
+- [ ] **Step 5: Revalidate compressed replacements from the output map**
 
-The result must include `unexpectedChangedBytes: 0` on success.
+For each unique compressed overlay owner of a replaced physical component:
 
-- [ ] **Step 6: Revalidate source identity last**
+```ts
+const runtime = await createNdsOverlayRuntimeContext(outputMap)
+  .getCompressedOverlay(owner.processor, owner.overlayId);
+```
 
-After all output checks, hash the source one more time. A source change at any point invalidates the build with `source-rom-mismatch`, even if output verification otherwise passed.
+Require output stored range/size and runtime size/BSS geometry match the unchanged canonical overlay record. Convert mutation-boundary decode/geometry failure to `compressed-overlay-invalid`. Deduplicate owners and sort processor/overlay ID.
 
-- [ ] **Step 7: Run verification tests and typecheck**
+- [ ] **Step 6: Implement streaming complete-ROM diff attribution**
+
+Read source/output with read-only file handles in fixed-size chunks. Operations are already non-overlapping physical intervals. For each differing byte, increment `changedByteCount`; if no approved interval contains its absolute offset, increment unexpected count and retain only the first 16 unexpected offsets for the thrown error. Any unexpected count throws `unexpected-rom-diff`.
+
+After all output checks, hash source again. Any source change at any point is `source-rom-mismatch`. Successful return fixes `unexpectedChangedBytes` to literal `0`.
+
+- [ ] **Step 7: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-verify.test.ts
 npm run typecheck
 ```
 
-Expected: PASS.
-
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/services/nds/mutation/verify.ts \
-        tests/nds-mutation-verify.test.ts
+git add src/services/nds/mutation/verify.ts tests/nds-mutation-verify.test.ts
 git commit -m "feat: verify complete NDS mutation outputs"
 ```
 
 ---
 
-### Task 7: Emit Deterministic Evidence and Atomically Publish a Verified Build
+### Task 7: Deterministic Evidence and Atomic Publication
 
 **Files:**
 - Create: `src/services/nds/mutation/report.ts`
@@ -918,39 +851,23 @@ git commit -m "feat: verify complete NDS mutation outputs"
 - Create: `tests/nds-mutation-build.test.ts`
 
 **Interfaces:**
-- Consumes: planner, staging, application, verifier.
-- Produces:
-  - `NdsMutationBuildResult`
-  - `buildNdsMutation(map, workspaceRoot, loadedManifest): Promise<NdsMutationBuildResult>`
-  - deterministic metadata writers/readers used by Task 8.
+- Produces `NdsMutationBuildResult`.
+- Produces `buildNdsMutation(map, workspaceRoot, loadedManifest): Promise<NdsMutationBuildResult>`.
+- `report.ts` produces pure deterministic byte/string serializers for every evidence file so Task 8 can regenerate them in memory.
 
-- [ ] **Step 1: Write failing transaction/publication tests**
+- [ ] **Step 1: Write RED transaction/publication tests**
 
-Cover successful publication, no final directory before verification, cleanup on staging/apply/verification failure, deterministic metadata, source immutability, and two clean builds in separate workspaces yielding identical output ROM/evidence bytes.
+For each test, construct a one-byte ARM9 manifest using `fixture.sourceBytes` as shown in Task 5. Test successful publication, no final directory before verification, cleanup after forced apply/verify failure, source immutability, exact evidence filenames, no absolute paths in evidence, and two fixtures with identical bytes and identical relative layout producing byte-identical ROM/evidence files.
 
-```ts
-test("publishes only after full verification succeeds", async () => {
-  const fixture = await createMutationFixture();
-  const loaded = await fixture.loadValidManifest();
-  const result = await buildNdsMutation(fixture.map, fixture.directory, loaded);
-
-  assert.equal(result.verification.status, "passed");
-  assert.equal(result.reused, false);
-  assert.equal(await hashFileSha256(fixture.romPath), fixture.sourceSha256);
-  await readFile(result.outputRomPath);
-  await readFile(path.join(result.outputRoot, "verification.json"));
-});
-```
-
-- [ ] **Step 2: Run and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-build.test.ts
 ```
 
-- [ ] **Step 3: Implement deterministic report serialization**
+- [ ] **Step 3: Implement pure deterministic evidence serializers**
 
-The temporary build directory must contain exactly:
+The final directory contains exactly:
 
 ```text
 <outputFilename>
@@ -961,52 +878,41 @@ changed-components.json
 output.sha256
 ```
 
-Use deterministic property order and `JSON.stringify(value, null, 2) + "\n"`. Never serialize internal absolute paths.
+`mutation-manifest.json` is pretty-printed normalized manifest data, not original user whitespace/order. Other JSON is `JSON.stringify(value, null, 2) + "\n"` with explicitly constructed stable property order. No internal absolute path is included. `output.sha256` is exactly `<hash>  <outputFilename>\n`.
 
-`mutation-manifest.json` is the normalized manifest representation, not the user's original whitespace/key order.
+`changed-components.json` deduplicates physical components and sorts by ROM start then canonical identity.
 
-`output.sha256` is exactly:
+- [ ] **Step 4: Implement all-or-nothing build orchestration**
 
-```text
-<64-lowercase-hash>  <outputFilename>\n
-```
-
-`changed-components.json` deduplicates canonical physical components and sorts them by `romStart`, then component identity.
-
-- [ ] **Step 4: Implement all-or-nothing orchestration**
-
-`buildNdsMutation()` must always recompile full preflight rather than trusting a prior validate result. On a new build:
+`buildNdsMutation()` always compiles full preflight itself. New build path:
 
 ```text
 compile plan
-→ create stage
-→ apply
-→ verify
-→ write deterministic evidence
-→ fsync required files
-→ atomic rename temporary root to final root
+→ stage source copy
+→ apply resolved writes
+→ verify complete output
+→ write/sync deterministic evidence
+→ atomic rename temporary build root to final root
 ```
 
-On any exception before promotion, best-effort remove the temporary root and rethrow the structured error. Translate final rename/promotion failures to `publish-failed`.
+Any exception before promotion removes temp best-effort and publishes nothing. Promotion/rename errors become `publish-failed`.
 
-The final directory is never created piecemeal.
-
-- [ ] **Step 5: Implement result sanitization**
+- [ ] **Step 5: Define the build result**
 
 ```ts
 export interface NdsMutationBuildResult {
   readonly buildId: string;
   readonly reused: boolean;
-  readonly outputRoot: string;       // internal absolute; tools sanitize
-  readonly outputRomPath: string;    // internal absolute; tools sanitize
+  readonly outputRoot: string;      // internal absolute; tool sanitizes
+  readonly outputRomPath: string;   // internal absolute; tool sanitizes
   readonly outputSha256: string;
   readonly verification: NdsMutationVerificationResult;
 }
 ```
 
-Report files store only workspace-relative versions of output/source/manifest/artifact paths.
+No `reused` flag is serialized into deterministic evidence.
 
-- [ ] **Step 6: Run build tests and typecheck**
+- [ ] **Step 6: Run GREEN and typecheck**
 
 ```bash
 node --test --import tsx tests/nds-mutation-build.test.ts
@@ -1024,7 +930,7 @@ git commit -m "feat: publish verified NDS mutation builds"
 
 ---
 
-### Task 8: Revalidate Existing Builds and Support Safe Idempotent Reuse
+### Task 8: Existing-Build Revalidation and Idempotent Reuse
 
 **Files:**
 - Modify: `src/services/nds/mutation/build.ts`
@@ -1032,38 +938,24 @@ git commit -m "feat: publish verified NDS mutation builds"
 - Modify: `tests/nds-mutation-build.test.ts`
 
 **Interfaces:**
-- Produces:
-  - `verifyPublishedNdsMutationBuild(map, workspaceRoot, loadedManifest): Promise<NdsMutationBuildResult>`
-  - idempotent exact-build reuse from `buildNdsMutation()`.
+- Produces `verifyPublishedNdsMutationBuild(map, workspaceRoot, loadedManifest): Promise<NdsMutationBuildResult>`.
+- Updates `buildNdsMutation()` to reuse only a freshly revalidated exact deterministic build.
 
-- [ ] **Step 1: Add failing existing-build tests**
+- [ ] **Step 1: Add RED reuse/tamper tests**
+
+Construct the valid manifest explicitly as in Task 5, then:
 
 ```ts
-test("reuses an existing deterministic build only after full revalidation", async () => {
-  const fixture = await createMutationFixture();
-  const loaded = await fixture.loadValidManifest();
-  const first = await buildNdsMutation(fixture.map, fixture.directory, loaded);
-  const second = await buildNdsMutation(fixture.map, fixture.directory, loaded);
-  assert.equal(second.buildId, first.buildId);
-  assert.equal(second.reused, true);
-  assert.equal(second.outputSha256, first.outputSha256);
-});
-
-test("never overwrites a corrupt existing build with the same build id", async () => {
-  const fixture = await createMutationFixture();
-  const loaded = await fixture.loadValidManifest();
-  const first = await buildNdsMutation(fixture.map, fixture.directory, loaded);
-  await fixture.flipByte(first.outputRomPath, fixture.unrelatedRomOffset);
-  await assert.rejects(
-    buildNdsMutation(fixture.map, fixture.directory, loaded),
-    (error: unknown) => error instanceof NdsError && error.category === "publish-failed",
-  );
-});
+const first = await buildNdsMutation(fixture.map, fixture.directory, loaded);
+const second = await buildNdsMutation(fixture.map, fixture.directory, loaded);
+assert.equal(second.buildId, first.buildId);
+assert.equal(second.reused, true);
+assert.equal(second.outputSha256, first.outputSha256);
 ```
 
-Also test tampered `resolved-plan.json`, `verification.json`, `changed-components.json`, and `output.sha256` individually.
+Separate tests tamper the output ROM, `mutation-manifest.json`, `resolved-plan.json`, `verification.json`, `changed-components.json`, and `output.sha256`. Each subsequent build/verify must fail `publish-failed` and leave the existing final directory untouched.
 
-- [ ] **Step 2: Run and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-build.test.ts
@@ -1071,26 +963,23 @@ node --test --import tsx tests/nds-mutation-build.test.ts
 
 - [ ] **Step 3: Implement published-build revalidation**
 
-`verifyPublishedNdsMutationBuild()` must:
+`verifyPublishedNdsMutationBuild()`:
 
-1. compile full current preflight from source + manifest + artifacts;
-2. derive the deterministic final directory from source prefix/build ID;
-3. require exactly the expected output/evidence filenames;
-4. run `verifyNdsMutationOutput()` against the published `.nds`;
-5. regenerate the expected deterministic evidence in memory;
-6. byte-compare every evidence file with its expected serialization;
-7. return `reused: true` only if all checks pass.
+```text
+fresh full preflight from source+manifest+artifacts
+→ derive deterministic final root
+→ require exactly expected six entries
+→ fresh verifyNdsMutationOutput() on published ROM
+→ regenerate all expected evidence bytes in memory
+→ byte-compare every evidence file
+→ return reused:true only on exact success
+```
 
-Do not trust a previously written `verification.json` as proof.
+Do not use stored `verification.json` as proof; it is only compared after fresh verification.
 
-- [ ] **Step 4: Add exact-reuse behavior to build orchestration**
+- [ ] **Step 4: Integrate reuse into build**
 
-Before creating a stage, test whether the deterministic final root already exists. If absent, build normally. If present:
-
-- exact revalidation success → return the reused build;
-- any content/lineage/evidence mismatch → throw `publish-failed` and leave the existing directory untouched.
-
-Never delete or overwrite a divergent deterministic build automatically.
+Before staging, if final root is absent, build normally. If final root exists, call published-build revalidation. Exact success returns reused build. Any mismatch becomes `publish-failed`; do not delete, repair, or overwrite that directory.
 
 - [ ] **Step 5: Run full PR-B verification**
 
@@ -1105,8 +994,6 @@ npm run build
 git diff --check
 ```
 
-Expected: PASS, including source-before/source-after invariants in every write-capable test.
-
 - [ ] **Step 6: Commit**
 
 ```bash
@@ -1116,13 +1003,13 @@ git add src/services/nds/mutation/build.ts \
 git commit -m "feat: revalidate deterministic NDS builds"
 ```
 
-## PR B merge gate
+## PR B Merge Gate
 
-Branch PR B from `main` only after PR A is merged. PR B contains Tasks 5–8. Verify the exact PR head with CI and Package, review the complete diff and unresolved threads, and **stop for explicit merge authorization**. Do not begin PR C from the PR-B branch.
+Branch PR B from `main` only after PR A is explicitly merged. PR B contains Tasks 5–8. Verify exact head, CI, Package, changed filenames, and unresolved review threads. **Stop for explicit merge authorization.** PR C must not branch from the unmerged PR-B head.
 
 ---
 
-### Task 9: Expose the Three Controlled Mutation MCP Tools
+### Task 9: Public Mutation MCP Surface and Capability Policy
 
 **Files:**
 - Create: `src/tools/nds-mutation.ts`
@@ -1130,54 +1017,42 @@ Branch PR B from `main` only after PR A is merged. PR B contains Tasks 5–8. Ve
 - Modify: `src/index.ts`
 
 **Interfaces:**
-- Produces public MCP tools:
-  - `nds_mutation_validate`
-  - `nds_mutation_build`
-  - `nds_mutation_verify`
-  - `registerNdsMutationTools(server: McpServer, config: ServerConfig): void`
+- Produces `registerNdsMutationTools(server: McpServer, config: ServerConfig): void`.
+- Public tools are exactly `nds_mutation_validate`, `nds_mutation_build`, `nds_mutation_verify`.
 
-- [ ] **Step 1: Write failing MCP registration/schema tests**
-
-Reuse the existing `FakeMcpServer` pattern from `tests/nds-tools.test.ts`.
+- [ ] **Step 1: Write RED registration/schema tests using the existing FakeMcpServer pattern**
 
 ```ts
-const EXPECTED_MUTATION_TOOLS = [
+const EXPECTED = [
   "nds_mutation_validate",
   "nds_mutation_build",
   "nds_mutation_verify",
 ] as const;
 
-test("registers exactly the three controlled NDS mutation tools", () => {
-  const server = registerMutationTools("/workspace");
-  assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED_MUTATION_TOOLS].sort());
+assert.deepEqual([...server.tools.keys()].sort(), [...EXPECTED].sort());
+assert.deepEqual(server.parse("nds_mutation_build", {
+  rom: "roms/game.nds",
+  manifest: "plans/mod.json",
+}), {
+  rom: "roms/game.nds",
+  manifest: "plans/mod.json",
 });
-
-test("mutation tools accept only ROM and manifest workspace paths", () => {
-  const server = registerMutationTools("/workspace");
-  assert.deepEqual(server.parse("nds_mutation_build", {
-    rom: "roms/game.nds",
-    manifest: "plans/mod.json",
-  }), {
-    rom: "roms/game.nds",
-    manifest: "plans/mod.json",
-  });
-  assert.throws(() => server.parse("nds_mutation_build", {
-    rom: "roms/game.nds",
-    manifest: "plans/mod.json",
-    output: "/tmp/game.nds",
-  }));
-});
+assert.throws(() => server.parse("nds_mutation_build", {
+  rom: "roms/game.nds",
+  manifest: "plans/mod.json",
+  output: "/tmp/game.nds",
+}));
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 node --test --import tsx tests/nds-mutation-tools.test.ts
 ```
 
-- [ ] **Step 3: Implement bounded structured tool responses**
+- [ ] **Step 3: Implement the exact schemas and handlers**
 
-Each schema contains only:
+Every tool schema is only:
 
 ```ts
 {
@@ -1186,58 +1061,44 @@ Each schema contains only:
 }
 ```
 
-Each handler resolves both paths through `resolveInside(config.workspaceRoot, ...)` and never accepts raw byte ranges, operation arrays, output paths, build IDs, or destination directories.
-
-Handlers:
+Both paths resolve with `resolveInside(config.workspaceRoot, ...)`.
 
 ```text
-nds_mutation_validate
-  readNdsRomMap
-  → loadNdsMutationManifest
-  → compileNdsMutationPlan
-  → serializeResolvedNdsMutationPlan
-
-nds_mutation_build
-  readNdsRomMap
-  → loadNdsMutationManifest
-  → buildNdsMutation
-
-nds_mutation_verify
-  readNdsRomMap
-  → loadNdsMutationManifest
-  → verifyPublishedNdsMutationBuild
+validate: readNdsRomMap → loadNdsMutationManifest → compileNdsMutationPlan → serializeResolvedNdsMutationPlan
+build:    readNdsRomMap → loadNdsMutationManifest → buildNdsMutation
+verify:   readNdsRomMap → loadNdsMutationManifest → verifyPublishedNdsMutationBuild
 ```
 
-All returned paths must be converted to workspace-relative forward-slash form before serialization.
+Tool output converts all internal absolute output paths to workspace-relative forward-slash paths and obeys `config.maxOutputBytes` using the same bounded JSON pattern as existing NDS tools.
 
-- [ ] **Step 4: Add mutation-specific actionable error mapping**
+- [ ] **Step 4: Implement actionable error mapping**
 
-Map every `NdsMutationErrorCategory` to concrete corrective guidance. Examples:
+Add a `switch` covering every `NdsMutationErrorCategory`. At minimum:
 
 ```ts
 case "original-byte-guard-failed":
-  return "Re-run reverse engineering against this exact ROM revision and regenerate the manifest expected bytes; RE-MCP will not apply a stale byte patch.";
+  return "Re-run reverse engineering against this exact ROM revision and regenerate the expected bytes; RE-MCP will not apply a stale byte patch.";
 case "mutation-overlap":
-  return "Resolve patch conflicts before compiling the final low-level manifest; Milestone 1 does not layer overlapping operations.";
+  return "Resolve patch conflicts before producing the final low-level manifest; Milestone 1 does not layer overlapping operations.";
 case "compressed-overlay-invalid":
-  return "Provide an exact-size prebuilt stored BLZ overlay that decodes successfully for every canonical overlay owner; decoded-runtime editing/recompression is not supported yet.";
+  return "Provide an exact-size stored BLZ overlay that validates for every canonical overlay owner; decoded-runtime editing and recompression are not supported yet.";
 ```
 
-Underlying canonical parser/BLZ errors remain structured rather than being collapsed to generic mutation failures.
+Preserve underlying canonical parser/BLZ categories when they escape before the mutation boundary rather than collapsing them to a generic error.
 
 - [ ] **Step 5: Add end-to-end tool tests**
 
-Invoke all three tools against a synthetic fixture:
+Using the explicit fixture API and a one-byte ARM9 manifest:
 
-1. `validate` returns a buildable resolved plan and creates no `output/nds` tree;
-2. `build` publishes the new ROM and reports `unexpectedChangedBytes: 0`;
-3. `verify` revalidates the published build;
-4. a stale source hash produces a structured `source-rom-mismatch`/identity error;
-5. tool output never contains the host temp directory prefix or another absolute path.
+1. `validate` returns build ID/plan and creates no `output/nds` tree;
+2. `build` publishes the ROM and returns `verification.unexpectedChangedBytes === 0`;
+3. `verify` freshly revalidates it;
+4. stale source identity returns a structured error;
+5. no response contains `fixture.directory` as an absolute path.
 
-- [ ] **Step 6: Register the tool module and update capability policy**
+- [ ] **Step 6: Register tools and update capabilities**
 
-Modify `src/index.ts`:
+In `src/index.ts`:
 
 ```ts
 import { registerNdsMutationTools } from "./tools/nds-mutation.js";
@@ -1245,14 +1106,15 @@ import { registerNdsMutationTools } from "./tools/nds-mutation.js";
 registerNdsMutationTools(server, config);
 ```
 
-Update `server_capabilities` only now, when the full production subsystem exists:
+Only now update `server_capabilities`:
 
-- mutation policy: strict manifest-only, same-size canonical mutations to immutable source copies;
-- compressed overlays: stored exact-size replacement only;
-- structural metadata/variable-size/recompression/arbitrary offset writes still prohibited;
-- add the three new tool names to the tool list.
+- mutation policy states strict manifest-only same-size canonical mutation to source copies;
+- source remains immutable;
+- compressed overlays are exact-size stored replacement only;
+- structural mutation, variable-size rebuild, recompression, arbitrary ROM offsets, arbitrary output paths remain prohibited;
+- tool list includes exactly the three new mutation tools.
 
-- [ ] **Step 7: Run focused and full checks**
+- [ ] **Step 7: Run GREEN/full checks**
 
 ```bash
 node --test --import tsx tests/nds-mutation-tools.test.ts
@@ -1265,15 +1127,13 @@ git diff --check
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/tools/nds-mutation.ts \
-        tests/nds-mutation-tools.test.ts \
-        src/index.ts
+git add src/tools/nds-mutation.ts tests/nds-mutation-tools.test.ts src/index.ts
 git commit -m "feat: expose controlled NDS mutation tools"
 ```
 
 ---
 
-### Task 10: Harden Packaging, Document the Contract, and Run Final Regression
+### Task 10: Package Smoke, Hardening Contract, Documentation, and Final Regression
 
 **Files:**
 - Create: `tests/nds-mutation-hardening.test.ts`
@@ -1281,30 +1141,29 @@ git commit -m "feat: expose controlled NDS mutation tools"
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: complete Milestone 1 service/tool surface.
-- Produces: package-level source contract, packaged mutation smoke test, user-facing mutation documentation, final acceptance evidence.
+- Produces packaged mutation smoke coverage and final Milestone-1 documentation/acceptance evidence.
 
-- [ ] **Step 1: Write failing hardening/package contract tests**
+- [ ] **Step 1: Write RED hardening tests**
 
-`tests/nds-mutation-hardening.test.ts` should inspect source/tool text where useful and execute behavior where possible. It must assert:
+Assert from source and behavior:
 
-- no MCP schema named `nds_mutation_*` accepts `romOffset`, `outputPath`, `operations`, or raw replacement bytes;
-- `apply.ts` is the only mutation-package module containing an `r+` ROM open;
-- source ROM is never passed as the staged destination;
-- `server_capabilities` lists exactly the three mutation tools and describes same-size/manifest/source-immutable limits;
-- decoded compressed overlay mutation/recompression is not advertised.
-
-Run:
+```text
+No nds_mutation_* schema accepts romOffset, outputPath, operations, or inline replacement bytes.
+Only apply.ts contains the staged-ROM "r+" open.
+No mutation package exports a raw (romOffset, bytes) writer.
+server_capabilities lists exactly the three mutation tools and the same-size/manifest/source-immutable limits.
+No decoded compressed-overlay mutation/recompression is advertised.
+```
 
 ```bash
 node --test --import tsx tests/nds-mutation-hardening.test.ts
 ```
 
-Expected: initially FAIL until packaging/docs/index source contract is complete.
+Expected: RED until package/docs source contract is complete.
 
-- [ ] **Step 2: Extend packaged-file requirements**
+- [ ] **Step 2: Extend package requirements exactly**
 
-Add at least these paths to `scripts/check-install.mjs` required files:
+Add these built files to the `required` array in `scripts/check-install.mjs`:
 
 ```text
 dist/services/nds/mutation/manifest.js
@@ -1320,15 +1179,11 @@ dist/services/nds/mutation/build.js
 dist/tools/nds-mutation.js
 ```
 
-Also require built `dist/index.js` to contain:
+Require built `dist/index.js` to contain `registerNdsMutationTools(server, config)`.
 
-```js
-registerNdsMutationTools(server, config)
-```
+- [ ] **Step 3: Add an actual packaged mutation smoke**
 
-- [ ] **Step 3: Add a packaged mutation smoke test**
-
-In `scripts/check-install.mjs`, create a small temporary valid NDS fixture using only Node APIs, then import the built mutation modules. Build a strict manifest with one guarded ARM9 same-size byte edit and run the packaged path:
+Inside `scripts/check-install.mjs`, create a temporary valid NDS with existing-style raw Node Buffer header fields, write one manifest containing a guarded 2-byte ARM9 replacement at component-relative offset `0`, then import built modules and run:
 
 ```text
 readNdsRomMap
@@ -1337,48 +1192,27 @@ readNdsRomMap
 → verifyPublishedNdsMutationBuild
 ```
 
-Assert:
+Assert source SHA unchanged, output SHA changed, output size unchanged, verification status `passed`, unexpected changed bytes `0`, and the second build result `reused === true`. Remove the temp workspace in `finally`. This smoke must not invoke Ghidra or DeSmuME.
 
-- source hash remains unchanged;
-- output hash differs;
-- output size equals source size;
-- verification status is `passed`;
-- unexpected changed bytes are zero;
-- second build returns `reused: true`;
-- cleanup removes the temp workspace after smoke completion.
+- [ ] **Step 4: Document the completed Milestone 1 workflow**
 
-The packaged smoke must not require Ghidra or DeSmuME.
-
-- [ ] **Step 4: Document Milestone 1 in README**
-
-Add a `Controlled NDS Mutation` section explaining:
+Add `Controlled NDS Mutation` to README:
 
 ```text
-patch requirement may be incomplete
-→ use static/Ghidra/runtime RE to prove missing facts
-→ compile strict mutation manifest
+patch requirement may lack implementation facts
+→ static/xref/function/Ghidra/decompilation/runtime correlation resolves those facts
+→ agent compiles strict machine manifest
 → nds_mutation_validate
 → nds_mutation_build
 → nds_mutation_verify
-→ complete verified .nds
+→ complete structurally verified .nds
 ```
 
-Document the two operation forms with compact JSON examples. Explicitly state:
+Include compact JSON examples for both operation types and explicitly document source immutability, exact guards, canonical selectors, no overlap, same-size-only layout, controlled output tree, deterministic evidence, stored compressed-overlay replacement only, and Milestone-2 deferral of decoded edits/recompression/variable-size rebuild.
 
-- no source in-place mutation;
-- no arbitrary ROM offsets;
-- no structural metadata edits;
-- same-size only;
-- exact guards mandatory;
-- no overlaps;
-- replacement artifacts remain workspace-contained and hash-pinned;
-- compressed overlays are stored-component replacement only;
-- decoded edits/recompression/variable-size rebuild are Milestone 2;
-- successful builds live under `output/nds/<source-prefix>/<build-id>/` with deterministic evidence.
+State that successful structural build verification is not gameplay acceptance and does not close the physical Catalina debugger gate.
 
-Do not imply that a successful structural build proves gameplay behavior or that the pending physical Catalina debugger gate has passed.
-
-- [ ] **Step 5: Run the complete Milestone 1 acceptance matrix**
+- [ ] **Step 5: Run the complete milestone matrix**
 
 ```bash
 node --test --import tsx \
@@ -1400,43 +1234,26 @@ git diff --check
 
 Expected: zero failures.
 
-- [ ] **Step 6: Perform the final source/diff audit**
+- [ ] **Step 6: Perform final source/diff audit**
 
-Before opening PR C, verify:
-
-```text
-No source-ROM write primitive exists.
-No arbitrary ROM-offset write primitive exists.
-No caller-selected output directory exists.
-No structural metadata mutation path exists.
-No variable-size replacement exists.
-No decoded compressed-overlay mutation/recompression exists.
-No overlap layering exists.
-All final publication routes pass through full verification.
-All public output paths are workspace-relative.
-No debugger/GDB behavior changed.
-```
+Verify the PR contains no source-ROM writer, arbitrary ROM-offset writer, caller-selected output directory, structural metadata mutation, variable-size replacement, decoded compressed-overlay mutation, BLZ recompression, overlap layering, or debugger/GDB behavior change. Verify every publication route invokes full verification and public paths are workspace-relative.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tests/nds-mutation-hardening.test.ts \
-        scripts/check-install.mjs \
-        README.md
+git add tests/nds-mutation-hardening.test.ts scripts/check-install.mjs README.md
 git commit -m "docs: complete controlled NDS mutation acceptance"
 ```
 
-## PR C merge gate
+## PR C Merge Gate
 
-Branch PR C from `main` only after PR B is explicitly approved and merged. Open the final Milestone 1 PR, then on its exact head verify CI, Package, changed filenames, review threads, and package smoke evidence. **Stop and request explicit merge authorization.**
+Branch PR C from `main` only after PR B is explicitly merged. Verify the exact PR-C head, CI, Package, changed filenames, unresolved review threads, and packaged mutation smoke. **Stop for explicit merge authorization.**
 
-After PR C is merged, Milestone 1 is complete and the next design cycle is **Milestone 2 — NDS Rebuild + BLZ Recompression**; do not start Milestone 2 implementation without its own approved design/spec.
+After PR C is merged, Milestone 1 is complete. The next design cycle is **Milestone 2 — NDS Rebuild + BLZ Recompression**; do not begin Milestone-2 implementation without a separate approved design/spec.
 
 ---
 
 ## Final Acceptance Contract
-
-Milestone 1 is complete only when this exact flow succeeds:
 
 ```text
 source .nds + strict manifest + optional pinned artifacts
@@ -1445,11 +1262,11 @@ exact source SHA validation
         ↓
 canonical target resolution
         ↓
-all byte/component/artifact guards
+all original-byte/component/artifact guards
         ↓
 compressed stored-artifact validation where required
         ↓
-zero mutation overlaps
+zero physical overlaps
         ↓
 full source copy to controlled staging
         ↓
@@ -1457,13 +1274,13 @@ only staged copy opened for write
         ↓
 all same-size operations applied
         ↓
-output canonical NDS reparse
+canonical output reparse
         ↓
 header/FAT/FNT/overlay-table bytes unchanged
         ↓
 structural geometry unchanged
         ↓
-every operation verified exactly
+every requested operation verified exactly
         ↓
 compressed replacements decode from output map
         ↓
@@ -1471,13 +1288,13 @@ complete source/output diff attribution
         ↓
 unexpected changed bytes == 0
         ↓
-source SHA still unchanged
+source SHA unchanged after verification
         ↓
-deterministic evidence written
+deterministic evidence generated
         ↓
 atomic build-directory publication
         ↓
 complete verified .nds
 ```
 
-A pre-existing deterministic build may be reused only after the same source/manifest/artifact preflight, fresh ROM verification, and byte-for-byte evidence regeneration check all pass. Any divergent existing build remains untouched and causes a fail-closed error.
+A pre-existing deterministic build may be reused only after the same source/manifest/artifact preflight, fresh ROM verification, and byte-for-byte evidence regeneration check all pass. Any divergent existing build remains untouched and fails closed.
