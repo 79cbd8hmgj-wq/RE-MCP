@@ -9,7 +9,7 @@ import {
 import {
   codeSourceAt,
   resolveNdsCodeSource,
-  withValidatedNdsRomReader,
+  withValidatedNdsCodeReader,
   type NdsCodeSource,
   type NdsCodeSourceResolution,
 } from "./disassembly-source.js";
@@ -50,7 +50,6 @@ export type ReferenceTruncationReason =
 export type ComponentCoverageStatus =
   | "scanned"
   | "no-proven-seed"
-  | "compressed-overlay-not-decodable"
   | "out-of-limit";
 
 export interface ReferenceComponentCoverage {
@@ -177,7 +176,7 @@ export async function findNdsXrefs(
 ): Promise<FindNdsXrefsResult> {
   validateLimits(limits);
 
-  return await withValidatedNdsRomReader(map, async (read) => {
+  return await withValidatedNdsCodeReader(map, async (read) => {
     const prepared = prepareNdsReferenceSearch(
       map,
       request.processor,
@@ -195,12 +194,7 @@ export async function findNdsXrefs(
 
     const initialCoverage = new Map<string, ComponentCoverageStatus>();
     for (const component of considered) {
-      initialCoverage.set(
-        componentKey(component),
-        component.compressed
-          ? "compressed-overlay-not-decodable"
-          : "no-proven-seed",
-      );
+      initialCoverage.set(componentKey(component), "no-proven-seed");
     }
     for (const component of excluded) {
       initialCoverage.set(componentKey(component), "out-of-limit");
@@ -328,11 +322,7 @@ export async function findNdsXrefs(
 
       while (true) {
         const currentAddress = blockSource.runtimeAddress + cursor;
-        const currentRomOffset = blockSource.romOffset + cursor;
-        if (
-          currentAddress >= blockSource.runtimeEnd
-          || currentRomOffset >= blockSource.romEnd
-        ) {
+        if (currentAddress >= blockSource.runtimeEnd) {
           break;
         }
 
@@ -350,8 +340,8 @@ export async function findNdsXrefs(
         const minimumInstructionSize = blockSource.mode === "arm" ? 4 : 2;
         const remainingWindow = bytes.length - cursor;
         if (remainingWindow < minimumInstructionSize) {
-          const reachesComponentEnd = currentRomOffset + remainingWindow
-            >= blockSource.romEnd;
+          const reachesComponentEnd = currentAddress + remainingWindow
+            >= blockSource.runtimeEnd;
           if (!reachesComponentEnd) {
             reasons.add("byte-limit");
             limitedComponents.add(currentComponent);
@@ -382,8 +372,7 @@ export async function findNdsXrefs(
         collectReferences(detailed);
 
         const nextAddress = instruction.address + instruction.size;
-        const nextInsideComponent = nextAddress < blockSource.runtimeEnd
-          && blockSource.romOffset + cursor < blockSource.romEnd;
+        const nextInsideComponent = nextAddress < blockSource.runtimeEnd;
 
         switch (instruction.flow.kind) {
           case "fallthrough":
@@ -464,7 +453,7 @@ export async function findNdsXrefs(
         const key = componentKey(component);
         const initial = initialCoverage.get(key);
         let status: ComponentCoverageStatus;
-        if (initial === "out-of-limit" || initial === "compressed-overlay-not-decodable") {
+        if (initial === "out-of-limit") {
           status = initial;
         } else if (!seededComponents.has(key)) {
           status = "no-proven-seed";
