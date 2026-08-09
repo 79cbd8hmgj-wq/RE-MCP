@@ -103,6 +103,60 @@ test("identical inputs in different absolute workspaces produce byte-identical R
   }
 });
 
+test("changed-components deduplicates one physical NitroFS file across ID and path selectors", async () => {
+  const fixture = await createMutationFixture();
+  const source = await readFile(fixture.romPath);
+  const relative = await fixture.writeManifest({
+    outputFilename: "dedupe.nds",
+    operations: [
+      {
+        type: "replace-bytes",
+        target: {
+          component: "nitrofs-file",
+          fileId: fixture.ordinaryFileId,
+          relativeOffset: 0,
+        },
+        expected: source.subarray(
+          fixture.ordinaryRomOffset,
+          fixture.ordinaryRomOffset + 2,
+        ).toString("hex"),
+        replacement: "1234",
+      },
+      {
+        type: "replace-bytes",
+        target: {
+          component: "nitrofs-path",
+          filePath: "asset.bin",
+          relativeOffset: 4,
+        },
+        expected: source.subarray(
+          fixture.ordinaryRomOffset + 4,
+          fixture.ordinaryRomOffset + 6,
+        ).toString("hex"),
+        replacement: "5678",
+      },
+    ],
+  });
+  const loaded = await loadNdsMutationManifest(fixture.directory, relative);
+  const result = await buildNdsMutation(fixture.map, fixture.directory, loaded);
+  const report = JSON.parse(
+    await readFile(path.join(result.outputRoot, "changed-components.json"), "utf8"),
+  ) as {
+    components: Array<{
+      component: string;
+      fileId: number | null;
+      filePath: string | null;
+      operationIndexes: number[];
+    }>;
+  };
+
+  assert.equal(report.components.length, 1);
+  assert.equal(report.components[0]?.component, "nitrofs-file");
+  assert.equal(report.components[0]?.fileId, fixture.ordinaryFileId);
+  assert.equal(report.components[0]?.filePath, "asset.bin");
+  assert.deepEqual(report.components[0]?.operationIndexes, [0, 1]);
+});
+
 test("reuses an exact deterministic build only after fresh revalidation", async () => {
   const { fixture, loaded, result: first } = await buildFixture();
   const second = await buildNdsMutation(fixture.map, fixture.directory, loaded);
