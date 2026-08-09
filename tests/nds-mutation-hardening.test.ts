@@ -50,6 +50,7 @@ test("package workflow requires and exercises the controlled mutation core", asy
   assert.match(install, /changed-components\.json/u);
   assert.match(install, /output\.sha256/u);
   assert.match(install, /output.*nds/iu);
+  assert.match(workflow, /cp -R scripts "\$root\/"/u);
   assert.match(workflow, /node scripts\/check-nds-mutation-install\.mjs \./u);
 });
 
