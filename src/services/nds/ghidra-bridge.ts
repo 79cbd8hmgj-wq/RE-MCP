@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -14,20 +15,29 @@ import path from "node:path";
 
 import { resolveInside } from "../../security/paths.js";
 import { createCapstoneArmBackend } from "../disassembly/capstone.js";
-import { extractNdsAnalysisBundle } from "./extraction.js";
+import {
+  extractNdsAnalysisBundle,
+  type NdsDerivedRuntimeArtifact,
+  type NdsExtractedArtifact,
+} from "./extraction.js";
 import {
   discoverNdsFunctions,
   type FunctionDiscoveryLimits,
 } from "./function-discovery.js";
 import {
   buildGhidraBridgeManifest,
+  ghidraDerivedOverlayArtifactPath,
   ghidraGeneratedBridgeRoot,
+  ghidraOverlaySpaceName,
+  ghidraStoredOverlayArtifactPath,
   type GhidraBridgeArtifact,
   type GhidraBridgeManifest,
+  type GhidraOverlayManifest,
   type GhidraProcessorManifest,
 } from "./ghidra-model.js";
 import { NdsError } from "./errors.js";
 import { hashFileSha256 } from "./io.js";
+import type { NdsOverlay, NdsProcessor } from "./overlays.js";
 import type { NdsRomMap } from "./rom-map.js";
 
 const GHIDRA_DISCOVERY_LIMITS: FunctionDiscoveryLimits = {
@@ -52,6 +62,8 @@ const SCRIPT_NAMES = [
   "ReMcpRecordAnalysis.java",
 ] as const;
 
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
 export interface GeneratedGhidraBridge {
   readonly bridgeRoot: string;
   readonly manifestPath: string;
@@ -59,15 +71,21 @@ export interface GeneratedGhidraBridge {
   readonly manifest: GhidraBridgeManifest;
 }
 
-function ghidraDiscoveryMap(map: NdsRomMap): NdsRomMap {
-  return {
-    ...map,
-    overlays: {
-      arm9: map.overlays.arm9.filter((overlay) => !overlay.compressed),
-      arm7: map.overlays.arm7.filter((overlay) => !overlay.compressed),
-    },
-    executableRanges: map.executableRanges.filter((range) => !range.compressed),
-  };
+interface AnalysisBundleArtifact extends Omit<NdsExtractedArtifact, "output"> {
+  readonly output: string;
+}
+
+interface AnalysisBundleRuntimeArtifact extends Omit<NdsDerivedRuntimeArtifact, "output"> {
+  readonly output: string;
+}
+
+interface AnalysisBundleManifest {
+  readonly format: "re-mcp-nds-static-analysis";
+  readonly formatVersion: number;
+  readonly sourceRomSha256: string;
+  readonly sha256Prefix: string;
+  readonly artifacts: readonly AnalysisBundleArtifact[];
+  readonly runtimeArtifacts: readonly AnalysisBundleRuntimeArtifact[];
 }
 
 function portable(relativePath: string): string {
@@ -117,6 +135,10 @@ function resolveArtifactPath(bridgeRoot: string, relativePath: string): string {
   const candidate = path.resolve(bridgeRoot, relativePath);
   const relativeToGenerated = path.relative(generatedRoot, candidate);
   return resolveInside(generatedRoot, relativeToGenerated);
+}
+
+function resolveBundleArtifactPath(bundleRoot: string, relativePath: string): string {
+  return resolveInside(bundleRoot, relativePath.split("/").join(path.sep));
 }
 
 async function artifactFor(
@@ -206,9 +228,246 @@ function callsEvidence(manifest: GhidraBridgeManifest) {
   };
 }
 
+function requireSha256(value: unknown, label: string): string {
+  if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
+    throw new NdsError("bridge-generation-failed", `${label} is not a valid SHA-256 digest`);
+  }
+  return value;
+}
+
+async function readAnalysisBundleManifest(
+  map: NdsRomMap,
+  manifestPath: string,
+): Promise<AnalysisBundleManifest> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Generated analysis bundle manifest is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new NdsError("bridge-generation-failed", "Generated analysis bundle manifest is not an object");
+  }
+  const candidate = parsed as Partial<AnalysisBundleManifest>;
+  if (
+    candidate.format !== "re-mcp-nds-static-analysis"
+    || candidate.formatVersion !== 1
+    || candidate.sourceRomSha256 !== map.sha256
+    || candidate.sha256Prefix !== map.sha256Prefix
+    || !Array.isArray(candidate.artifacts)
+    || !Array.isArray(candidate.runtimeArtifacts)
+  ) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      "Generated analysis bundle manifest identity or structure does not match the canonical ROM",
+    );
+  }
+  return candidate as AnalysisBundleManifest;
+}
+
+function rawOverlayRecord(
+  manifest: AnalysisBundleManifest,
+  overlay: NdsOverlay,
+): AnalysisBundleArtifact {
+  const matches = manifest.artifacts.filter((artifact) =>
+    artifact.processor === overlay.processor
+    && artifact.overlayId === overlay.overlayId
+    && artifact.component === `${overlay.processor}-overlay`);
+  if (matches.length !== 1) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Analysis bundle has ${matches.length} raw records for ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId}`,
+    );
+  }
+  const record = matches[0]!;
+  const expectedOutput = `overlays/${overlay.processor}/overlay_${overlay.overlayId}.bin`;
+  if (
+    record.output !== expectedOutput
+    || record.sourceRomSha256 !== manifest.sourceRomSha256
+    || record.romOffset !== overlay.romOffset
+    || record.size !== overlay.romSize
+    || record.ramAddress !== overlay.ramAddress
+    || record.processor !== overlay.processor
+    || record.overlayId !== overlay.overlayId
+    || record.fileId !== overlay.fileId
+    || record.compressed !== overlay.compressed
+    || record.compressedSize !== (overlay.compressed ? overlay.compressedSize : null)
+  ) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Raw analysis-bundle provenance conflicts with ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId}`,
+    );
+  }
+  requireSha256(record.outputSha256, "Raw overlay artifact hash");
+  return record;
+}
+
+function runtimeOverlayRecord(
+  manifest: AnalysisBundleManifest,
+  overlay: NdsOverlay,
+  raw: AnalysisBundleArtifact,
+): AnalysisBundleRuntimeArtifact {
+  const matches = manifest.runtimeArtifacts.filter((artifact) =>
+    artifact.processor === overlay.processor
+    && artifact.overlayId === overlay.overlayId);
+  if (matches.length !== 1) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Analysis bundle has ${matches.length} runtime records for compressed ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId}`,
+    );
+  }
+  const record = matches[0]!;
+  const expectedOutput = `runtime/overlays/${overlay.processor}/overlay_${overlay.overlayId}.bin`;
+  if (
+    record.output !== expectedOutput
+    || record.sourceRomSha256 !== manifest.sourceRomSha256
+    || record.representation !== "derived-blz"
+    || record.romOffset !== null
+    || record.storedRomOffset !== overlay.romOffset
+    || record.storedSize !== overlay.romSize
+    || record.compressedSize !== overlay.compressedSize
+    || record.runtimeAddress !== overlay.ramAddress
+    || record.runtimeSize !== overlay.ramSize
+    || record.bssSize !== overlay.bssSize
+    || record.processor !== overlay.processor
+    || record.overlayId !== overlay.overlayId
+    || record.fileId !== overlay.fileId
+    || record.storedSha256 !== raw.outputSha256
+    || record.outputSha256 !== record.runtimeSha256
+  ) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Derived analysis-bundle provenance conflicts with ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId}`,
+    );
+  }
+  requireSha256(record.storedSha256, "Stored overlay provenance hash");
+  requireSha256(record.compressedPayloadSha256, "Compressed overlay payload hash");
+  requireSha256(record.runtimeSha256, "Derived overlay runtime hash");
+  return record;
+}
+
+async function validateBundleFile(
+  bundleRoot: string,
+  relativePath: string,
+  expectedSize: number,
+  expectedSha256: string,
+): Promise<string> {
+  const absolute = resolveBundleArtifactPath(bundleRoot, relativePath);
+  const info = await stat(absolute);
+  if (!info.isFile() || info.size !== expectedSize) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Analysis bundle artifact size mismatch: ${relativePath}`,
+    );
+  }
+  const actualSha256 = await hashFileSha256(absolute);
+  if (actualSha256 !== expectedSha256) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Analysis bundle artifact hash mismatch: ${relativePath}`,
+    );
+  }
+  return absolute;
+}
+
+async function hashFilePrefixSha256(filePath: string, length: number): Promise<string> {
+  if (!Number.isSafeInteger(length) || length <= 0) {
+    throw new NdsError("bridge-generation-failed", "Ghidra overlay initialized size must be positive");
+  }
+  const digest = createHash("sha256");
+  let consumed = 0;
+  for await (const chunk of createReadStream(filePath, { start: 0, end: length - 1 })) {
+    const bytes = chunk as Buffer;
+    digest.update(bytes);
+    consumed += bytes.length;
+  }
+  if (consumed !== length) {
+    throw new NdsError(
+      "bridge-generation-failed",
+      `Overlay artifact ended after ${consumed} bytes while hashing ${length} initialized bytes`,
+    );
+  }
+  return digest.digest("hex");
+}
+
+async function preparedOverlayManifests(
+  map: NdsRomMap,
+  bundleRoot: string,
+  manifestPath: string,
+): Promise<readonly GhidraOverlayManifest[]> {
+  const bundle = await readAnalysisBundleManifest(map, manifestPath);
+  const prepared: GhidraOverlayManifest[] = [];
+  for (const overlay of [...map.overlays.arm9, ...map.overlays.arm7]) {
+    const raw = rawOverlayRecord(bundle, overlay);
+    const rawAbsolute = await validateBundleFile(
+      bundleRoot,
+      raw.output,
+      overlay.romSize,
+      raw.outputSha256,
+    );
+
+    if (overlay.compressed) {
+      const runtime = runtimeOverlayRecord(bundle, overlay, raw);
+      await validateBundleFile(
+        bundleRoot,
+        runtime.output,
+        overlay.ramSize,
+        runtime.runtimeSha256,
+      );
+      prepared.push({
+        processor: overlay.processor,
+        overlayId: overlay.overlayId,
+        spaceName: ghidraOverlaySpaceName(overlay.processor, overlay.overlayId),
+        artifactPath: ghidraDerivedOverlayArtifactPath(overlay.processor, overlay.overlayId),
+        fileId: overlay.fileId,
+        runtimeAddress: overlay.ramAddress,
+        ramSize: overlay.ramSize,
+        bssSize: overlay.bssSize,
+        representation: "derived-blz",
+        initializedSize: overlay.ramSize,
+        storedRomOffset: overlay.romOffset,
+        storedSize: overlay.romSize,
+        compressedSize: overlay.compressedSize,
+        storedSha256: runtime.storedSha256,
+        runtimeSha256: runtime.runtimeSha256,
+        compressed: true,
+        importStatus: "importable-derived",
+      });
+      continue;
+    }
+
+    const initializedSize = Math.min(overlay.ramSize, overlay.romSize);
+    const runtimeSha256 = await hashFilePrefixSha256(rawAbsolute, initializedSize);
+    prepared.push({
+      processor: overlay.processor,
+      overlayId: overlay.overlayId,
+      spaceName: ghidraOverlaySpaceName(overlay.processor, overlay.overlayId),
+      artifactPath: ghidraStoredOverlayArtifactPath(overlay.processor, overlay.overlayId),
+      fileId: overlay.fileId,
+      runtimeAddress: overlay.ramAddress,
+      ramSize: overlay.ramSize,
+      bssSize: overlay.bssSize,
+      representation: "rom-file-backed",
+      initializedSize,
+      storedRomOffset: overlay.romOffset,
+      storedSize: overlay.romSize,
+      compressedSize: null,
+      storedSha256: raw.outputSha256,
+      runtimeSha256,
+      compressed: false,
+      importStatus: "importable",
+    });
+  }
+  return prepared;
+}
+
 async function buildTemporaryBridge(
   map: NdsRomMap,
   finalRoot: string,
+  overlays: readonly GhidraOverlayManifest[],
   arm9: Awaited<ReturnType<typeof discoverNdsFunctions>>,
   arm7: Awaited<ReturnType<typeof discoverNdsFunctions>>,
 ): Promise<{
@@ -231,6 +490,7 @@ async function buildTemporaryBridge(
       arm9,
       arm7,
       artifacts: [],
+      overlays,
     });
 
     await copyMainImportArtifacts(temporaryRoot, canonical.processors);
@@ -251,7 +511,7 @@ async function buildTemporaryBridge(
       artifacts.push(await artifactFor(temporaryRoot, relativePath));
     }
 
-    const manifest = buildGhidraBridgeManifest({ map, arm9, arm7, artifacts });
+    const manifest = buildGhidraBridgeManifest({ map, arm9, arm7, artifacts, overlays });
     const manifestPath = resolveInside(temporaryRoot, "manifest.json");
     await writeJson(manifestPath, manifest);
     const manifestSha256 = await hashFileSha256(manifestPath);
@@ -278,12 +538,7 @@ export async function generateNdsGhidraBridge(
 ): Promise<GeneratedGhidraBridge> {
   let temporaryRoot: string | null = null;
   try {
-    const bundle = await extractNdsAnalysisBundle(
-      map,
-      workspaceRoot,
-      undefined,
-      { includeDerivedRuntimeArtifacts: false },
-    );
+    const bundle = await extractNdsAnalysisBundle(map, workspaceRoot);
     const bridgeRoot = ghidraGeneratedBridgeRoot(map, workspaceRoot);
     if (path.dirname(bridgeRoot) !== path.resolve(bundle.outputRoot)) {
       throw new NdsError(
@@ -291,14 +546,18 @@ export async function generateNdsGhidraBridge(
         "Canonical Ghidra bridge root does not match the generated NDS analysis bundle",
       );
     }
+    const overlays = await preparedOverlayManifests(
+      map,
+      bundle.outputRoot,
+      bundle.manifestPath,
+    );
 
-    const discoveryMap = ghidraDiscoveryMap(map);
     const backend = await createCapstoneArmBackend();
     let arm9;
     let arm7;
     try {
       arm9 = await discoverNdsFunctions(
-        discoveryMap,
+        map,
         {
           processor: "arm9",
           scope: { kind: "all-executable-components" },
@@ -308,7 +567,7 @@ export async function generateNdsGhidraBridge(
         backend,
       );
       arm7 = await discoverNdsFunctions(
-        discoveryMap,
+        map,
         {
           processor: "arm7",
           scope: { kind: "all-executable-components" },
@@ -321,7 +580,7 @@ export async function generateNdsGhidraBridge(
       backend.close();
     }
 
-    const built = await buildTemporaryBridge(map, bridgeRoot, arm9, arm7);
+    const built = await buildTemporaryBridge(map, bridgeRoot, overlays, arm9, arm7);
     temporaryRoot = built.temporaryRoot;
 
     const afterSha256 = await hashFileSha256(map.romPath);
@@ -396,6 +655,39 @@ export async function validateGeneratedGhidraBridge(
           "bridge-generation-failed",
           `Ghidra bridge artifact hash mismatch: ${artifact.path}`,
         );
+      }
+    }
+
+    for (const processor of bridge.manifest.processors) {
+      for (const overlay of processor.overlays) {
+        const artifact = bridge.manifest.artifacts.find(
+          (candidate) => candidate.path === overlay.artifactPath,
+        );
+        if (artifact === undefined) {
+          throw new NdsError(
+            "bridge-generation-failed",
+            `Ghidra overlay artifact is absent from inventory: ${overlay.artifactPath}`,
+          );
+        }
+        if (overlay.representation === "derived-blz") {
+          if (
+            artifact.size !== overlay.initializedSize
+            || artifact.sha256 !== overlay.runtimeSha256
+          ) {
+            throw new NdsError(
+              "bridge-generation-failed",
+              `Derived Ghidra overlay artifact provenance mismatch: ${overlay.overlayId}`,
+            );
+          }
+        } else if (
+          artifact.size !== overlay.storedSize
+          || artifact.sha256 !== overlay.storedSha256
+        ) {
+          throw new NdsError(
+            "bridge-generation-failed",
+            `Stored Ghidra overlay artifact provenance mismatch: ${overlay.overlayId}`,
+          );
+        }
       }
     }
   } catch (error) {

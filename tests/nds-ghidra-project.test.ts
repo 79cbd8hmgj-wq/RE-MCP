@@ -92,9 +92,9 @@ function resultFor(bridge: GeneratedGhidraBridge, processor: NdsProcessor) {
     language: processorManifest.language,
     analysisStatus: "complete",
     ghidraVersion: INSTALLATION.version,
-    importedOverlays: processorManifest.overlays.filter((entry) => entry.importStatus === "importable").length,
+    importedOverlays: processorManifest.overlays.length,
     compressedOverlayIds: processorManifest.overlays
-      .filter((entry) => entry.importStatus === "not-imported-compressed")
+      .filter((entry) => entry.compressed)
       .map((entry) => entry.overlayId),
     provenEntries: discoveryManifest.functions.length,
     directCalls: discoveryManifest.calls.length,

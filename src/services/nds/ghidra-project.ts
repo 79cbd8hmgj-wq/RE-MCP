@@ -406,11 +406,9 @@ async function validateProcessorResult(
   const manifest = processorManifest(bridge, processor);
   const discovery = processorDiscovery(bridge, processor);
   const expectedCompressed = manifest.overlays
-    .filter((entry) => entry.importStatus === "not-imported-compressed")
+    .filter((entry) => entry.compressed)
     .map((entry) => entry.overlayId);
-  const expectedImported = manifest.overlays
-    .filter((entry) => entry.importStatus === "importable")
-    .length;
+  const expectedImported = manifest.overlays.length;
 
   if (
     parsed.sourceRomSha256 !== bridge.manifest.sourceRomSha256

@@ -134,18 +134,42 @@ const markerResult = await searchNdsGhidraSymbols(
 );
 assert.ok(derived(markerResult).results.some((entry) => entry.ghidraDerived?.name === analystMarker));
 
-const referencesResult = await listNdsGhidraReferences(
+const entryReferencesResult = await listNdsGhidraReferences(
   romPath,
   { processor: "arm9", runtimeAddress: 0x02000000, direction: "from", limit: 100, offset: 0 },
   config,
 );
-const references = derived(referencesResult).results;
-const callReference = references.find((reference) =>
+const entryReferences = derived(entryReferencesResult).results;
+const defaultSpaceCrossOverlayReference = entryReferences.find((reference) =>
   String(reference.ghidraDerived?.type).includes("CALL")
-  && reference.ghidraDerived?.to?.offset === 0x02000008);
-assert.ok(callReference, "expected Ghidra call reference from ARM9 entry to proven Thumb target");
-assert.equal(callReference.canonical?.from?.component, "main");
-assert.equal(callReference.canonical?.to?.component, "main");
+  && reference.ghidraDerived?.to?.offset === 0x02210000
+  && reference.ghidraDerived?.to?.defaultSpace === true);
+assert.ok(
+  defaultSpaceCrossOverlayReference,
+  "expected Ghidra default-space call reference to compressed overlay runtime address",
+);
+assert.equal(defaultSpaceCrossOverlayReference.canonical?.from?.component, "main");
+assert.equal(
+  defaultSpaceCrossOverlayReference.canonical?.to,
+  null,
+  "default-space cross-overlay references must not receive fabricated canonical ownership",
+);
+
+// The authoritative main-to-overlay relationship is verified by the bootstrap
+// acceptance through RE-MCP's owned call-evidence property map. The default-space
+// Ghidra reference above remains Ghidra-derived and non-authoritative.
+const thumbReferencesResult = await listNdsGhidraReferences(
+  romPath,
+  { processor: "arm9", runtimeAddress: 0x02000004, direction: "from", limit: 100, offset: 0 },
+  config,
+);
+const thumbReferences = derived(thumbReferencesResult).results;
+const thumbCallReference = thumbReferences.find((reference) =>
+  String(reference.ghidraDerived?.type).includes("CALL")
+  && reference.ghidraDerived?.to?.offset === 0x02000010);
+assert.ok(thumbCallReference, "expected Ghidra call reference from exact BLX call site to proven Thumb target");
+assert.equal(thumbCallReference.canonical?.from?.component, "main");
+assert.equal(thumbCallReference.canonical?.to?.component, "main");
 
 const callsResult = await listNdsGhidraCalls(
   romPath,
@@ -154,11 +178,11 @@ const callsResult = await listNdsGhidraCalls(
 );
 const calls = derived(callsResult);
 assert.equal(calls.found, true);
-const callEdge = calls.edges.find((edge) => edge.ghidraDerived?.to?.offset === 0x02000008);
-assert.ok(callEdge, "expected depth-one callee edge to Thumb target");
-assert.equal(callEdge.canonical?.from?.component, "main");
-assert.equal(callEdge.canonical?.to?.component, "main");
-assert.ok(callEdge.reMcpEvidence && "directCall" in callEdge.reMcpEvidence);
+const thumbCallEdge = calls.edges.find((edge) => edge.ghidraDerived?.to?.offset === 0x02000010);
+assert.ok(thumbCallEdge, "expected depth-one callee edge to Thumb target");
+assert.equal(thumbCallEdge.canonical?.from?.component, "main");
+assert.equal(thumbCallEdge.canonical?.to?.component, "main");
+assert.ok(thumbCallEdge.reMcpEvidence && "directCall" in thumbCallEdge.reMcpEvidence);
 
 for (const overlayId of [1, 2]) {
   const overlayResult = await inspectNdsGhidraFunction(
@@ -170,6 +194,86 @@ for (const overlayId of [1, 2]) {
   assert.equal(overlayResult.canonical.overlayId, overlayId);
   assert.equal(typeof overlayResult.ghidraDerived.found, "boolean");
 }
+
+const derivedFunctionResult = await inspectNdsGhidraFunction(
+  romPath,
+  { processor: "arm9", runtimeAddress: 0x02210000, overlayId: 3 },
+  config,
+);
+assert.equal(derivedFunctionResult.canonical.component, "overlay");
+assert.equal(derivedFunctionResult.canonical.overlayId, 3);
+assert.equal(derivedFunctionResult.canonical.compressed, true);
+assert.equal(derivedFunctionResult.canonical.fileBacked, false);
+assert.equal(derivedFunctionResult.ghidraDerived.found, true);
+assert.ok(derivedFunctionResult.reMcpEvidence && typeof derivedFunctionResult.reMcpEvidence === "object");
+
+const derivedDecompileResult = await decompileNdsGhidraFunction(
+  romPath,
+  { processor: "arm9", runtimeAddress: 0x02210000, overlayId: 3, maxCharacters: 20000 },
+  config,
+);
+assert.equal(derivedDecompileResult.canonical.compressed, true);
+assert.equal(derivedDecompileResult.canonical.fileBacked, false);
+assert.equal(derivedDecompileResult.ghidraDerived.found, true);
+assert.equal(
+  derivedDecompileResult.ghidraDerived.completed,
+  true,
+  `derived-overlay decompiler failed: ${derivedDecompileResult.ghidraDerived.error ?? "unknown"}`,
+);
+assert.equal(typeof derivedDecompileResult.ghidraDerived.c, "string");
+assert.ok(derivedDecompileResult.ghidraDerived.c.length > 0);
+
+const derivedReferencesResult = await listNdsGhidraReferences(
+  romPath,
+  {
+    processor: "arm9",
+    runtimeAddress: 0x02210000,
+    overlayId: 3,
+    direction: "from",
+    limit: 100,
+    offset: 0,
+  },
+  config,
+);
+const derivedReferences = derived(derivedReferencesResult).results;
+const derivedInternalCall = derivedReferences.find((reference) =>
+  String(reference.ghidraDerived?.type).includes("CALL")
+  && reference.ghidraDerived?.from?.space === "RE_MCP_ARM9_OVL_3"
+  && reference.ghidraDerived?.to?.space === "RE_MCP_ARM9_OVL_3"
+  && reference.ghidraDerived?.to?.offset === 0x02210020);
+assert.ok(derivedInternalCall, "expected Ghidra call reference within derived overlay 3");
+assert.equal(derivedInternalCall.canonical?.from?.component, "overlay");
+assert.equal(derivedInternalCall.canonical?.from?.overlayId, 3);
+assert.equal(derivedInternalCall.canonical?.from?.compressed, true);
+assert.equal(derivedInternalCall.canonical?.from?.fileBacked, false);
+assert.equal(derivedInternalCall.canonical?.to?.component, "overlay");
+assert.equal(derivedInternalCall.canonical?.to?.overlayId, 3);
+assert.equal(derivedInternalCall.canonical?.to?.compressed, true);
+assert.equal(derivedInternalCall.canonical?.to?.fileBacked, false);
+
+const derivedCallsResult = await listNdsGhidraCalls(
+  romPath,
+  {
+    processor: "arm9",
+    runtimeAddress: 0x02210000,
+    overlayId: 3,
+    direction: "callees",
+    limit: 100,
+    offset: 0,
+  },
+  config,
+);
+const derivedCalls = derived(derivedCallsResult);
+assert.equal(derivedCalls.found, true);
+const derivedCallEdge = derivedCalls.edges.find((edge) =>
+  edge.ghidraDerived?.from?.space === "RE_MCP_ARM9_OVL_3"
+  && edge.ghidraDerived?.to?.space === "RE_MCP_ARM9_OVL_3"
+  && edge.ghidraDerived?.to?.offset === 0x02210020);
+assert.ok(derivedCallEdge, "expected depth-one derived-overlay callee edge");
+assert.equal(derivedCallEdge.canonical?.from?.overlayId, 3);
+assert.equal(derivedCallEdge.canonical?.to?.overlayId, 3);
+assert.ok(derivedCallEdge.reMcpEvidence?.directCall,
+  "derived-overlay call edge must preserve exact RE-MCP direct-call evidence");
 
 const after = await snapshotProject(projectRoot);
 assert.deepEqual(after, before, "read-only/no-analysis inspection changed persistent project bytes");
@@ -186,9 +290,13 @@ process.stdout.write(JSON.stringify({
   sourceRomSha256: map.sha256,
   functionName: functionDerived.name,
   decompilerCharacters: decompileDerived.c.length,
-  references: references.length,
+  derivedDecompilerCharacters: derivedDecompileResult.ghidraDerived.c.length,
+  references: entryReferences.length + thumbReferences.length,
   calls: calls.edges.length,
+  derivedReferences: derivedReferences.length,
+  derivedCalls: derivedCalls.edges.length,
   projectFilesVerified: before.length,
-  overlaysVerified: [1, 2],
+  overlaysVerified: [1, 2, 3],
+  derivedOverlayVerified: true,
   hardenedAuthorityShape: true,
 }, null, 2) + "\n");

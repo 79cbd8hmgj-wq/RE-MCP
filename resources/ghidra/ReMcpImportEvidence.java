@@ -27,8 +27,9 @@ import ghidra.program.model.util.StringPropertyMap;
 
 public class ReMcpImportEvidence extends GhidraScript {
     private static final String BRIDGE_FORMAT = "re-mcp-nds-ghidra";
-    private static final int BRIDGE_FORMAT_VERSION = 1;
+    private static final int BRIDGE_FORMAT_VERSION = 2;
 
+    private static final String KEY_BRIDGE_FORMAT = "re-mcp.bridge-format";
     private static final String KEY_ROM_SHA = "re-mcp.rom-sha256";
     private static final String KEY_MANIFEST_SHA = "re-mcp.manifest-sha256";
     private static final String KEY_PROCESSOR = "re-mcp.processor";
@@ -90,6 +91,7 @@ public class ReMcpImportEvidence extends GhidraScript {
             String processor,
             String manifestSha256) {
         Options info = currentProgram.getOptions(Program.PROGRAM_INFO);
+        requireOwnedValue(info, KEY_BRIDGE_FORMAT, BRIDGE_FORMAT + ":" + BRIDGE_FORMAT_VERSION);
         requireOwnedValue(info, KEY_ROM_SHA, requireString(manifest, "sourceRomSha256"));
         requireOwnedValue(info, KEY_MANIFEST_SHA, manifestSha256);
         requireOwnedValue(info, KEY_PROCESSOR, processor);
@@ -127,7 +129,7 @@ public class ReMcpImportEvidence extends GhidraScript {
             Address from = componentAddress(callerEntry, instructionAddress, overlaySpaces);
 
             // Resolve the callee identity to ensure the exact target belongs to a canonical,
-            // available main/overlay address space.  RE-MCP intentionally does not create a
+            // available main/overlay address space. RE-MCP intentionally does not create a
             // Ghidra flow Reference here: ProvenFunctionCallEdge proves the exact source/target
             // relationship but does not retain conditional-vs-unconditional execution semantics.
             // Normal Ghidra auto-analysis may derive its own correctly typed flow reference later;
@@ -182,9 +184,11 @@ public class ReMcpImportEvidence extends GhidraScript {
         Map<Integer, String> result = new HashMap<>();
         for (JsonElement element : requireArray(processorManifest, "overlays")) {
             JsonObject overlay = element.getAsJsonObject();
-            if (!"not-imported-compressed".equals(requireString(overlay, "importStatus"))) {
-                result.put(requireInt(overlay, "overlayId"), requireString(overlay, "spaceName"));
+            String importStatus = requireString(overlay, "importStatus");
+            if (!"importable".equals(importStatus) && !"importable-derived".equals(importStatus)) {
+                throw new IllegalArgumentException("unknown overlay import status: " + importStatus);
             }
+            result.put(requireInt(overlay, "overlayId"), requireString(overlay, "spaceName"));
         }
         return result;
     }
@@ -212,7 +216,7 @@ public class ReMcpImportEvidence extends GhidraScript {
         int overlayId = overlayElement.getAsInt();
         String spaceName = overlaySpaces.get(overlayId);
         if (spaceName == null) {
-            throw new IllegalStateException("function references an unavailable/compressed overlay: " + overlayId);
+            throw new IllegalStateException("function references an unavailable overlay: " + overlayId);
         }
         AddressSpace space = factory.getAddressSpace(spaceName);
         if (space == null) {

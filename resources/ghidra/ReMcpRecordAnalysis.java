@@ -20,12 +20,14 @@ import com.google.gson.JsonParser;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.Application;
 import ghidra.framework.options.Options;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 
 public class ReMcpRecordAnalysis extends GhidraScript {
     private static final String BRIDGE_FORMAT = "re-mcp-nds-ghidra";
-    private static final int BRIDGE_FORMAT_VERSION = 1;
+    private static final int BRIDGE_FORMAT_VERSION = 2;
 
     private static final String KEY_BRIDGE_FORMAT = "re-mcp.bridge-format";
     private static final String KEY_ROM_SHA = "re-mcp.rom-sha256";
@@ -83,15 +85,13 @@ public class ReMcpRecordAnalysis extends GhidraScript {
         for (JsonElement element : requireArray(processorManifest, "overlays")) {
             JsonObject overlay = element.getAsJsonObject();
             String importStatus = requireString(overlay, "importStatus");
-            if ("importable".equals(importStatus)) {
-                validateImportedOverlay(overlay);
-                importedOverlays += 1;
-            }
-            else if ("not-imported-compressed".equals(importStatus)) {
-                compressedOverlayIds.add(requireInt(overlay, "overlayId"));
-            }
-            else {
+            if (!"importable".equals(importStatus) && !"importable-derived".equals(importStatus)) {
                 throw new IllegalArgumentException("unknown overlay import status: " + importStatus);
+            }
+            validateImportedOverlay(overlay);
+            importedOverlays += 1;
+            if (requireBoolean(overlay, "compressed")) {
+                compressedOverlayIds.add(requireInt(overlay, "overlayId"));
             }
         }
 
@@ -161,37 +161,44 @@ public class ReMcpRecordAnalysis extends GhidraScript {
         throw new IllegalArgumentException("manifest has no discovery record for " + processor);
     }
 
-    private void validateImportedOverlay(JsonObject overlay) {
+    private void validateImportedOverlay(JsonObject overlay) throws Exception {
         int overlayId = requireInt(overlay, "overlayId");
         String spaceName = requireString(overlay, "spaceName");
         long runtimeAddress = requireUint32(overlay, "runtimeAddress");
         long ramSize = requireNonNegativeLong(overlay, "ramSize");
-        long fileBackedSize = requireNonNegativeLong(overlay, "fileBackedSize");
-        long initializedSize = Math.min(ramSize, fileBackedSize);
-        if (initializedSize <= 0) {
+        long initializedSize = requirePositiveLong(overlay, "initializedSize");
+        String runtimeSha256 = requireSha256(overlay, "runtimeSha256");
+        if (initializedSize > ramSize) {
             throw new IllegalStateException(
-                "importable overlay has no initialized runtime bytes: " + overlayId);
+                "imported overlay initializedSize exceeds ramSize: " + overlayId);
         }
 
-        MemoryBlock block = currentProgram.getMemory().getBlock(spaceName);
+        Memory memory = currentProgram.getMemory();
+        MemoryBlock block = memory.getBlock(spaceName);
         if (block == null ||
                 !spaceName.equals(block.getName()) ||
                 !block.isOverlay() ||
+                !block.isInitialized() ||
                 !spaceName.equals(block.getStart().getAddressSpace().getName()) ||
                 block.getStart().getOffset() != runtimeAddress ||
                 block.getSize() != initializedSize) {
             throw new IllegalStateException(
-                "importable overlay is missing or conflicts with canonical metadata: " + spaceName);
+                "imported overlay is missing or conflicts with canonical metadata: " + spaceName);
+        }
+        if (!runtimeSha256.equals(sha256Memory(memory, block, initializedSize))) {
+            throw new IllegalStateException(
+                "imported overlay bytes do not match runtimeSha256: " + spaceName);
         }
 
         long bssSize = requireNonNegativeLong(overlay, "bssSize");
         if (bssSize > 0) {
             long bssOffset = addUint32(runtimeAddress, ramSize, "overlay BSS start");
             String bssName = spaceName + "_BSS";
-            MemoryBlock bss = currentProgram.getMemory().getBlock(bssName);
+            MemoryBlock bss = memory.getBlock(bssName);
             if (bss == null ||
                     !bssName.equals(bss.getName()) ||
                     !bss.isOverlay() ||
+                    bss.isInitialized() ||
                     !spaceName.equals(bss.getStart().getAddressSpace().getName()) ||
                     bss.getStart().getOffset() != bssOffset ||
                     bss.getSize() != bssSize) {
@@ -271,6 +278,34 @@ public class ReMcpRecordAnalysis extends GhidraScript {
                 }
             }
         }
+        return digestHex(digest);
+    }
+
+    private String sha256Memory(
+            Memory memory,
+            MemoryBlock block,
+            long length) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        long remaining = length;
+        Address cursor = block.getStart();
+        byte[] buffer = new byte[8192];
+        while (remaining > 0) {
+            int requested = (int)Math.min((long)buffer.length, remaining);
+            int count = memory.getBytes(cursor, buffer, 0, requested);
+            if (count != requested) {
+                throw new IllegalStateException(
+                    "unable to read every imported overlay byte for validation");
+            }
+            digest.update(buffer, 0, count);
+            remaining -= count;
+            if (remaining > 0) {
+                cursor = cursor.add(count);
+            }
+        }
+        return digestHex(digest);
+    }
+
+    private String digestHex(MessageDigest digest) {
         StringBuilder result = new StringBuilder(64);
         for (byte value : digest.digest()) {
             result.append(String.format("%02x", value & 0xff));
@@ -310,6 +345,22 @@ public class ReMcpRecordAnalysis extends GhidraScript {
         return value.getAsString();
     }
 
+    private String requireSha256(JsonObject object, String key) {
+        String value = requireString(object, key);
+        if (!value.matches("[a-f0-9]{64}")) {
+            throw new IllegalArgumentException("manifest field is not lowercase SHA-256: " + key);
+        }
+        return value;
+    }
+
+    private boolean requireBoolean(JsonObject object, String key) {
+        JsonElement value = object.get(key);
+        if (value == null || value.isJsonNull() || !value.isJsonPrimitive()) {
+            throw new IllegalArgumentException("manifest field is not a boolean: " + key);
+        }
+        return value.getAsBoolean();
+    }
+
     private int requireInt(JsonObject object, String key) {
         JsonElement value = object.get(key);
         if (value == null || value.isJsonNull()) {
@@ -322,6 +373,14 @@ public class ReMcpRecordAnalysis extends GhidraScript {
         long value = requireNonNegativeLong(object, key);
         if (value > 0xffffffffL) {
             throw new IllegalArgumentException("manifest field exceeds uint32: " + key);
+        }
+        return value;
+    }
+
+    private long requirePositiveLong(JsonObject object, String key) {
+        long value = requireNonNegativeLong(object, key);
+        if (value <= 0) {
+            throw new IllegalArgumentException("manifest field must be positive: " + key);
         }
         return value;
     }

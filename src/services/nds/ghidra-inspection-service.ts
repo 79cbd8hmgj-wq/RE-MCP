@@ -538,25 +538,20 @@ export function resolveGhidraInspectionSelector(
     );
   }
 
-  if (candidate.compressed) {
-    throw new NdsError(
-      "ghidra-address-not-inspectable",
-      "The requested address belongs to a compressed overlay that is intentionally not imported into Ghidra",
-    );
-  }
-
   const component = candidate.overlayId === null ? "main" : "overlay";
   const bss = candidate.kind === "overlay-bss";
   const fileBacked = candidate.kind === "arm9-main"
     || candidate.kind === "arm7-main"
     || candidate.romOffset !== null;
+  const derivedOverlay = candidate.representation === "derived-overlay";
+  const executableCodeAvailable = fileBacked || derivedOverlay;
   if (
     (operation === "inspect-function" || operation === "decompile-function" || operation === "list-calls")
-    && (bss || !fileBacked)
+    && (bss || !executableCodeAvailable)
   ) {
     throw new NdsError(
       "ghidra-address-not-inspectable",
-      `${operation} requires exact file-backed executable code rather than runtime-only/unbacked memory`,
+      `${operation} requires exact imported executable code rather than runtime-only/unbacked memory`,
     );
   }
 
@@ -570,7 +565,7 @@ export function resolveGhidraInspectionSelector(
       : ghidraOverlaySpaceName(selector.processor, candidate.overlayId),
     fileBacked,
     bss,
-    compressed: false,
+    compressed: candidate.compressed,
   };
 }
 
