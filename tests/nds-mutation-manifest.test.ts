@@ -24,6 +24,7 @@ test("loads and canonically normalizes one strict mutation manifest", async () =
   });
 
   const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+  assert.equal(loaded.manifest.formatVersion, 1);
   assert.equal(loaded.manifest.operations[0]?.type, "replace-bytes");
   assert.match(loaded.sha256, /^[0-9a-f]{64}$/u);
   assert.equal(loaded.canonicalJson, serializeCanonicalMutationManifest(loaded.manifest));
@@ -133,6 +134,8 @@ test("canonical JSON preserves semantic operation order", async () => {
   const loadedA = await loadNdsMutationManifest(fixture.directory, pathA);
   const loadedB = await loadNdsMutationManifest(fixture.directory, pathB);
 
+  assert.equal(loadedA.manifest.formatVersion, 1);
+  assert.equal(loadedB.manifest.formatVersion, 1);
   assert.notEqual(loadedA.canonicalJson, loadedB.canonicalJson);
   assert.notEqual(loadedA.sha256, loadedB.sha256);
   assert.equal(loadedA.manifest.operations[0]?.target.component, "arm7");
