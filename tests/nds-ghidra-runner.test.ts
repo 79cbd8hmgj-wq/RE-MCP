@@ -64,7 +64,7 @@ function map(): NdsRomMap {
 function manifest(): GhidraBridgeManifest {
   return {
     format: "re-mcp-nds-ghidra",
-    formatVersion: 1,
+    formatVersion: 2,
     sourceRomSha256: SHA,
     sha256Prefix: PREFIX,
     processors: [
