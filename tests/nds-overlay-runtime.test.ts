@@ -260,7 +260,7 @@ test("compressed runtime context enforces aggregate decoded bytes across unique 
 
 test("compressed runtime service rejects a ROM changed after canonical mapping", async () => {
   const { map, fixture } = await createCompressedRuntimeFixture();
-  fixture.buffer[0x100] ^= 0xff;
+  fixture.buffer[0x100] = fixture.buffer[0x100]! ^ 0xff;
   await writeFile(fixture.romPath, fixture.buffer);
 
   await expectCategory(
@@ -275,7 +275,7 @@ test("compressed runtime service never returns a cached image after source mutat
   const context = createNdsOverlayRuntimeContext(map);
   await context.getCompressedOverlay("arm9", ARM9_OVERLAY_ID);
 
-  fixture.buffer[0x101] ^= 0xff;
+  fixture.buffer[0x101] = fixture.buffer[0x101]! ^ 0xff;
   await writeFile(fixture.romPath, fixture.buffer);
 
   await expectCategory(
