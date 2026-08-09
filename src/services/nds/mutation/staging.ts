@@ -13,12 +13,16 @@ import { NdsError } from "../errors.js";
 import { hashFileSha256 } from "../io.js";
 import type { NdsResolvedMutationPlan } from "./planner.js";
 
-export interface NdsMutationStage {
+export interface NdsMutationOutputPaths {
+  readonly finalParent: string;
+  readonly finalRoot: string;
+  readonly finalRomPath: string;
+}
+
+export interface NdsMutationStage extends NdsMutationOutputPaths {
   readonly buildId: string;
   readonly temporaryRoot: string;
-  readonly finalRoot: string;
   readonly stagedRomPath: string;
-  readonly finalRomPath: string;
 }
 
 function stagingError(message: string): NdsError<"staging-failed"> {
@@ -63,6 +67,19 @@ async function assertArtifactsDoNotAliasStage(
   }
 }
 
+export function resolveNdsMutationOutputPaths(
+  plan: NdsResolvedMutationPlan,
+  workspaceRoot: string,
+): NdsMutationOutputPaths {
+  const finalParent = resolveInside(
+    workspaceRoot,
+    path.join("output", "nds", plan.sourceSha256Prefix),
+  );
+  const finalRoot = resolveInside(finalParent, plan.buildId);
+  const finalRomPath = resolveInside(finalRoot, plan.outputFilename);
+  return { finalParent, finalRoot, finalRomPath };
+}
+
 export async function cleanupNdsMutationStage(stage: NdsMutationStage): Promise<void> {
   try {
     await rm(stage.temporaryRoot, { recursive: true, force: true });
@@ -75,17 +92,12 @@ export async function createNdsMutationStage(
   plan: NdsResolvedMutationPlan,
   workspaceRoot: string,
 ): Promise<NdsMutationStage> {
-  const finalParent = resolveInside(
-    workspaceRoot,
-    path.join("output", "nds", plan.sourceSha256Prefix),
-  );
-  const finalRoot = resolveInside(finalParent, plan.buildId);
-  const finalRomPath = resolveInside(finalRoot, plan.outputFilename);
+  const outputPaths = resolveNdsMutationOutputPaths(plan, workspaceRoot);
   let temporaryRoot: string | null = null;
 
   try {
-    await mkdir(finalParent, { recursive: true });
-    temporaryRoot = await mkdtemp(path.join(finalParent, `.${plan.buildId}.tmp-`));
+    await mkdir(outputPaths.finalParent, { recursive: true });
+    temporaryRoot = await mkdtemp(path.join(outputPaths.finalParent, `.${plan.buildId}.tmp-`));
     const stagedRomPath = resolveInside(temporaryRoot, plan.outputFilename);
     if (path.resolve(stagedRomPath) === path.resolve(plan.sourceRomPath)) {
       throw stagingError("Staged ROM path must differ from the immutable source ROM");
@@ -104,9 +116,8 @@ export async function createNdsMutationStage(
     return {
       buildId: plan.buildId,
       temporaryRoot,
-      finalRoot,
       stagedRomPath,
-      finalRomPath,
+      ...outputPaths,
     };
   } catch (error) {
     if (temporaryRoot !== null) {
