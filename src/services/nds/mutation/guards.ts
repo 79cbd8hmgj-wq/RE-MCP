@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveInside } from "../../../security/paths.js";
@@ -53,6 +53,14 @@ export interface GuardedNdsComponentOperation extends GuardedNdsMutationBase {
 export type GuardedNdsMutationOperation =
   | GuardedNdsByteOperation
   | GuardedNdsComponentOperation;
+
+interface ResolvedReplacementArtifact {
+  readonly absolutePath: string;
+  readonly workspacePath: string;
+  readonly size: number;
+  readonly device: number;
+  readonly inode: number;
+}
 
 function sourceMismatch(message: string): NdsError<"source-rom-mismatch"> {
   return new NdsError("source-rom-mismatch", message);
@@ -233,10 +241,9 @@ async function guardByteOperation(
 async function resolveReplacementArtifact(
   workspaceRoot: string,
   requestedPath: string,
-): Promise<{ readonly absolutePath: string; readonly workspacePath: string; readonly size: number }> {
-  let absolutePath: string;
+): Promise<ResolvedReplacementArtifact> {
   try {
-    absolutePath = resolveInside(workspaceRoot, requestedPath);
+    const absolutePath = resolveInside(workspaceRoot, requestedPath);
     const info = await lstat(absolutePath);
     if (!info.isFile() || info.isSymbolicLink()) {
       throw new Error("replacement artifact must be a regular non-symlink file");
@@ -245,11 +252,28 @@ async function resolveReplacementArtifact(
       absolutePath,
       workspacePath: workspaceRelativePath(workspaceRoot, absolutePath),
       size: info.size,
+      device: info.dev,
+      inode: info.ino,
     };
   } catch (error) {
     throw new NdsError(
       "replacement-artifact-missing",
       `Replacement artifact ${JSON.stringify(requestedPath)} is unavailable inside the workspace: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function assertArtifactIsNotSource(
+  map: NdsRomMap,
+  artifact: ResolvedReplacementArtifact,
+): Promise<void> {
+  const sourceInfo = await stat(map.romPath);
+  const samePath = path.resolve(artifact.absolutePath) === path.resolve(map.romPath);
+  const sameFile = artifact.device === sourceInfo.dev && artifact.inode === sourceInfo.ino;
+  if (samePath || sameFile) {
+    throw new NdsError(
+      "unsupported-mutation-target",
+      "Replacement artifact may not alias the immutable source ROM",
     );
   }
 }
@@ -279,6 +303,7 @@ async function guardComponentOperation(
     workspaceRoot,
     operation.replacement.artifact,
   );
+  await assertArtifactIsNotSource(map, artifact);
   if (artifact.size !== component.size) {
     throw new NdsError(
       "replacement-size-mismatch",
@@ -303,7 +328,7 @@ async function guardComponentOperation(
   }
   if (artifactSha256 === originalSha256) {
     throw new NdsError(
-      "unsupported-mutation-target",
+      "mutation-no-op",
       `Mutation operation ${index} replacement is byte-identical to the source component`,
     );
   }
