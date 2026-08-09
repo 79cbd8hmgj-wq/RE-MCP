@@ -1,0 +1,70 @@
+name: One-shot mutation README patch
+
+on:
+  push:
+    branches:
+      - agent/nds-mutation-pr-c
+
+permissions:
+  contents: write
+
+jobs:
+  patch-readme:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/nds-mutation-pr-c
+      - name: Insert Milestone 1 documentation and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text()
+          heading = "### Controlled NDS Mutation — Milestone 1"
+          if heading not in text:
+              needle = "### DeSmuME and ARM9 GDB\n"
+              if needle not in text:
+                  raise SystemExit("README insertion point not found")
+              section = '''### Controlled NDS Mutation — Milestone 1
+
+          RE-MCP now exposes a narrow manifest-driven write/build surface for exact Nintendo DS ROM revisions:
+
+          - `nds_mutation_validate` validates the strict mutation manifest, exact source SHA-256, canonical component selectors, original-byte/component guards, replacement artifacts, conflicts, and deterministic build identity without publishing output.
+          - `nds_mutation_build` applies the validated plan only to a temporary copy of the source ROM, reparses and verifies the result, attributes every changed byte to an approved operation, and atomically publishes the deterministic build.
+          - `nds_mutation_verify` freshly revalidates an existing deterministic build and its evidence; it never silently repairs or overwrites a divergent/tampered build.
+
+          The **source ROM remains immutable**. Milestone 1 supports only **same-size** guarded byte replacements and exact-size whole-component replacements selected through the canonical NDS model. Callers cannot provide an arbitrary ROM offset or caller-selected output paths.
+
+          Successful builds are published beneath:
+
+          ```text
+          output/nds/<source-sha-prefix>/<build-id>/
+          ```
+
+          alongside the rebuilt `.nds` file and deterministic evidence:
+
+          ```text
+          mutation-manifest.json
+          resolved-plan.json
+          verification.json
+          changed-components.json
+          output.sha256
+          ```
+
+          Verification requires the rebuilt ROM to parse through the canonical NDS model, preserves immutable structural geometry, revalidates compressed-overlay runtime images when applicable, checks every requested operation, and requires zero unexpected changed bytes. Re-running the same exact build may reuse it only after fresh verification; a mismatched or tampered deterministic output fails closed as a publish collision.
+
+          Milestone 1 deliberately does **not** provide variable-size rebuilding or relocation, FAT/FNT mutation, decoded compressed-overlay editing, BLZ recompression, generic source-ROM writes, arbitrary ROM offset writes, or caller-selected output paths. Those capabilities remain future controlled-build work rather than being inferred from this narrow mutation surface.
+
+          '''
+              path.write_text(text.replace(needle, section + needle, 1))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-readme-mutation.yml
+          git add README.md
+          git commit -m "docs: document controlled NDS mutation milestone"
+          git push origin HEAD:agent/nds-mutation-pr-c
