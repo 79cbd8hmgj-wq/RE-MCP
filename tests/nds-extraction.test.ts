@@ -12,6 +12,10 @@ import {
 import { hashFileSha256 } from "../src/services/nds/io.js";
 import { readNdsRomMap } from "../src/services/nds/rom-map.js";
 import {
+  COMPRESSED_ARM_CODE_DECODED,
+  COMPRESSED_ARM_CODE_STORED,
+} from "./helpers/nds-compressed-code-fixture.js";
+import {
   createNdsFixture,
   encodeFntFileEntry,
   writeFatEntry,
@@ -19,6 +23,15 @@ import {
   writeFntSubtable,
   writeOverlayRecord,
 } from "./helpers/nds-fixture.js";
+
+const COMPRESSED_BACKING_SIZE = 0x80;
+
+function expectedCompressedBacking(): Buffer {
+  return Buffer.concat([
+    COMPRESSED_ARM_CODE_STORED,
+    Buffer.alloc(COMPRESSED_BACKING_SIZE - COMPRESSED_ARM_CODE_STORED.length, 0xdd),
+  ]);
+}
 
 async function buildExtractionMap() {
   const fixture = await createNdsFixture({
@@ -34,18 +47,18 @@ async function buildExtractionMap() {
   writeOverlayRecord(fixture.buffer, 0xa00, 0, {
     overlayId: 7,
     ramAddress: 0x02200000,
-    ramSize: 0x100,
+    ramSize: COMPRESSED_ARM_CODE_DECODED.length,
     bssSize: 0x20,
     staticInitStart: 0,
     staticInitEnd: 0,
     fileId: 1,
-    compressedSize: 0x70,
+    compressedSize: COMPRESSED_ARM_CODE_STORED.length,
     flags: 1,
   });
   fixture.buffer.fill(0xa9, 0x200, 0x400);
   fixture.buffer.fill(0xa7, 0x600, 0x700);
   fixture.buffer.fill(0xcc, 0x1200, 0x1220);
-  fixture.buffer.fill(0xdd, 0x1300, 0x1380);
+  expectedCompressedBacking().copy(fixture.buffer, 0x1300);
   await fixture.write();
   return { fixture, map: await readNdsRomMap(fixture.romPath) };
 }
@@ -76,10 +89,10 @@ test("extracts compressed overlays as exact stored FAT-backed bytes", async () =
     overlayId: 7,
   });
   assert.equal(artifact.compressed, true);
-  assert.equal(artifact.compressedSize, 0x70);
-  assert.equal(artifact.size, 0x80);
+  assert.equal(artifact.compressedSize, COMPRESSED_ARM_CODE_STORED.length);
+  assert.equal(artifact.size, COMPRESSED_BACKING_SIZE);
   assert.equal(artifact.ramAddress, 0x02200000);
-  assert.equal((await readFile(artifact.output)).equals(Buffer.alloc(0x80, 0xdd)), true);
+  assert.equal((await readFile(artifact.output)).equals(expectedCompressedBacking()), true);
 });
 
 test("extracts NitroFS files by canonical file ID and parsed path", async () => {
@@ -139,12 +152,25 @@ test("builds a complete deterministic analysis bundle without dumping every Nitr
   const manifest = JSON.parse(await readFile(result.manifestPath, "utf8")) as {
     sourceRomSha256: string;
     artifacts: Array<{ output: string; outputSha256: string; compressed: boolean }>;
+    runtimeArtifacts: Array<{ output: string; representation: string }>;
   };
   assert.equal(manifest.sourceRomSha256, map.sha256);
   assert.equal(manifest.artifacts.some((artifact) => artifact.output === "arm9.bin"), true);
   assert.equal(manifest.artifacts.some((artifact) => artifact.output === "arm7.bin"), true);
   assert.equal(
     manifest.artifacts.some((artifact) => artifact.output === "overlays/arm9/overlay_7.bin" && artifact.compressed),
+    true,
+  );
+  assert.equal(
+    manifest.runtimeArtifacts.some(
+      (artifact) => artifact.output === "runtime/overlays/arm9/overlay_7.bin"
+        && artifact.representation === "derived-blz",
+    ),
+    true,
+  );
+  assert.equal(
+    (await readFile(path.join(expectedRoot, "runtime", "overlays", "arm9", "overlay_7.bin")))
+      .equals(COMPRESSED_ARM_CODE_DECODED),
     true,
   );
   await readFile(path.join(expectedRoot, "address-map.json"));
