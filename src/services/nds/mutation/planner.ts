@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveInside } from "../../../security/paths.js";
 import { NdsError } from "../errors.js";
 import type { NdsRomMap } from "../rom-map.js";
 import { assertNoNdsMutationConflicts } from "./conflicts.js";
 import {
   assertNdsMutationSourceIdentity,
   guardNdsMutationOperation,
+  type GuardedNdsComponentOperation,
   type GuardedNdsMutationOperation,
 } from "./guards.js";
-import type { LoadedNdsMutationManifest } from "./manifest.js";
+import {
+  serializeCanonicalJson,
+  type LoadedNdsMutationManifest,
+  type NdsMutationOperation,
+} from "./manifest.js";
 import {
   ndsImmutableStructuralRanges,
   type NdsMutationPhysicalRange,
@@ -38,7 +45,8 @@ function workspaceRelativePath(
   const relative = path.relative(resolvedRoot, path.resolve(absolutePath));
   if (
     relative.length === 0
-    || relative.startsWith("..")
+    || relative === ".."
+    || relative.startsWith(`..${path.sep}`)
     || path.isAbsolute(relative)
   ) {
     throw new NdsError(
@@ -58,15 +66,20 @@ function buildIdentity(
   manifestSha256: string,
   operations: readonly GuardedNdsMutationOperation[],
 ): string {
-  const artifactShas = operations
-    .filter((operation) => operation.type === "replace-component")
+  const replacementArtifactSha256 = operations
+    .filter(
+      (operation): operation is GuardedNdsComponentOperation => operation.type === "replace-component",
+    )
+    .sort((left, right) => left.index - right.index)
     .map((operation) => operation.replacement.sha256);
-  return sha256Text([
-    "re-mcp-nds-mutation-build-v1",
+  const canonicalIdentity = serializeCanonicalJson({
+    format: "re-mcp-nds-build-identity",
+    formatVersion: 1,
     sourceSha256,
     manifestSha256,
-    ...artifactShas,
-  ].join("\0"));
+    replacementArtifactSha256,
+  });
+  return sha256Text(canonicalIdentity);
 }
 
 function serializeComponent(operation: GuardedNdsMutationOperation) {
@@ -140,6 +153,65 @@ export function serializeResolvedNdsMutationPlan(
   };
 }
 
+async function sameExistingFile(leftPath: string, rightPath: string): Promise<boolean> {
+  if (path.resolve(leftPath) === path.resolve(rightPath)) {
+    return true;
+  }
+  try {
+    const [left, right] = await Promise.all([stat(leftPath), stat(rightPath)]);
+    return left.dev === right.dev && left.ino === right.ino;
+  } catch {
+    return false;
+  }
+}
+
+async function assertOperationArtifactNotManifest(
+  workspaceRoot: string,
+  loadedManifest: LoadedNdsMutationManifest,
+  operation: NdsMutationOperation,
+): Promise<void> {
+  if (operation.type !== "replace-component") {
+    return;
+  }
+  const artifactPath = resolveInside(workspaceRoot, operation.replacement.artifact);
+  if (await sameExistingFile(artifactPath, loadedManifest.manifestPath)) {
+    throw new NdsError(
+      "unsupported-mutation-target",
+      "Replacement artifact may not alias the mutation manifest",
+    );
+  }
+}
+
+async function assertGuardedArtifactsNotFinalOutput(
+  workspaceRoot: string,
+  sourceSha256Prefix: string,
+  buildId: string,
+  outputFilename: string,
+  operations: readonly GuardedNdsMutationOperation[],
+): Promise<void> {
+  const finalOutputPath = resolveInside(
+    workspaceRoot,
+    path.join(
+      "output",
+      "nds",
+      sourceSha256Prefix,
+      buildId,
+      outputFilename,
+    ),
+  );
+  for (const operation of operations) {
+    if (
+      operation.type === "replace-component"
+      && await sameExistingFile(operation.replacement.absolutePath, finalOutputPath)
+    ) {
+      throw new NdsError(
+        "unsupported-mutation-target",
+        "Replacement artifact may not alias the deterministic final output ROM",
+      );
+    }
+  }
+}
+
 export async function compileNdsMutationPlan(
   map: NdsRomMap,
   workspaceRoot: string,
@@ -164,6 +236,7 @@ export async function compileNdsMutationPlan(
         `Normalized mutation operation ${index} is missing`,
       );
     }
+    await assertOperationArtifactNotManifest(workspaceRoot, loadedManifest, operation);
     operations.push(await guardNdsMutationOperation(
       map,
       workspaceRoot,
@@ -184,6 +257,13 @@ export async function compileNdsMutationPlan(
   const buildId = buildIdentity(
     expectedSourceSha256,
     loadedManifest.sha256,
+    operations,
+  );
+  await assertGuardedArtifactsNotFinalOutput(
+    workspaceRoot,
+    map.sha256Prefix,
+    buildId,
+    loadedManifest.manifest.output.filename,
     operations,
   );
 
