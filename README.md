@@ -40,7 +40,7 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 - Build a transactional static-analysis bundle without dumping every NitroFS asset
 - Optionally bootstrap and inspect a full-ROM-SHA-scoped Ghidra project through a configured local Ghidra 12.x installation
 
-The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
+The source ROM is read-only. Static-analysis extraction artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. The static-analysis tools do not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
 
 ### Controlled NDS Mutation — Milestone 1
 
