@@ -217,7 +217,15 @@ export async function compileNdsMutationPlan(
   workspaceRoot: string,
   loadedManifest: LoadedNdsMutationManifest,
 ): Promise<NdsResolvedMutationPlan> {
-  const expectedSourceSha256 = loadedManifest.manifest.source.sha256;
+  const manifest = loadedManifest.manifest;
+  if (manifest.formatVersion !== 1) {
+    throw new NdsError(
+      "mutation-manifest-invalid",
+      "NDS mutation manifest v2 is parseable but cannot be planned until Rebuild Core 2 planning is available",
+    );
+  }
+
+  const expectedSourceSha256 = manifest.source.sha256;
   if (map.sha256 !== expectedSourceSha256) {
     throw new NdsError(
       "source-rom-mismatch",
@@ -228,8 +236,8 @@ export async function compileNdsMutationPlan(
   await assertNdsMutationSourceIdentity(map, expectedSourceSha256);
 
   const operations: GuardedNdsMutationOperation[] = [];
-  for (let index = 0; index < loadedManifest.manifest.operations.length; index += 1) {
-    const operation = loadedManifest.manifest.operations[index];
+  for (let index = 0; index < manifest.operations.length; index += 1) {
+    const operation = manifest.operations[index];
     if (operation === undefined) {
       throw new NdsError(
         "mutation-manifest-invalid",
@@ -263,7 +271,7 @@ export async function compileNdsMutationPlan(
     workspaceRoot,
     map.sha256Prefix,
     buildId,
-    loadedManifest.manifest.output.filename,
+    manifest.output.filename,
     operations,
   );
 
@@ -275,7 +283,7 @@ export async function compileNdsMutationPlan(
     sourceSize: map.fileSize,
     manifestWorkspacePath: loadedManifest.workspaceRelativePath,
     manifestSha256: loadedManifest.sha256,
-    outputFilename: loadedManifest.manifest.output.filename,
+    outputFilename: manifest.output.filename,
     buildId,
     operations,
     applicationOperations,
