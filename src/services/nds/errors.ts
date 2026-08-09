@@ -36,6 +36,26 @@ export type NdsBlzErrorCategory =
 export type NdsCompressedOverlayErrorCategory =
   | "compressed-overlay-runtime-unavailable";
 
+export type NdsMutationErrorCategory =
+  | "mutation-manifest-invalid"
+  | "source-rom-mismatch"
+  | "unsupported-mutation-target"
+  | "structural-metadata-mutation"
+  | "ambiguous-runtime-target"
+  | "original-byte-guard-failed"
+  | "original-component-guard-failed"
+  | "replacement-artifact-missing"
+  | "replacement-artifact-hash-mismatch"
+  | "replacement-size-mismatch"
+  | "mutation-overlap"
+  | "compressed-overlay-invalid"
+  | "staging-failed"
+  | "post-build-parse-failed"
+  | "structural-map-changed"
+  | "unexpected-rom-diff"
+  | "output-verification-failed"
+  | "publish-failed";
+
 export type NdsRuntimeCorrelationErrorCategory =
   | "runtime-correlation-no-owned-process"
   | "runtime-correlation-rom-identity-missing"
@@ -74,9 +94,10 @@ export type AnyNdsErrorCategory =
   | NdsBlzErrorCategory
   | NdsCompressedOverlayErrorCategory;
 
-/** Complete service-layer category set, including runtime correlation and optional Ghidra integration. */
+/** Complete service-layer category set, including mutation, runtime correlation, and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
+  | NdsMutationErrorCategory
   | NdsRuntimeCorrelationErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
