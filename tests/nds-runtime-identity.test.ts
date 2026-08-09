@@ -178,7 +178,7 @@ test("desmume_start binds a full ROM SHA-256 without requiring a full NDS parse"
       arm9GdbPort: 20000,
     });
 
-    assert.equal((result as { isError?: boolean }).isError, undefined);
+    assert.equal((result as { isError?: boolean }).isError, false);
     assert.notEqual(manager.startRequest, null);
     assert.equal(manager.startRequest?.metadata.rom, path.join(directory, "game.nds"));
     assert.match(String(manager.startRequest?.metadata.romSha256), /^[0-9a-f]{64}$/u);
