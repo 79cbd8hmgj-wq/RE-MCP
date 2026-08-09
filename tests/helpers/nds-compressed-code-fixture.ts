@@ -10,10 +10,33 @@ export const COMPRESSED_ARM_CODE_STORED = Buffer.from(
   "hex",
 );
 
-export const COMPRESSED_ARM_CODE_DECODED = Buffer.from(
-  "060000eb34009fe5000000ea0000a0e11eff2fe10000a0e10000a0e10000a0e11eff2fe10000a0e10000a0e10000a0e110402de91eff2fe10000a0e10000a0e1600020020000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e10000a0e1",
+const COMPRESSED_ARM_CODE_HEAD = Buffer.from(
+  [
+    "060000eb", // BL +0x20
+    "34009fe5", // LDR r0, [pc, #0x34]
+    "000000ea", // B +0x10
+    "0000a0e1", // MOV r0, r0
+    "1eff2fe1", // BX lr
+    "0000a0e1",
+    "0000a0e1",
+    "0000a0e1",
+    "1eff2fe1", // callee BX lr at +0x20
+    "0000a0e1",
+    "0000a0e1",
+    "0000a0e1",
+    "10402de9", // prologue-looking PUSH at +0x30; not proof by itself
+    "1eff2fe1",
+    "0000a0e1",
+    "0000a0e1",
+    "60002002", // literal/data word at +0x40
+  ].join(""),
   "hex",
 );
+
+export const COMPRESSED_ARM_CODE_DECODED = Buffer.concat([
+  COMPRESSED_ARM_CODE_HEAD,
+  Buffer.from("0000a0e1".repeat(47), "hex"),
+]);
 
 export const COMPRESSED_ARM_CODE_OVERLAY_ID = 7;
 export const COMPRESSED_ARM_CODE_RUNTIME_ADDRESS = 0x02200000;
