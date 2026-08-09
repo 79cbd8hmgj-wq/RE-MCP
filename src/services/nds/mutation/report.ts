@@ -1,10 +1,14 @@
+import type { GuardedNdsMutationOperation } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
 import {
   serializeResolvedNdsMutationPlan,
   type NdsResolvedMutationPlan,
 } from "./planner.js";
 import type { NdsResolvedMutationComponent } from "./selectors.js";
-import type { NdsMutationVerificationResult } from "./verify.js";
+import type {
+  NdsMutationOperationVerification,
+  NdsMutationVerificationResult,
+} from "./verify.js";
 
 export const NDS_MUTATION_EVIDENCE_FILENAMES = [
   "mutation-manifest.json",
@@ -19,6 +23,20 @@ export type NdsMutationEvidenceFilename = typeof NDS_MUTATION_EVIDENCE_FILENAMES
 export interface NdsMutationEvidenceFile {
   readonly filename: NdsMutationEvidenceFilename;
   readonly bytes: Buffer;
+}
+
+interface NdsChangedComponentEvidence {
+  readonly component: NdsResolvedMutationComponent["component"];
+  readonly processor: NdsResolvedMutationComponent["processor"];
+  readonly overlayId: number | null;
+  readonly fileId: number | null;
+  readonly filePath: string | null;
+  readonly romStart: number;
+  readonly romEnd: number;
+  readonly size: number;
+  readonly compressed: boolean;
+  readonly overlayOwners: NdsResolvedMutationComponent["overlayOwners"];
+  readonly operationIndexes: readonly number[];
 }
 
 function prettyJson(value: unknown): Buffer {
@@ -61,7 +79,9 @@ function componentIdentityKey(component: NdsResolvedMutationComponent): string {
   ].join(":");
 }
 
-function changedComponents(plan: NdsResolvedMutationPlan): unknown {
+function resolvedChangedComponents(
+  plan: NdsResolvedMutationPlan,
+): readonly NdsChangedComponentEvidence[] {
   const grouped = new Map<string, {
     readonly component: NdsResolvedMutationComponent;
     readonly operationIndexes: number[];
@@ -80,7 +100,7 @@ function changedComponents(plan: NdsResolvedMutationPlan): unknown {
     });
   }
 
-  const components = [...grouped.values()]
+  return [...grouped.values()]
     .sort((left, right) => left.component.romStart - right.component.romStart
       || left.component.romEnd - right.component.romEnd
       || componentIdentityKey(left.component).localeCompare(componentIdentityKey(right.component)))
@@ -97,7 +117,125 @@ function changedComponents(plan: NdsResolvedMutationPlan): unknown {
       overlayOwners: component.overlayOwners,
       operationIndexes: [...operationIndexes].sort((left, right) => left - right),
     }));
-  return { components };
+}
+
+function serializedComponent(component: NdsResolvedMutationComponent): unknown {
+  return {
+    component: component.component,
+    processor: component.processor,
+    overlayId: component.overlayId,
+    fileId: component.fileId,
+    filePath: component.filePath,
+    romStart: component.romStart,
+    romEnd: component.romEnd,
+    size: component.size,
+    compressed: component.compressed,
+    overlayOwners: component.overlayOwners,
+  };
+}
+
+function operationVerificationByIndex(
+  verification: NdsMutationVerificationResult,
+): ReadonlyMap<number, NdsMutationOperationVerification> {
+  return new Map(verification.operations.map((operation) => [operation.index, operation]));
+}
+
+function operationEvidence(
+  operation: GuardedNdsMutationOperation,
+  postBuild: NdsMutationOperationVerification,
+): unknown {
+  if (operation.type === "replace-bytes") {
+    return {
+      index: operation.index,
+      type: operation.type,
+      status: postBuild.status,
+      target: operation.target,
+      component: serializedComponent(operation.component),
+      romStart: operation.romStart,
+      romEnd: operation.romEnd,
+      size: operation.size,
+      guard: {
+        kind: "expected-bytes",
+        expected: operation.expected,
+      },
+      replacement: {
+        kind: "bytes",
+        bytes: operation.replacement,
+      },
+      postBuild: {
+        status: postBuild.status,
+        romStart: postBuild.romStart,
+        romEnd: postBuild.romEnd,
+      },
+    };
+  }
+  return {
+    index: operation.index,
+    type: operation.type,
+    status: postBuild.status,
+    target: operation.target,
+    component: serializedComponent(operation.component),
+    romStart: operation.romStart,
+    romEnd: operation.romEnd,
+    size: operation.size,
+    guard: {
+      kind: "component-sha256",
+      expectedOriginalSha256: operation.expectedOriginalSha256,
+      actualOriginalSha256: operation.originalSha256,
+    },
+    replacement: {
+      kind: "artifact",
+      artifact: operation.replacement.workspacePath,
+      sha256: operation.replacement.sha256,
+      size: operation.replacement.size,
+    },
+    postBuild: {
+      status: postBuild.status,
+      romStart: postBuild.romStart,
+      romEnd: postBuild.romEnd,
+      outputComponentSha256: operation.replacement.sha256,
+    },
+  };
+}
+
+function verificationEvidence(
+  plan: NdsResolvedMutationPlan,
+  verification: NdsMutationVerificationResult,
+  components: readonly NdsChangedComponentEvidence[],
+): unknown {
+  const verifiedByIndex = operationVerificationByIndex(verification);
+  const operations = plan.operations.map((operation) => {
+    const postBuild = verifiedByIndex.get(operation.index);
+    if (postBuild === undefined) {
+      throw new Error(`Missing post-build verification for mutation operation ${operation.index}`);
+    }
+    return operationEvidence(operation, postBuild);
+  });
+  return {
+    status: verification.status,
+    source: {
+      rom: plan.sourceWorkspacePath,
+      sha256: plan.sourceSha256,
+      size: plan.sourceSize,
+      unchanged: verification.sourceUnchanged,
+    },
+    output: {
+      rom: `output/nds/${plan.sourceSha256Prefix}/${plan.buildId}/${plan.outputFilename}`,
+      sha256: verification.outputSha256,
+      size: verification.outputSize,
+    },
+    manifestSha256: plan.manifestSha256,
+    buildId: plan.buildId,
+    operationCount: plan.operations.length,
+    changedComponentCount: components.length,
+    changedByteCount: verification.changedByteCount,
+    structuralMetadataUnchanged: verification.structuralMetadataUnchanged,
+    structuralMapUnchanged: verification.structuralMapUnchanged,
+    canonicalOutputParse: "passed",
+    unexpectedChangedBytes: verification.unexpectedChangedBytes,
+    compressedOverlays: verification.compressedOverlays,
+    operations,
+  };
 }
 
 export function renderNdsMutationEvidence(
@@ -105,6 +243,7 @@ export function renderNdsMutationEvidence(
   plan: NdsResolvedMutationPlan,
   verification: NdsMutationVerificationResult,
 ): readonly NdsMutationEvidenceFile[] {
+  const components = resolvedChangedComponents(plan);
   return [
     {
       filename: "mutation-manifest.json",
@@ -116,11 +255,11 @@ export function renderNdsMutationEvidence(
     },
     {
       filename: "verification.json",
-      bytes: prettyJson(verification),
+      bytes: prettyJson(verificationEvidence(plan, verification, components)),
     },
     {
       filename: "changed-components.json",
-      bytes: prettyJson(changedComponents(plan)),
+      bytes: prettyJson({ components }),
     },
     {
       filename: "output.sha256",
