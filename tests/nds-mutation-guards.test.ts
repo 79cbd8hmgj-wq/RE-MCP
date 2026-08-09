@@ -190,7 +190,8 @@ test("accepts an exact-size stored compressed replacement only when its BLZ payl
     overlay.romOffset + overlay.romSize,
   );
   const validReplacement = Buffer.from(source);
-  validReplacement[validReplacement.length - 1] ^= 0x01;
+  const trailingIndex = validReplacement.length - 1;
+  validReplacement.writeUInt8(validReplacement.readUInt8(trailingIndex) ^ 0x01, trailingIndex);
   const validArtifact = await fixture.writeArtifact(
     "artifacts/compressed-valid.bin",
     validReplacement,
