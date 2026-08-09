@@ -1,10 +1,14 @@
 import type { ArmDisassemblyBackend } from "../disassembly/backend.js";
 import {
-  analyzeNdsControlFlow,
+  analyzeNdsControlFlowWithReader,
   type ControlFlowLimits,
   type StaticControlFlowGraph,
 } from "./control-flow.js";
-import type { NdsCodeSource } from "./disassembly-source.js";
+import {
+  withValidatedNdsCodeReader,
+  type NdsCodeRead,
+  type NdsCodeSource,
+} from "./disassembly-source.js";
 import {
   NdsError,
   type AnyNdsErrorCategory,
@@ -105,15 +109,8 @@ interface MutableFunctionRecord {
 }
 
 type ScheduledWork =
-  | {
-    readonly kind: "function";
-    readonly functionId: string;
-    readonly source: NdsCodeSource;
-  }
-  | {
-    readonly kind: "coverage";
-    readonly source: NdsCodeSource;
-  };
+  | { readonly kind: "function"; readonly functionId: string; readonly source: NdsCodeSource }
+  | { readonly kind: "coverage"; readonly source: NdsCodeSource };
 
 interface EffectiveCfgLimits {
   readonly limits: ControlFlowLimits;
@@ -154,17 +151,11 @@ function validateLimits(limits: FunctionDiscoveryLimits): void {
   validatePositiveSafeInteger(limits.maxFunctions, "Maximum function count");
   validatePositiveSafeInteger(limits.maxCallSites, "Maximum direct call-site count");
   validatePositiveSafeInteger(limits.maxTotalBlocks, "Maximum total block count");
-  validatePositiveSafeInteger(
-    limits.maxTotalInstructions,
-    "Maximum total instruction count",
-  );
+  validatePositiveSafeInteger(limits.maxTotalInstructions, "Maximum total instruction count");
   validatePositiveSafeInteger(limits.maxTotalBytes, "Maximum total decoded byte count");
   validatePositiveSafeInteger(limits.maxTotalEdges, "Maximum total traversal edge count");
   validatePositiveSafeInteger(limits.perFunctionCfg.maxBlocks, "Per-function block count");
-  validatePositiveSafeInteger(
-    limits.perFunctionCfg.maxInstructions,
-    "Per-function instruction count",
-  );
+  validatePositiveSafeInteger(limits.perFunctionCfg.maxInstructions, "Per-function instruction count");
   validatePositiveSafeInteger(limits.perFunctionCfg.maxBytes, "Per-function decoded byte count");
   validatePositiveSafeInteger(limits.perFunctionCfg.maxEdges, "Per-function traversal edge count");
 }
@@ -188,7 +179,9 @@ function identityFromSource(source: NdsCodeSource): ProvenFunctionIdentity {
   };
 }
 
-function directProofKey(proof: Extract<FunctionProof, { readonly kind: "direct-call" }>): string {
+function directProofKey(
+  proof: Extract<FunctionProof, { readonly kind: "direct-call" }>,
+): string {
   return [
     proof.caller.component,
     proof.caller.overlayId ?? "main",
@@ -229,7 +222,7 @@ function addProof(record: MutableFunctionRecord, proof: FunctionProof): void {
 }
 
 function graphForResult(
-  result: Awaited<ReturnType<typeof analyzeNdsControlFlow>>,
+  result: Awaited<ReturnType<typeof analyzeNdsControlFlowWithReader>>,
 ): StaticControlFlowGraph {
   if (!("blocks" in result)) {
     throw functionError(
@@ -285,14 +278,13 @@ function compareCoverageSeed(left: NdsCodeSource, right: NdsCodeSource): number 
   return 0;
 }
 
-export async function discoverNdsFunctions(
+async function discoverNdsFunctionsWithReader(
   map: NdsRomMap,
   request: DiscoverNdsFunctionsRequest,
   limits: FunctionDiscoveryLimits,
   backend: ArmDisassemblyBackend,
+  read: NdsCodeRead,
 ): Promise<DiscoverNdsFunctionsResult> {
-  validateLimits(limits);
-
   const prepared = prepareFunctionSearch(
     map,
     request.processor,
@@ -400,9 +392,10 @@ export async function discoverNdsFunctions(
       return null;
     }
 
-    const globalTightening = new Set<
-      Exclude<FunctionDiscoveryTruncationReason, "component-limit" | "function-limit" | "call-site-limit">
-    >();
+    const globalTightening = new Set<Exclude<
+      FunctionDiscoveryTruncationReason,
+      "component-limit" | "function-limit" | "call-site-limit"
+    >>();
     if (remainingBlocks <= limits.perFunctionCfg.maxBlocks) globalTightening.add("block-limit");
     if (remainingInstructions <= limits.perFunctionCfg.maxInstructions) globalTightening.add("instruction-limit");
     if (remainingBytes <= limits.perFunctionCfg.maxBytes) globalTightening.add("byte-limit");
@@ -411,10 +404,7 @@ export async function discoverNdsFunctions(
     return {
       limits: {
         maxBlocks: Math.min(limits.perFunctionCfg.maxBlocks, remainingBlocks),
-        maxInstructions: Math.min(
-          limits.perFunctionCfg.maxInstructions,
-          remainingInstructions,
-        ),
+        maxInstructions: Math.min(limits.perFunctionCfg.maxInstructions, remainingInstructions),
         maxBytes: Math.min(limits.perFunctionCfg.maxBytes, remainingBytes),
         maxEdges: Math.min(limits.perFunctionCfg.maxEdges, remainingEdges),
       },
@@ -471,9 +461,7 @@ export async function discoverNdsFunctions(
     instructionAddress: number,
   ) {
     const block = graph.blocks.find((entry) => entry.id === fromBlockId);
-    const instruction = block?.instructions.find(
-      (entry) => entry.address === instructionAddress,
-    );
+    const instruction = block?.instructions.find((entry) => entry.address === instructionAddress);
     if (block === undefined || instruction === undefined) {
       throw functionError(
         "function-entry-not-uniquely-resolved",
@@ -545,10 +533,13 @@ export async function discoverNdsFunctions(
           instructionRomOffset: instruction.romOffset,
           calleeFunctionId: provenFunctionId(targetRecord.identity),
         };
+        const instructionStorage = edge.instructionRomOffset === null
+          ? "derived"
+          : edge.instructionRomOffset.toString(16);
         const edgeKey = [
           edge.callerFunctionId,
           edge.instructionAddress.toString(16),
-          edge.instructionRomOffset.toString(16),
+          instructionStorage,
           edge.calleeFunctionId,
         ].join(":");
         retainedCallEdges.set(edgeKey, edge);
@@ -591,18 +582,17 @@ export async function discoverNdsFunctions(
       continue;
     }
 
-    const graph = graphForResult(await analyzeNdsControlFlow(
+    const graph = graphForResult(await analyzeNdsControlFlowWithReader(
       map,
       {
         processor: work.source.processor,
         runtimeAddress: work.source.runtimeAddress,
         mode: work.source.mode,
-        ...(work.source.overlayId === null
-          ? {}
-          : { overlayId: work.source.overlayId }),
+        ...(work.source.overlayId === null ? {} : { overlayId: work.source.overlayId }),
       },
       effective.limits,
       backend,
+      read,
     ));
 
     collectGraphTotals(graph);
@@ -651,8 +641,6 @@ export async function discoverNdsFunctions(
       let status: FunctionComponentCoverageStatus;
       if (index >= limits.maxComponents) {
         status = "out-of-limit";
-      } else if (component.compressed) {
-        status = "compressed-overlay-not-decodable";
       } else if (limitedComponents.has(key)) {
         status = "out-of-limit";
       } else if (scannedComponents.has(key)) {
@@ -695,4 +683,17 @@ export async function discoverNdsFunctions(
       traversalEdges: seenTraversalEdges.size,
     },
   };
+}
+
+export async function discoverNdsFunctions(
+  map: NdsRomMap,
+  request: DiscoverNdsFunctionsRequest,
+  limits: FunctionDiscoveryLimits,
+  backend: ArmDisassemblyBackend,
+): Promise<DiscoverNdsFunctionsResult> {
+  validateLimits(limits);
+  return await withValidatedNdsCodeReader(
+    map,
+    (read) => discoverNdsFunctionsWithReader(map, request, limits, backend, read),
+  );
 }
