@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { open, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -51,6 +51,16 @@ async function buildFixture(): Promise<{
 
 function isPublishCollision(error: unknown): boolean {
   return error instanceof NdsError && error.category === "publish-collision";
+}
+
+async function overwriteByte(filePath: string, offset: number, value: number): Promise<void> {
+  const handle = await open(filePath, "r+");
+  try {
+    await handle.write(Buffer.from([value]), 0, 1, offset);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 test("publishes exactly one verified deterministic build directory", async () => {
@@ -155,6 +165,42 @@ test("changed-components deduplicates one physical NitroFS file across ID and pa
   assert.equal(report.components[0]?.fileId, fixture.ordinaryFileId);
   assert.equal(report.components[0]?.filePath, "asset.bin");
   assert.deepEqual(report.components[0]?.operationIndexes, [0, 1]);
+});
+
+test("rejects a staged ROM that changes after verification but before publication", async () => {
+  const fixture = await createMutationFixture();
+  const loaded = await loadByteManifest(fixture);
+  let stagedPath: string | null = null;
+  await assert.rejects(
+    buildNdsMutation(
+      fixture.map,
+      fixture.directory,
+      loaded,
+      {
+        async beforePublish(stage) {
+          stagedPath = stage.stagedRomPath;
+          const current = (await readFile(stage.stagedRomPath))
+            .readUInt8(fixture.unrelatedRomOffset);
+          await overwriteByte(
+            stage.stagedRomPath,
+            fixture.unrelatedRomOffset,
+            current ^ 0xff,
+          );
+        },
+      },
+    ),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "output-verification-failed",
+  );
+  assert.notEqual(stagedPath, null);
+  const outputParent = path.join(
+    fixture.directory,
+    "output",
+    "nds",
+    fixture.map.sha256Prefix,
+  );
+  const entries = await readdir(outputParent);
+  assert.equal(entries.some((entry) => !entry.startsWith(".")), false);
 });
 
 test("reuses an exact deterministic build only after fresh revalidation", async () => {
