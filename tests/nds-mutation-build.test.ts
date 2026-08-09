@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { NdsError } from "../src/services/nds/errors.js";
 import { hashFileSha256 } from "../src/services/nds/io.js";
 import {
   buildNdsMutation,
+  verifyPublishedNdsMutationBuild,
   type NdsMutationBuildResult,
 } from "../src/services/nds/mutation/build.js";
 import { loadNdsMutationManifest, type LoadedNdsMutationManifest } from "../src/services/nds/mutation/manifest.js";
@@ -45,6 +47,10 @@ async function buildFixture(): Promise<{
   const loaded = await loadByteManifest(fixture);
   const result = await buildNdsMutation(fixture.map, fixture.directory, loaded);
   return { fixture, loaded, result };
+}
+
+function isPublishCollision(error: unknown): boolean {
+  return error instanceof NdsError && error.category === "publish-collision";
 }
 
 test("publishes exactly one verified deterministic build directory", async () => {
@@ -95,4 +101,69 @@ test("identical inputs in different absolute workspaces produce byte-identical R
     const right = await readFile(path.join(second.outputRoot, filename));
     assert.deepEqual(left, right, `${filename} differs across absolute workspaces`);
   }
+});
+
+test("reuses an exact deterministic build only after fresh revalidation", async () => {
+  const { fixture, loaded, result: first } = await buildFixture();
+  const second = await buildNdsMutation(fixture.map, fixture.directory, loaded);
+  assert.equal(second.buildId, first.buildId);
+  assert.equal(second.reused, true);
+  assert.equal(second.outputSha256, first.outputSha256);
+  assert.deepEqual(second.verification, first.verification);
+
+  const verified = await verifyPublishedNdsMutationBuild(
+    fixture.map,
+    fixture.directory,
+    loaded,
+  );
+  assert.equal(verified.reused, true);
+  assert.equal(verified.buildId, first.buildId);
+  assert.equal(verified.outputSha256, first.outputSha256);
+});
+
+test("tampered published ROM or evidence fails closed as publish-collision without repair", async (context) => {
+  for (const filename of EXPECTED_ENTRIES) {
+    await context.test(filename, async () => {
+      const { fixture, loaded, result } = await buildFixture();
+      const target = path.join(result.outputRoot, filename);
+      const before = await readFile(target);
+      const tampered = Buffer.from(before);
+      if (filename === "published.nds") {
+        tampered[fixture.unrelatedRomOffset] = (tampered[fixture.unrelatedRomOffset] ?? 0) ^ 0xff;
+      } else {
+        tampered[0] = (tampered[0] ?? 0) ^ 0x01;
+      }
+      await writeFile(target, tampered);
+      const tamperedHash = await hashFileSha256(target);
+
+      await assert.rejects(
+        buildNdsMutation(fixture.map, fixture.directory, loaded),
+        isPublishCollision,
+      );
+      assert.equal(await hashFileSha256(target), tamperedHash);
+
+      await assert.rejects(
+        verifyPublishedNdsMutationBuild(fixture.map, fixture.directory, loaded),
+        isPublishCollision,
+      );
+      assert.equal(await hashFileSha256(target), tamperedHash);
+      assert.deepEqual((await readdir(result.outputRoot)).sort(), [...EXPECTED_ENTRIES].sort());
+    });
+  }
+});
+
+test("unexpected or missing published entries fail closed", async () => {
+  const extra = await buildFixture();
+  await writeFile(path.join(extra.result.outputRoot, "unexpected.txt"), "unexpected\n");
+  await assert.rejects(
+    verifyPublishedNdsMutationBuild(extra.fixture.map, extra.fixture.directory, extra.loaded),
+    isPublishCollision,
+  );
+
+  const missing = await buildFixture();
+  await writeFile(path.join(missing.result.outputRoot, "verification.json"), Buffer.alloc(0));
+  await assert.rejects(
+    buildNdsMutation(missing.fixture.map, missing.fixture.directory, missing.loaded),
+    isPublishCollision,
+  );
 });
