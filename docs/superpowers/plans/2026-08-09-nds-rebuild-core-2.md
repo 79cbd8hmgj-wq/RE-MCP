@@ -822,8 +822,18 @@ export type NdsResolvedMutationOperationV2 =
   | { readonly kind: "decoded-overlay"; readonly index: number; readonly overlay: NdsDecodedOverlayReplacementPlan };
 
 export interface NdsResolvedMutationPlanV1 {
-  readonly formatVersion: 1;
-  // Preserve every current v1 field/meaning exactly.
+  readonly sourceRomPath: string;
+  readonly sourceWorkspacePath: string;
+  readonly sourceSha256: string;
+  readonly sourceSha256Prefix: string;
+  readonly sourceSize: number;
+  readonly manifestWorkspacePath: string;
+  readonly manifestSha256: string;
+  readonly outputFilename: string;
+  readonly buildId: string;
+  readonly operations: readonly GuardedNdsMutationOperation[];
+  readonly applicationOperations: readonly GuardedNdsMutationOperation[];
+  readonly immutableStructuralRanges: readonly NdsMutationPhysicalRange[];
 }
 
 export interface NdsResolvedMutationPlanV2 {
@@ -1035,6 +1045,21 @@ export interface NdsMutationOperationVerificationV2 {
   readonly outputSha256: string | null;
 }
 
+export interface NdsMutationVerificationResultV1 {
+  readonly status: "passed";
+  readonly sourceSha256: string;
+  readonly outputSha256: string;
+  readonly sourceSize: number;
+  readonly outputSize: number;
+  readonly sourceUnchanged: true;
+  readonly structuralMetadataUnchanged: true;
+  readonly structuralMapUnchanged: true;
+  readonly changedByteCount: number;
+  readonly unexpectedChangedBytes: 0;
+  readonly operations: readonly NdsMutationOperationVerification[];
+  readonly compressedOverlays: readonly NdsCompressedOverlayVerification[];
+}
+
 export interface NdsMutationVerificationResultV2 {
   readonly formatVersion: 2;
   readonly status: "passed";
@@ -1164,7 +1189,7 @@ Second exact run is reused only after complete fresh v2 verification. Tamper eac
 
 - [ ] **Step 6: Extend assembled package smoke.**
 
-Using only built `dist/` modules, synthetic v2 ROM must exercise:
+Using only built `dist/` modules, the synthetic v2 ROM must initialize a valid 0x160-byte rebuild header and matching header CRC before planning. It must exercise:
 
 ```text
 variable ordinary NitroFS replacement
