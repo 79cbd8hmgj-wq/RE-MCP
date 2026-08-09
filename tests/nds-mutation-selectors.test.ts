@@ -10,7 +10,7 @@ import {
 } from "../src/services/nds/mutation/selectors.js";
 import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
 
-test("resolves main, overlay, and NitroFS components canonically", async () => {
+test("resolves main, explicit overlay, and ordinary NitroFS components canonically", async () => {
   const fixture = await createMutationFixture();
 
   const arm9 = resolveNdsMutationComponent(fixture.map, { component: "arm9" });
@@ -35,6 +35,22 @@ test("resolves main, overlay, and NitroFS components canonically", async () => {
   });
   assert.equal(byId.romStart, byPath.romStart);
   assert.equal(byPath.fileId, fixture.ordinaryFileId);
+});
+
+test("rejects every overlay-backed NitroFS alias and requires the overlay selector", async () => {
+  const fixture = await createMutationFixture();
+  for (const selector of [
+    { component: "nitrofs-file" as const, fileId: fixture.uncompressedFileId },
+    { component: "nitrofs-path" as const, filePath: "overlay.bin" },
+    { component: "nitrofs-file" as const, fileId: fixture.compressedFileId },
+    { component: "nitrofs-path" as const, filePath: "compressed.bin" },
+  ]) {
+    assert.throws(
+      () => resolveNdsMutationComponent(fixture.map, selector),
+      (error: unknown) => error instanceof NdsError
+        && error.category === "unsupported-mutation-target",
+    );
+  }
 });
 
 test("resolves an exact uncompressed overlay relative byte range", async () => {
@@ -79,31 +95,21 @@ test("resolves unique main and exact-overlay runtime addresses", async () => {
   assert.equal(exact.relativeOffset, 6);
 });
 
-test("rejects byte edits through compressed overlay selectors and NitroFS aliases", async () => {
+test("rejects byte edits against stored compressed overlays", async () => {
   const fixture = await createMutationFixture();
-  for (const target of [
-    {
-      component: "arm9-overlay" as const,
-      overlayId: fixture.compressedOverlayId,
-      relativeOffset: 0,
-    },
-    {
-      component: "nitrofs-file" as const,
-      fileId: fixture.compressedFileId,
-      relativeOffset: 0,
-    },
-    {
-      component: "nitrofs-path" as const,
-      filePath: "compressed.bin",
-      relativeOffset: 0,
-    },
-  ]) {
-    assert.throws(
-      () => resolveNdsMutationByteTarget(fixture.map, target, 2),
-      (error: unknown) => error instanceof NdsError
-        && error.category === "unsupported-mutation-target",
-    );
-  }
+  assert.throws(
+    () => resolveNdsMutationByteTarget(
+      fixture.map,
+      {
+        component: "arm9-overlay",
+        overlayId: fixture.compressedOverlayId,
+        relativeOffset: 0,
+      },
+      2,
+    ),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "unsupported-mutation-target",
+  );
 });
 
 test("rejects ranges that cross component boundaries", async () => {
