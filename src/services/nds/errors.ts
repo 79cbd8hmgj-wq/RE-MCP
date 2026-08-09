@@ -28,6 +28,14 @@ export type NdsFunctionErrorCategory =
   | "function-entry-not-uniquely-resolved"
   | "function-discovery-limit-exceeded";
 
+export type NdsBlzErrorCategory =
+  | "malformed-blz"
+  | "blz-output-size-mismatch"
+  | "blz-output-limit";
+
+export type NdsCompressedOverlayErrorCategory =
+  | "compressed-overlay-runtime-unavailable";
+
 export type NdsGhidraErrorCategory =
   | "ghidra-not-configured"
   | "invalid-ghidra-installation"
@@ -49,16 +57,18 @@ export type NdsGhidraInspectionErrorCategory =
   | "ghidra-inspection-timeout"
   | "ghidra-inspection-result-invalid";
 
-/** Error categories handled by the pre-Ghidra NDS tool surfaces. */
+/** Error categories handled by the current pre-Ghidra NDS tool surfaces. */
 export type AnyNdsErrorCategory =
   | NdsErrorCategory
   | NdsReferenceErrorCategory
   | NdsPatternSearchErrorCategory
   | NdsFunctionErrorCategory;
 
-/** Complete service-layer category set, including optional Ghidra integration. */
+/** Complete service-layer category set, including compressed overlays and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
   | AnyNdsErrorCategory
+  | NdsBlzErrorCategory
+  | NdsCompressedOverlayErrorCategory
   | NdsGhidraErrorCategory
   | NdsGhidraInspectionErrorCategory;
 

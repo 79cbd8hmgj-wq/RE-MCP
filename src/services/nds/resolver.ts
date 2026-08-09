@@ -5,11 +5,18 @@ import type { NdsRomMap } from "./rom-map.js";
 const UINT32_MAX = 0xffffffff;
 const NDS_HEADER_REGION_END = 0x200;
 
+export type RuntimeRepresentation =
+  | "rom-file-backed"
+  | "derived-overlay"
+  | "runtime-only";
+
 export interface RuntimeCandidate {
   readonly kind: "arm9-main" | "arm7-main" | "arm9-overlay" | "arm7-overlay" | "overlay-bss";
   readonly processor: NdsProcessor;
   readonly runtimeAddress: number;
   readonly relativeOffset: number;
+  readonly runtimeImageOffset: number | null;
+  readonly representation: RuntimeRepresentation;
   readonly overlayId: number | null;
   readonly fileId: number | null;
   readonly romOffset: number | null;
@@ -65,6 +72,8 @@ function overlayCandidate(overlay: NdsOverlay, address: number): RuntimeCandidat
       processor: overlay.processor,
       runtimeAddress: address,
       relativeOffset,
+      runtimeImageOffset: null,
+      representation: "runtime-only",
       overlayId: overlay.overlayId,
       fileId: overlay.fileId,
       romOffset: null,
@@ -77,11 +86,18 @@ function overlayCandidate(overlay: NdsOverlay, address: number): RuntimeCandidat
   const directRomOffset = !overlay.compressed && relativeOffset < overlay.romSize
     ? overlay.romOffset + relativeOffset
     : null;
+  const representation: RuntimeRepresentation = overlay.compressed
+    ? "derived-overlay"
+    : directRomOffset === null
+      ? "runtime-only"
+      : "rom-file-backed";
   return {
     kind: overlay.processor === "arm9" ? "arm9-overlay" : "arm7-overlay",
     processor: overlay.processor,
     runtimeAddress: address,
     relativeOffset,
+    runtimeImageOffset: representation === "runtime-only" ? null : relativeOffset,
+    representation,
     overlayId: overlay.overlayId,
     fileId: overlay.fileId,
     romOffset: directRomOffset,
@@ -106,6 +122,8 @@ export function resolveRuntimeAddress(
       processor,
       runtimeAddress: address,
       relativeOffset,
+      runtimeImageOffset: relativeOffset,
+      representation: "rom-file-backed",
       overlayId: null,
       fileId: null,
       romOffset: executable.romOffset + relativeOffset,
