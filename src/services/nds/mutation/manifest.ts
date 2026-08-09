@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -185,20 +185,11 @@ const replaceBytesSchema = z.object({
   expected: byteHexSchema,
   replacement: byteHexSchema,
 }).strict().superRefine((operation, context) => {
-  const expected = operation.expected.toLowerCase();
-  const replacement = operation.replacement.toLowerCase();
-  if (expected.length !== replacement.length) {
+  if (operation.expected.length !== operation.replacement.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["replacement"],
       message: "Replacement byte length must equal expected byte length",
-    });
-  }
-  if (expected === replacement) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["replacement"],
-      message: "No-op byte mutations are not allowed",
     });
   }
 });
@@ -223,13 +214,23 @@ const manifestSchema = z.object({
   operations: z.array(z.union([replaceBytesSchema, replaceComponentSchema])).min(1).max(4096),
 }).strict();
 
-function normalizeOperation(operation: z.infer<typeof replaceBytesSchema> | z.infer<typeof replaceComponentSchema>): NdsMutationOperation {
+function normalizeOperation(
+  operation: z.infer<typeof replaceBytesSchema> | z.infer<typeof replaceComponentSchema>,
+): NdsMutationOperation {
   if (operation.type === "replace-bytes") {
+    const expected = operation.expected.toLowerCase();
+    const replacement = operation.replacement.toLowerCase();
+    if (expected === replacement) {
+      throw new NdsError(
+        "mutation-no-op",
+        "Byte mutation replacement must differ from its expected original bytes",
+      );
+    }
     return {
       type: operation.type,
       target: operation.target as NdsMutationByteTarget,
-      expected: operation.expected.toLowerCase(),
-      replacement: operation.replacement.toLowerCase(),
+      expected,
+      replacement,
     };
   }
   return {
@@ -258,14 +259,12 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-function canonicalString(value: unknown): string {
+export function serializeCanonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
 function normalizeManifest(parsed: z.infer<typeof manifestSchema>): NdsMutationManifestV1 {
-  const operations = parsed.operations
-    .map((operation) => normalizeOperation(operation))
-    .sort((left, right) => canonicalString(left).localeCompare(canonicalString(right)));
+  const operations = parsed.operations.map((operation) => normalizeOperation(operation));
   return {
     format: parsed.format,
     formatVersion: parsed.formatVersion,
@@ -278,7 +277,7 @@ function normalizeManifest(parsed: z.infer<typeof manifestSchema>): NdsMutationM
 export function serializeCanonicalMutationManifest(
   manifest: NdsMutationManifestV1,
 ): string {
-  return canonicalString(manifest);
+  return serializeCanonicalJson(manifest);
 }
 
 function mutationManifestError(message: string): NdsError<"mutation-manifest-invalid"> {
@@ -291,9 +290,9 @@ export async function loadNdsMutationManifest(
 ): Promise<LoadedNdsMutationManifest> {
   try {
     const manifestPath = resolveInside(workspaceRoot, requestedPath);
-    const info = await stat(manifestPath);
-    if (!info.isFile()) {
-      throw new Error("Mutation manifest path must reference a regular file");
+    const info = await lstat(manifestPath);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error("Mutation manifest path must reference a regular non-symlink file");
     }
     const rawText = await readFile(manifestPath, "utf8");
     const raw = JSON.parse(rawText) as unknown;
@@ -316,7 +315,10 @@ export async function loadNdsMutationManifest(
       sha256,
     };
   } catch (error) {
-    if (error instanceof NdsError && error.category === "mutation-manifest-invalid") {
+    if (
+      error instanceof NdsError
+      && (error.category === "mutation-manifest-invalid" || error.category === "mutation-no-op")
+    ) {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
