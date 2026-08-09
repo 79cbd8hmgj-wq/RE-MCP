@@ -12,6 +12,7 @@ import {
   GHIDRA_BRIDGE_FORMAT,
   GHIDRA_BRIDGE_FORMAT_VERSION,
   buildGhidraBridgeManifest,
+  ghidraDerivedOverlayArtifactPath,
   ghidraGeneratedBridgeRoot,
   ghidraOverlaySpaceName,
   ghidraPersistentRoot,
@@ -19,6 +20,8 @@ import {
   ghidraProjectName,
   ghidraProjectRoot,
   ghidraStateRoot,
+  ghidraStoredOverlayArtifactPath,
+  type GhidraOverlayManifest,
 } from "../src/services/nds/ghidra-model.js";
 
 function overlay(overrides: Partial<NdsOverlay>): NdsOverlay {
@@ -39,6 +42,35 @@ function overlay(overrides: Partial<NdsOverlay>): NdsOverlay {
     flags: 0,
     compressed: false,
     ...overrides,
+  };
+}
+
+function preparedOverlay(
+  entry: NdsOverlay,
+  storedSha256 = "1".repeat(64),
+  runtimeSha256 = "2".repeat(64),
+): GhidraOverlayManifest {
+  const compressed = entry.compressed;
+  return {
+    processor: entry.processor,
+    overlayId: entry.overlayId,
+    spaceName: ghidraOverlaySpaceName(entry.processor, entry.overlayId),
+    artifactPath: compressed
+      ? ghidraDerivedOverlayArtifactPath(entry.processor, entry.overlayId)
+      : ghidraStoredOverlayArtifactPath(entry.processor, entry.overlayId),
+    fileId: entry.fileId,
+    runtimeAddress: entry.ramAddress,
+    ramSize: entry.ramSize,
+    bssSize: entry.bssSize,
+    representation: compressed ? "derived-blz" : "rom-file-backed",
+    initializedSize: compressed ? entry.ramSize : Math.min(entry.ramSize, entry.romSize),
+    storedRomOffset: entry.romOffset,
+    storedSize: entry.romSize,
+    compressedSize: compressed ? entry.compressedSize : null,
+    storedSha256,
+    runtimeSha256,
+    compressed,
+    importStatus: compressed ? "importable-derived" : "importable",
   };
 }
 
@@ -162,7 +194,7 @@ test("Ghidra bridge model uses full SHA project isolation and exact deterministi
   const workspace = "/workspace";
 
   assert.equal(GHIDRA_BRIDGE_FORMAT, "re-mcp-nds-ghidra");
-  assert.equal(GHIDRA_BRIDGE_FORMAT_VERSION, 1);
+  assert.equal(GHIDRA_BRIDGE_FORMAT_VERSION, 2);
   assert.equal(GHIDRA_ARM9_LANGUAGE, "ARM:LE:32:v5t");
   assert.equal(GHIDRA_ARM7_LANGUAGE, "ARM:LE:32:v4t");
   assert.equal(ghidraProjectName(mapA), `RE-MCP-${shaA}`);
@@ -182,13 +214,13 @@ test("Ghidra bridge model uses full SHA project isolation and exact deterministi
   assert.notEqual(ghidraPersistentRoot(mapA, workspace), ghidraPersistentRoot(mapB, workspace));
 });
 
-test("Ghidra bridge manifest preserves overlay backing semantics and compressed omission", () => {
+test("Ghidra bridge manifest preserves distinct stored/runtime overlay provenance", () => {
+  const uncompressed = overlay({ overlayId: 9, fileId: 2, romOffset: 0x3200, ramSize: 0x60, ramEnd: 0x02200060, romSize: 0x80 });
+  const compressed = overlay({ overlayId: 3, fileId: 1, romOffset: 0x3100, compressed: true, compressedSize: 0x60, flags: 1 });
+  const arm7Overlay = overlay({ processor: "arm7", overlayId: 4, ramAddress: 0x02390000, ramEnd: 0x02390080, bssEnd: 0x023900a0 });
   const map = mapWithSha("a".repeat(64), {
-    arm9: [
-      overlay({ overlayId: 9, fileId: 2, romOffset: 0x3200 }),
-      overlay({ overlayId: 3, fileId: 1, romOffset: 0x3100, compressed: true, compressedSize: 0x60, flags: 1 }),
-    ],
-    arm7: [overlay({ processor: "arm7", overlayId: 4, ramAddress: 0x02390000, ramEnd: 0x02390080, bssEnd: 0x023900a0 })],
+    arm9: [uncompressed, compressed],
+    arm7: [arm7Overlay],
   });
 
   const manifest = buildGhidraBridgeManifest({
@@ -196,6 +228,11 @@ test("Ghidra bridge manifest preserves overlay backing semantics and compressed 
     arm9: discovery("arm9", []),
     arm7: discovery("arm7", []),
     artifacts: [],
+    overlays: [
+      preparedOverlay(uncompressed, "3".repeat(64), "4".repeat(64)),
+      preparedOverlay(compressed, "5".repeat(64), "6".repeat(64)),
+      preparedOverlay(arm7Overlay, "7".repeat(64), "8".repeat(64)),
+    ],
   });
 
   assert.deepEqual(manifest.processors.map((entry) => [entry.processor, entry.language, entry.programName]), [
@@ -205,15 +242,36 @@ test("Ghidra bridge manifest preserves overlay backing semantics and compressed 
 
   const arm9 = manifest.processors[0]!;
   assert.deepEqual(arm9.overlays.map((entry) => entry.overlayId), [3, 9]);
-  assert.deepEqual(arm9.overlays.map((entry) => entry.importStatus), ["not-imported-compressed", "importable"]);
-  assert.equal(arm9.overlays[0]!.fileBackedSize, 0x80);
-  assert.equal(arm9.overlays[0]!.bssSize, 0x20);
-  assert.equal(arm9.overlays[0]!.artifactPath, "../overlays/arm9/overlay_3.bin");
+  assert.deepEqual(arm9.overlays.map((entry) => entry.importStatus), ["importable-derived", "importable"]);
+  assert.equal(arm9.overlays[0]!.representation, "derived-blz");
+  assert.equal(arm9.overlays[0]!.artifactPath, "../runtime/overlays/arm9/overlay_3.bin");
+  assert.equal(arm9.overlays[0]!.storedSize, 0x80);
+  assert.equal(arm9.overlays[0]!.initializedSize, 0x80);
+  assert.equal(arm9.overlays[0]!.storedSha256, "5".repeat(64));
+  assert.equal(arm9.overlays[0]!.runtimeSha256, "6".repeat(64));
+  assert.equal(arm9.overlays[1]!.representation, "rom-file-backed");
+  assert.equal(arm9.overlays[1]!.initializedSize, 0x60);
+  assert.equal(arm9.overlays[1]!.storedSize, 0x80);
   assert.equal(arm9.main.artifactPath, "imports/RE-MCP_ARM9");
   assert.deepEqual(manifest.generatedResultPaths, {
     arm9: "results/arm9.json",
     arm7: "results/arm7.json",
   });
+  assert.equal(JSON.stringify(manifest).includes("not-imported-compressed"), false);
+});
+
+test("Ghidra bridge manifest rejects prepared overlay metadata that does not match canonical ownership", () => {
+  const canonical = overlay({ overlayId: 3, compressed: true, compressedSize: 0x60, flags: 1 });
+  const map = mapWithSha("c".repeat(64), { arm9: [canonical] });
+  const prepared = preparedOverlay(canonical);
+
+  assert.throws(() => buildGhidraBridgeManifest({
+    map,
+    arm9: discovery("arm9", []),
+    arm7: discovery("arm7", []),
+    artifacts: [],
+    overlays: [{ ...prepared, runtimeAddress: prepared.runtimeAddress + 4 }],
+  }), /does not match canonical/);
 });
 
 test("Ghidra bridge manifest canonicalizes proven entry proofs and calls without inventing body boundaries", () => {
