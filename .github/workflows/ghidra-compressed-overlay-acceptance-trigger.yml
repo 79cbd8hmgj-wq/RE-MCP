@@ -55,22 +55,36 @@ jobs:
           set -euo pipefail
           workspace="$RUNNER_TEMP/re-mcp-ghidra-workspace"
           bootstrap_log="$RUNNER_TEMP/re-mcp-ghidra-bootstrap.log"
+          diagnostic="$RUNNER_TEMP/re-mcp-ghidra-bootstrap-diagnostic.txt"
           mkdir -p "$workspace"
           export RE_MCP_WORKSPACE_ROOT="$workspace"
           export RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC"
           if ! node scripts/ghidra-acceptance.mjs "$workspace" fixture.nds >"$bootstrap_log" 2>&1; then
-            echo '=== concise bootstrap failure ==='
-            grep -nE 'AssertionError|IllegalStateException|IllegalArgumentException|SCRIPT ERROR|Exception|runtimeSha256|overlay|address.space|RE_MCP_ARM9_OVL_3|Ghidra .*failed|error:' "$bootstrap_log" | tail -n 120 || true
-            echo '=== bootstrap tail ==='
-            tail -n 160 "$bootstrap_log" || true
-            app_log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
-            if [[ -f "$app_log" ]]; then
-              echo '=== concise Ghidra application diagnostics ==='
-              grep -nE 'REPORT SCRIPT ERROR|Exception|IllegalStateException|IllegalArgumentException|runtimeSha256|overlay|RE_MCP_ARM9_OVL_3' "$app_log" | tail -n 120 || true
-            fi
+            {
+              echo '=== concise bootstrap failure ==='
+              grep -nE 'AssertionError|IllegalStateException|IllegalArgumentException|SCRIPT ERROR|Exception|runtimeSha256|overlay|address.space|RE_MCP_ARM9_OVL_3|Ghidra .*failed|error:' "$bootstrap_log" | tail -n 160 || true
+              echo '=== bootstrap tail ==='
+              tail -n 200 "$bootstrap_log" || true
+              app_log="$HOME/.config/ghidra/ghidra_12.1.2_PUBLIC/application.log"
+              if [[ -f "$app_log" ]]; then
+                echo '=== concise Ghidra application diagnostics ==='
+                grep -nE 'REPORT SCRIPT ERROR|Exception|IllegalStateException|IllegalArgumentException|runtimeSha256|overlay|RE_MCP_ARM9_OVL_3' "$app_log" | tail -n 160 || true
+              fi
+            } >"$diagnostic" 2>&1
+            cat "$diagnostic"
             exit 1
           fi
+          cp "$bootstrap_log" "$diagnostic"
           cat "$bootstrap_log"
+
+      - name: Upload bootstrap diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compressed-overlay-ghidra-bootstrap-diagnostic
+          path: ${{ runner.temp }}/re-mcp-ghidra-bootstrap-diagnostic.txt
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Run hardened read-only Ghidra inspection acceptance
         shell: bash
