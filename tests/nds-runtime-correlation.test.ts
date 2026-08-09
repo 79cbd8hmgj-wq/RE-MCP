@@ -1,23 +1,62 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ArmDisassemblyBackend, ArmMode } from "../src/services/disassembly/backend.js";
+import type {
+  ArmDisassemblyBackend,
+  ArmMode,
+  DecodedArmInstruction,
+} from "../src/services/disassembly/backend.js";
+import { createCapstoneArmBackend } from "../src/services/disassembly/capstone.js";
 import { NdsError } from "../src/services/nds/errors.js";
 import { correlateNdsStopContext } from "../src/services/nds/runtime-correlation.js";
 import { readNdsRomMap } from "../src/services/nds/rom-map.js";
 import type { StopContext } from "../src/services/stop-context.js";
+import { createCompressedArmCodeFixture } from "./helpers/nds-compressed-code-fixture.js";
 import {
   createNdsFixture,
   writeFatEntry,
   writeOverlayRecord,
 } from "./helpers/nds-fixture.js";
 
-const inertBackend: ArmDisassemblyBackend = {
-  decodeOne(_bytes: Uint8Array, _address: number, _mode: ArmMode) {
-    return null;
-  },
-  close() {},
-};
+class FakeBackend implements ArmDisassemblyBackend {
+  constructor(
+    private readonly decoded: ReadonlyMap<string, DecodedArmInstruction | null>,
+  ) {}
+
+  decodeOne(
+    _bytes: Uint8Array,
+    address: number,
+    mode: ArmMode,
+  ): DecodedArmInstruction | null {
+    return this.decoded.get(`${address.toString(16)}:${mode}`) ?? null;
+  }
+
+  close(): void {}
+}
+
+function decoded(
+  address: number,
+  mode: ArmMode,
+  overrides: Partial<DecodedArmInstruction> = {},
+): DecodedArmInstruction {
+  const size = mode === "arm" ? 4 : 2;
+  return {
+    address,
+    size,
+    bytes: size === 4 ? [0x00, 0x00, 0xa0, 0xe1] : [0x00, 0x46],
+    mnemonic: "mov",
+    operandsText: "r0, r0",
+    operands: [],
+    isJump: false,
+    isCall: false,
+    isReturn: false,
+    isConditional: false,
+    switchesMode: false,
+    ...overrides,
+  };
+}
+
+const inertBackend: ArmDisassemblyBackend = new FakeBackend(new Map());
 
 function stopContext(pc: number, mode: "arm" | "thumb" = "arm"): StopContext {
   const cpsr = mode === "thumb" ? 0x20 : 0;
@@ -99,11 +138,24 @@ async function buildCorrelationMap() {
   return { fixture, map };
 }
 
+async function buildMainCodeMap() {
+  const fixture = await createNdsFixture({ arm9Size: 0x100 });
+  Buffer.from("000000eb0000a0e11eff2fe1", "hex").copy(fixture.buffer, 0x200);
+  await fixture.write();
+  return { fixture, map: await readNdsRomMap(fixture.romPath) };
+}
+
 function input(
   romPath: string,
   sha256: string,
   context: StopContext,
-  maxOutputBytes = 64 * 1024,
+  options: Partial<{
+    nearbyInstructions: number;
+    referenceLimit: number;
+    maxOutputBytes: number;
+    includeGhidra: boolean;
+    decompileGhidraFunction: boolean;
+  }> = {},
 ) {
   return {
     romPath,
@@ -111,13 +163,34 @@ function input(
     expectedRomSha256: sha256,
     stopContext: context,
     options: {
-      nearbyInstructions: 8,
-      referenceLimit: 16,
-      maxOutputBytes,
-      includeGhidra: false,
-      decompileGhidraFunction: false,
+      nearbyInstructions: options.nearbyInstructions ?? 8,
+      referenceLimit: options.referenceLimit ?? 16,
+      maxOutputBytes: options.maxOutputBytes ?? 64 * 1024,
+      includeGhidra: options.includeGhidra ?? false,
+      decompileGhidraFunction: options.decompileGhidraFunction ?? false,
     },
   } as const;
+}
+
+function mainCallBackend(): ArmDisassemblyBackend {
+  return new FakeBackend(new Map([
+    ["2000000:arm", decoded(0x02000000, "arm", {
+      bytes: [0x00, 0x00, 0x00, 0xeb],
+      mnemonic: "bl",
+      operandsText: "#0x2000008",
+      operands: [{ kind: "immediate", value: 0x02000008 }],
+      isCall: true,
+    })],
+    ["2000004:arm", decoded(0x02000004, "arm")],
+    ["2000008:arm", decoded(0x02000008, "arm", {
+      bytes: [0x1e, 0xff, 0x2f, 0xe1],
+      mnemonic: "bx",
+      operandsText: "lr",
+      operands: [{ kind: "register", name: "lr" }],
+      isJump: true,
+      isReturn: true,
+    })],
+  ]));
 }
 
 test("correlation preserves the exact observed ARM9 PC and CPSR mode for main code", async () => {
@@ -181,6 +254,7 @@ test("correlation retains compressed initialized and BSS runtime provenance", as
   assert.equal(bss.candidates[0]?.canonical.kind, "overlay-bss");
   assert.equal(bss.candidates[0]?.canonical.representation, "runtime-only");
   assert.equal(bss.candidates[0]?.canonical.romOffset, null);
+  assert.equal(bss.candidates[0]?.static.status, "runtime-only");
 });
 
 test("correlation returns a successful unmapped result without inventing ownership", async () => {
@@ -217,11 +291,133 @@ test("correlation enforces the final serialized output ceiling", async () => {
 
   await assert.rejects(
     correlateNdsStopContext(
-      input(fixture.romPath, map.sha256, stopContext(0x02000040), 1),
+      input(fixture.romPath, map.sha256, stopContext(0x02000040), {
+        maxOutputBytes: 1,
+      }),
       inertBackend,
     ),
     (error: unknown) =>
       error instanceof NdsError
       && error.category === "runtime-correlation-output-limit",
   );
+});
+
+test("correlation attaches bounded instructions, direct references, and program-entry proof", async () => {
+  const { fixture, map } = await buildMainCodeMap();
+  const result = await correlateNdsStopContext(
+    input(fixture.romPath, map.sha256, stopContext(0x02000000), {
+      nearbyInstructions: 2,
+      referenceLimit: 1,
+    }),
+    mainCallBackend(),
+  );
+
+  const staticResult = result.candidates[0]?.static;
+  assert.equal(staticResult?.status, "available");
+  if (staticResult?.status !== "available") assert.fail("Expected static evidence");
+  assert.equal(staticResult.instructions.length, 2);
+  assert.equal(staticResult.instructions[0]?.address, 0x02000000);
+  assert.equal(staticResult.instructions[0]?.mode, "arm");
+  assert.equal(staticResult.instructions[0]?.flow.kind, "call");
+  assert.equal(staticResult.references.length, 1);
+  assert.equal(staticResult.references[0]?.kind, "direct-call");
+  assert.equal(staticResult.functionEntry.proofStatus, "proven");
+  assert.equal(staticResult.functionEntry.runtimeMode, "arm");
+  assert.equal(staticResult.functionEntry.staticMode, "arm");
+  assert.equal(staticResult.functionEntry.modeConsistent, true);
+  assert.equal(
+    staticResult.functionEntry.evidence.some((proof) => proof.kind === "program-entry"),
+    true,
+  );
+});
+
+test("correlation recognizes an exact direct-call target as a proven function entry", async () => {
+  const { fixture, map } = await buildMainCodeMap();
+  const result = await correlateNdsStopContext(
+    input(fixture.romPath, map.sha256, stopContext(0x02000008), {
+      nearbyInstructions: 1,
+      referenceLimit: 0,
+    }),
+    mainCallBackend(),
+  );
+
+  const staticResult = result.candidates[0]?.static;
+  assert.equal(staticResult?.status, "available");
+  if (staticResult?.status !== "available") assert.fail("Expected static evidence");
+  assert.deepEqual(staticResult.references, []);
+  assert.equal(staticResult.functionEntry.proofStatus, "proven");
+  assert.equal(
+    staticResult.functionEntry.evidence.some((proof) => proof.kind === "direct-call"),
+    true,
+  );
+});
+
+test("correlation does not promote an arbitrary mid-function PC into a proven entry", async () => {
+  const { fixture, map } = await buildMainCodeMap();
+  const result = await correlateNdsStopContext(
+    input(fixture.romPath, map.sha256, stopContext(0x02000004), {
+      nearbyInstructions: 1,
+      referenceLimit: 0,
+    }),
+    mainCallBackend(),
+  );
+
+  const staticResult = result.candidates[0]?.static;
+  assert.equal(staticResult?.status, "available");
+  if (staticResult?.status !== "available") assert.fail("Expected static evidence");
+  assert.notEqual(staticResult.functionEntry.proofStatus, "proven");
+  assert.deepEqual(staticResult.functionEntry.evidence, []);
+});
+
+test("candidate disassembly uses the observed Thumb mode without switching to ARM", async () => {
+  const { fixture, map } = await buildMainCodeMap();
+  const thumbAddress = 0x02000020;
+  const backend = new FakeBackend(new Map([
+    [`${thumbAddress.toString(16)}:thumb`, decoded(thumbAddress, "thumb", {
+      bytes: [0x00, 0x46],
+      mnemonic: "mov",
+      operandsText: "r0, r0",
+    })],
+  ]));
+
+  const result = await correlateNdsStopContext(
+    input(fixture.romPath, map.sha256, stopContext(thumbAddress, "thumb"), {
+      nearbyInstructions: 1,
+      referenceLimit: 0,
+    }),
+    backend,
+  );
+
+  const staticResult = result.candidates[0]?.static;
+  assert.equal(staticResult?.status, "available");
+  if (staticResult?.status !== "available") assert.fail("Expected static evidence");
+  assert.equal(staticResult.instructions[0]?.address, thumbAddress);
+  assert.equal(staticResult.instructions[0]?.mode, "thumb");
+  assert.equal(staticResult.functionEntry.runtimeMode, "thumb");
+});
+
+test("compressed-overlay stopped code decodes from the derived runtime image without fabricating a ROM offset", async () => {
+  const { fixture, map, overlayId, runtimeAddress } = await createCompressedArmCodeFixture();
+  const backend = await createCapstoneArmBackend();
+  try {
+    const result = await correlateNdsStopContext(
+      input(fixture.romPath, map.sha256, stopContext(runtimeAddress), {
+        nearbyInstructions: 1,
+        referenceLimit: 0,
+      }),
+      backend,
+    );
+
+    const candidate = result.candidates[0];
+    assert.equal(candidate?.canonical.overlayId, overlayId);
+    assert.equal(candidate?.canonical.representation, "derived-overlay");
+    assert.equal(candidate?.canonical.romOffset, null);
+    assert.equal(candidate?.static.status, "available");
+    if (candidate?.static.status !== "available") assert.fail("Expected static evidence");
+    assert.equal(candidate.static.instructions[0]?.address, runtimeAddress);
+    assert.equal(candidate.static.instructions[0]?.romOffset, null);
+    assert.equal(candidate.static.instructions[0]?.source.overlayId, overlayId);
+  } finally {
+    backend.close();
+  }
 });
