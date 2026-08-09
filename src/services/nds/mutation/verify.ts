@@ -41,6 +41,10 @@ export interface NdsMutationVerificationResult {
   readonly compressedOverlays: readonly NdsCompressedOverlayVerification[];
 }
 
+export interface NdsMutationVerifyHooks {
+  readonly afterDiff?: () => Promise<void>;
+}
+
 function verificationError(message: string): NdsError<"output-verification-failed"> {
   return new NdsError("output-verification-failed", message);
 }
@@ -302,6 +306,7 @@ export async function verifyNdsMutationOutput(
   sourceMap: NdsRomMap,
   plan: NdsResolvedMutationPlan,
   outputRomPath: string,
+  hooks: NdsMutationVerifyHooks = {},
 ): Promise<NdsMutationVerificationResult> {
   await assertNdsMutationSourceIdentity(sourceMap, plan.sourceSha256);
 
@@ -327,9 +332,15 @@ export async function verifyNdsMutationOutput(
   const operations = await verifyOperations(plan, outputRomPath);
   const compressedOverlays = await verifyCompressedOverlays(sourceMap, outputMap, plan);
   const changedByteCount = await countAndAttributeDiff(sourceMap, plan, outputRomPath);
+  await hooks.afterDiff?.();
   await assertNdsMutationSourceIdentity(sourceMap, plan.sourceSha256);
 
   const outputSha256 = await hashFileSha256(outputRomPath);
+  if (outputSha256 !== outputMap.sha256) {
+    throw verificationError(
+      `Output ROM changed during verification; canonical parse SHA-256 was ${outputMap.sha256}, final SHA-256 is ${outputSha256}`,
+    );
+  }
   return {
     status: "passed",
     sourceSha256: plan.sourceSha256,
