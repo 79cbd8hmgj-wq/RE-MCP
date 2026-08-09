@@ -1,0 +1,38 @@
+name: One-shot static artifact README clarification
+
+on:
+  push:
+    branches:
+      - agent/nds-mutation-pr-c
+
+permissions:
+  contents: write
+
+jobs:
+  patch-readme:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/nds-mutation-pr-c
+      - name: Clarify static artifact path and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text()
+          old = "The source ROM is read-only. Generated NDS artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. RE-MCP does not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges."
+          new = "The source ROM is read-only. Static-analysis extraction artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. The static-analysis tools do not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges."
+          if old not in text:
+              raise SystemExit("README static-artifact sentence not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-readme-static-artifacts.yml
+          git add README.md
+          git commit -m "docs: distinguish static extraction from mutation output"
+          git push origin HEAD:agent/nds-mutation-pr-c
