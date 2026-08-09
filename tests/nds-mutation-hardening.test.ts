@@ -28,8 +28,9 @@ test("mutation write ownership stays confined to apply.ts", async () => {
   }
 });
 
-test("package verifier requires and exercises the controlled mutation core", async () => {
-  const install = await source("scripts/check-install.mjs");
+test("package workflow requires and exercises the controlled mutation core", async () => {
+  const install = await source("scripts/check-nds-mutation-install.mjs");
+  const workflow = await source(".github/workflows/package.yml");
   for (const requiredModule of [
     "dist/services/nds/mutation/manifest.js",
     "dist/services/nds/mutation/planner.js",
@@ -49,6 +50,7 @@ test("package verifier requires and exercises the controlled mutation core", asy
   assert.match(install, /changed-components\.json/u);
   assert.match(install, /output\.sha256/u);
   assert.match(install, /output.*nds/iu);
+  assert.match(workflow, /node scripts\/check-nds-mutation-install\.mjs \./u);
 });
 
 test("README documents Controlled NDS Mutation Milestone 1 and its exclusions", async () => {
