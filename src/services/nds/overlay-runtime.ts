@@ -119,6 +119,7 @@ function enforceOverlayLimits(
   overlay: NdsOverlay,
   limits: NdsOverlayRuntimeLimits,
   decodedBytesCharged: number,
+  reservedDecodedBytes: number,
 ): void {
   if (overlay.romSize > limits.maxStoredBytes) {
     throw new NdsError(
@@ -138,7 +139,12 @@ function enforceOverlayLimits(
       `${overlay.processor.toUpperCase()} overlay ${overlay.overlayId} has a ${overlay.ramSize}-byte initialized runtime image, above the ${limits.maxDecodedBytes}-byte limit`,
     );
   }
-  if (decodedBytesCharged + overlay.ramSize > limits.maxAggregateDecodedBytes) {
+  if (
+    decodedBytesCharged
+    + reservedDecodedBytes
+    + overlay.ramSize
+    > limits.maxAggregateDecodedBytes
+  ) {
     throw new NdsError(
       "blz-output-limit",
       `Decoding ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId} would exceed the ${limits.maxAggregateDecodedBytes}-byte aggregate decoded-overlay limit`,
@@ -168,44 +174,55 @@ export function createNdsOverlayRuntimeContext(
   const cache = new Map<string, NdsOverlayRuntimeImage>();
   const inFlight = new Map<string, Promise<NdsOverlayRuntimeImage>>();
   let decodedBytesCharged = 0;
+  let reservedDecodedBytes = 0;
 
   async function loadCompressedOverlay(
     processor: NdsProcessor,
     overlayId: number,
   ): Promise<NdsOverlayRuntimeImage> {
     const overlay = selectCompressedOverlay(map, processor, overlayId);
-    enforceOverlayLimits(overlay, limits, decodedBytesCharged);
+    enforceOverlayLimits(
+      overlay,
+      limits,
+      decodedBytesCharged,
+      reservedDecodedBytes,
+    );
 
-    const stored = await readStoredOverlay(map, overlay);
-    const compressedPayload = stored.subarray(0, overlay.compressedSize);
-    const decoded = decodeNdsBlz(compressedPayload, overlay.ramSize, {
-      maxStoredBytes: limits.maxStoredBytes,
-      maxDecodedBytes: limits.maxDecodedBytes,
-    });
+    reservedDecodedBytes += overlay.ramSize;
+    try {
+      const stored = await readStoredOverlay(map, overlay);
+      const compressedPayload = stored.subarray(0, overlay.compressedSize);
+      const decoded = decodeNdsBlz(compressedPayload, overlay.ramSize, {
+        maxStoredBytes: limits.maxStoredBytes,
+        maxDecodedBytes: limits.maxDecodedBytes,
+      });
 
-    await assertSourceIdentity(map);
+      await assertSourceIdentity(map);
 
-    const image: NdsOverlayRuntimeImage = {
-      processor,
-      overlayId,
-      fileId: overlay.fileId,
-      sourceRomSha256: map.sha256,
-      storedRomOffset: overlay.romOffset,
-      storedSize: overlay.romSize,
-      compressedSize: overlay.compressedSize,
-      storedSha256: sha256(stored),
-      compressedPayloadSha256: sha256(compressedPayload),
-      runtimeAddress: overlay.ramAddress,
-      runtimeSize: overlay.ramSize,
-      bssSize: overlay.bssSize,
-      representation: "derived-blz",
-      runtimeSha256: sha256(decoded.bytes),
-      bytes: decoded.bytes,
-    };
+      const image: NdsOverlayRuntimeImage = {
+        processor,
+        overlayId,
+        fileId: overlay.fileId,
+        sourceRomSha256: map.sha256,
+        storedRomOffset: overlay.romOffset,
+        storedSize: overlay.romSize,
+        compressedSize: overlay.compressedSize,
+        storedSha256: sha256(stored),
+        compressedPayloadSha256: sha256(compressedPayload),
+        runtimeAddress: overlay.ramAddress,
+        runtimeSize: overlay.ramSize,
+        bssSize: overlay.bssSize,
+        representation: "derived-blz",
+        runtimeSha256: sha256(decoded.bytes),
+        bytes: decoded.bytes,
+      };
 
-    decodedBytesCharged += image.runtimeSize;
-    cache.set(`${processor}:${overlayId}`, image);
-    return image;
+      decodedBytesCharged += image.runtimeSize;
+      cache.set(`${processor}:${overlayId}`, image);
+      return image;
+    } finally {
+      reservedDecodedBytes -= overlay.ramSize;
+    }
   }
 
   return {
