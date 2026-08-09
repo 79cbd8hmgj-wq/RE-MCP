@@ -15,6 +15,8 @@ const required = [
   "dist/services/nds/pattern-search.js",
   "dist/services/nds/function-discovery.js",
   "dist/services/nds/function-analysis.js",
+  "dist/services/nds/runtime-correlation.js",
+  "dist/services/nds/runtime-correlation-ghidra.js",
   "dist/services/nds/ghidra-model.js",
   "dist/services/nds/ghidra-bridge.js",
   "dist/services/nds/ghidra-installation.js",
@@ -23,6 +25,7 @@ const required = [
   "dist/services/nds/rom-map.js",
   "dist/tools/nds-functions.js",
   "dist/tools/nds-ghidra.js",
+  "dist/tools/nds-runtime.js",
   "resources/ghidra/ReMcpPrepareProgram.java",
   "resources/ghidra/ReMcpImportEvidence.java",
   "resources/ghidra/ReMcpRecordAnalysis.java",
@@ -50,6 +53,9 @@ if (!builtIndex.includes("registerNdsFunctionTools(server, config)")) {
 }
 if (!builtIndex.includes("registerNdsGhidraTools(server, config)")) {
   throw new Error("Packaged server does not register controlled NDS Ghidra tools");
+}
+if (!builtIndex.includes("registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger)")) {
+  throw new Error("Packaged server does not register runtime correlation with the shared debugger");
 }
 
 for (const scriptName of [
