@@ -30,11 +30,17 @@ const UNCOMPRESSED_OVERLAY_ID = 2;
 const COMPRESSED_OVERLAY_ID = 7;
 
 export interface MutationManifestOperationInput {
-  readonly type: "replace-bytes" | "replace-component";
+  readonly type:
+    | "replace-bytes"
+    | "replace-component"
+    | "replace-nitrofs-file"
+    | "add-nitrofs-file"
+    | "replace-decoded-overlay";
   readonly [key: string]: unknown;
 }
 
 export interface MutationManifestOverrides {
+  readonly formatVersion?: 1 | 2;
   readonly sourceSha256?: string;
   readonly outputFilename?: string;
   readonly expected?: string;
@@ -170,7 +176,7 @@ export async function createMutationFixture(): Promise<MutationFixture> {
     ];
     const manifest = {
       format: "re-mcp-nds-mutation",
-      formatVersion: 1,
+      formatVersion: overrides.formatVersion ?? 1,
       source: { sha256: overrides.sourceSha256 ?? sourceSha256 },
       output: { filename: overrides.outputFilename ?? "test-mod.nds" },
       operations,
