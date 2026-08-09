@@ -264,11 +264,14 @@ public class ReMcpAcceptanceInspect extends GhidraScript {
         else if ("tamper-derived".equals(action)) {
             MemoryBlock derived = requireDerived(memory);
             Address start = derived.getStart();
+            clearListing(start, start.add(3));
             memory.setByte(start, (byte)(memory.getByte(start) ^ 0xff));
         }
         else if ("restore-derived".equals(action)) {
             MemoryBlock derived = requireDerived(memory);
-            memory.setByte(derived.getStart(), (byte)0x06);
+            Address start = derived.getStart();
+            clearListing(start, start.add(3));
+            memory.setByte(start, (byte)0x06);
         }
         else if (!"inspect".equals(action)) {
             throw new IllegalArgumentException("unknown acceptance action: " + action);
