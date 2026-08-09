@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import { NdsError } from "../src/services/nds/errors.js";
@@ -157,6 +158,29 @@ test("rejects stale component hashes, missing artifacts, hash mismatches, and wr
   );
 });
 
+test("rejects replacement artifacts that alias the source ROM", async () => {
+  const fixture = await createMutationFixture();
+  const component = fixture.map.header.arm7;
+  const source = await sourceComponentBytes(
+    fixture.romPath,
+    component.romOffset,
+    component.romEnd,
+  );
+  await assert.rejects(
+    guardNdsMutationOperation(fixture.map, fixture.directory, 0, {
+      type: "replace-component",
+      target: { component: "arm7" },
+      expectedOriginalSha256: sha256(source),
+      replacement: {
+        artifact: path.basename(fixture.romPath),
+        sha256: fixture.sourceSha256,
+      },
+    }),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "unsupported-mutation-target",
+  );
+});
+
 test("rejects a whole-component replacement that is byte-identical to the source", async () => {
   const fixture = await createMutationFixture();
   const component = fixture.map.header.arm7;
@@ -174,7 +198,7 @@ test("rejects a whole-component replacement that is byte-identical to the source
       replacement: { artifact: artifact.relativePath, sha256: artifact.sha256 },
     }),
     (error: unknown) => error instanceof NdsError
-      && error.category === "unsupported-mutation-target",
+      && error.category === "mutation-no-op",
   );
 });
 
@@ -217,7 +241,7 @@ test("accepts an exact-size stored compressed replacement only when its BLZ payl
   await assert.rejects(
     guardNdsMutationOperation(fixture.map, fixture.directory, 0, {
       type: "replace-component",
-      target: { component: "nitrofs-file", fileId: fixture.compressedFileId },
+      target: { component: "arm9-overlay", overlayId: fixture.compressedOverlayId },
       expectedOriginalSha256: sha256(source),
       replacement: {
         artifact: invalidArtifact.relativePath,
