@@ -36,6 +36,14 @@ export type NdsBlzErrorCategory =
 export type NdsCompressedOverlayErrorCategory =
   | "compressed-overlay-runtime-unavailable";
 
+export type NdsRuntimeCorrelationErrorCategory =
+  | "runtime-correlation-no-owned-process"
+  | "runtime-correlation-rom-identity-missing"
+  | "runtime-correlation-rom-identity-mismatch"
+  | "runtime-correlation-debugger-not-stopped"
+  | "runtime-correlation-context-failed"
+  | "runtime-correlation-output-limit";
+
 export type NdsGhidraErrorCategory =
   | "ghidra-not-configured"
   | "invalid-ghidra-installation"
@@ -64,7 +72,8 @@ export type AnyNdsErrorCategory =
   | NdsPatternSearchErrorCategory
   | NdsFunctionErrorCategory
   | NdsBlzErrorCategory
-  | NdsCompressedOverlayErrorCategory;
+  | NdsCompressedOverlayErrorCategory
+  | NdsRuntimeCorrelationErrorCategory;
 
 /** Complete service-layer category set, including compressed overlays and optional Ghidra integration. */
 export type NdsServiceErrorCategory =
