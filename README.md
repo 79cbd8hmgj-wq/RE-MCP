@@ -57,6 +57,7 @@ The source ROM is read-only. Generated NDS artifacts are restricted to `analysis
 - Match breakpoint hits, track hit counts, and retain ARM/Thumb execution history
 - Atomically capture raw registers plus labeled memory regions
 - Reset debugger state automatically when the owned emulator exits or its process generation changes
+- Correlate the exact stopped ARM9 PC/CPSR mode with the launch-time ROM SHA-256, canonical NDS ownership, bounded static instructions/references, and exact function-entry proof
 
 RE-MCP does **not** expose register writes, general memory writes, watchpoints, or an arbitrary GDB-command tool.
 
@@ -102,7 +103,7 @@ FAT remains authoritative for physical file byte ranges. FNT remains authoritati
 
 BSS has no source ROM bytes, so BSS results return no ROM offset.
 
-Compressed overlay bytes also require special handling. The stored FAT-backed overlay file may be compressed, so a decompressed runtime byte does **not** receive a fabricated direct ROM-byte mapping. The resolver still reports the overlay ID, file ID, runtime-relative offset, and backing-file metadata. Exact compressed-ROM ↔ decompressed-runtime correlation is deferred until controlled decompression support exists.
+Compressed overlay bytes require special provenance handling. Stored FAT-backed bytes and decoded runtime bytes remain distinct: a decoded runtime byte never receives a fabricated direct ROM-byte offset. The resolver reports overlay/file/runtime/backing metadata, while validated BLZ-derived runtime images may be consumed by the later disassembly, reference, function, Ghidra, and runtime-correlation layers with `romOffset: null`.
 
 `nds_resolve_rom_offset` performs the reverse classification and may return multiple valid relationships for one ROM byte, such as a NitroFS file plus an ARM9 overlay backing file. Compressed overlay backing bytes do not receive fabricated runtime addresses.
 
@@ -122,14 +123,15 @@ Initial `auto` mode succeeds only when the resolved source is the matching ARM9 
 
 ARM starts and deterministic ARM targets must be 4-byte aligned. Thumb starts and deterministic Thumb targets must be 2-byte aligned. Invalid alignment is rejected rather than rounded.
 
-Only exact file-backed code bytes are decodable:
+Decodable code sources are limited to validated initialized executable representations:
 
 - ARM9 main
 - ARM7 main
 - uncompressed ARM9 overlays
 - uncompressed ARM7 overlays
+- validated decoded BLZ runtime images for compressed overlays, represented as derived code with `romOffset: null`
 
-BSS returns `runtime-only-bss`. Compressed overlays return `compressed-overlay-not-decodable`; the stored compressed bytes are never decoded as if they were runtime instructions. If an uncompressed overlay's runtime initialized extent is larger than its physical backing file, only the exact file-backed prefix is eligible.
+BSS remains runtime-only and is never fabricated into an instruction stream. If an uncompressed overlay's runtime initialized extent is larger than its physical backing file, only the exact file-backed prefix is eligible.
 
 If multiple static code mappings contain a requested address or branch target, RE-MCP returns or records `ambiguous-code-source` rather than guessing which overlay is loaded. Supplying `overlayId` can select one starting static source, but it never claims that overlay is loaded at runtime. A deterministic branch that stays within that already selected component preserves its static component identity; a cross-component branch is re-resolved and traversed only when the same processor, source bytes, and target mode are all deterministic.
 
@@ -395,16 +397,21 @@ The bundle is assembled in a temporary sibling directory and promoted only when 
 8. Call `nds_discover_functions` to turn program-entry/direct-call evidence into a bounded proven-function call graph, or `nds_analyze_function` to prove and inspect one exact entry.
 9. Extract a specific validated component with `nds_extract_component`, or generate the executable/metadata bundle with `nds_extract_analysis_bundle`, when an external artifact is actually needed.
 
-The canonical static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, overlay decompression, graphics decoding, runtime overlay-loaded-state detection, Ghidra-to-RE-MCP evidence promotion, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
+The canonical static layer still does **not** implement heuristic function discovery, function-end or exclusive-boundary ownership inference, heuristic pointer discovery, persistent pattern/xref/function indexing, symbol recovery, generic binary disassembly/search, broad code/data heuristics, generic recompression/rebuilding, graphics decoding, runtime overlay-loaded-state detection, Ghidra-to-RE-MCP evidence promotion, watchpoints, ROM mutation, NitroFS rebuilding, or patch generation.
 
 ## Controlled Ghidra Integration
 
-Ghidra support is optional and deliberately sits **on top of** the canonical static-analysis layer. It exposes exactly two MCP tools:
+Ghidra support is optional and deliberately sits **on top of** the canonical static-analysis layer. The controlled Ghidra MCP surface includes project bootstrap/status plus bounded read-only inspection:
 
 - `nds_ghidra_bootstrap`
 - `nds_ghidra_status`
+- `nds_ghidra_inspect_function`
+- `nds_ghidra_decompile_function`
+- `nds_ghidra_search_symbols`
+- `nds_ghidra_list_references`
+- `nds_ghidra_list_calls`
 
-Both accept only `{ "rom": "..." }`. There is no generic Ghidra command, arbitrary script runner, caller-selected project path, loader/language selector, raw Ghidra argument list, arbitrary environment map, or caller-selected output path.
+There is no generic Ghidra command, arbitrary script runner, caller-selected project path, loader/language selector, raw Ghidra argument list, arbitrary environment map, or caller-selected output path.
 
 ### Configuration
 
@@ -442,7 +449,7 @@ analysis/generated/nds/<sha-prefix>/ghidra-bridge/
 └── scripts/
 ```
 
-The ARM9 program uses `ARM:LE:32:v5t`; ARM7 uses `ARM:LE:32:v4t`. Uncompressed NDS overlays are represented as true Ghidra overlay address spaces at their canonical runtime offsets, so overlapping overlay addresses remain distinct. Compressed overlays are reported as `not-imported-compressed` and are never decoded or imported as executable runtime bytes.
+The ARM9 program uses `ARM:LE:32:v5t`; ARM7 uses `ARM:LE:32:v4t`. NDS overlays are represented as distinct Ghidra overlay address spaces at their canonical runtime offsets, so overlapping overlay addresses remain distinct. Validated decoded compressed-overlay runtime artifacts are imported as derived overlay code while retaining distinct stored-byte provenance; BSS remains runtime-only.
 
 ### Evidence and analyst-work rules
 
@@ -450,9 +457,29 @@ RE-MCP imports only facts it has already established: canonical mappings, exact 
 
 Reruns reconcile only RE-MCP-owned metadata and evidence. Analyst-created labels, comments, bookmarks, types, namespaces, function names/signatures, and Ghidra-only discoveries are preserved. If project ownership/state cannot be reconciled safely, RE-MCP returns `project-state-mismatch` instead of overwriting the project.
 
-`nds_ghidra_status` is non-mutating: it does not validate/install Ghidra, regenerate the bridge, run `analyzeHeadless`, or modify project state.
+`nds_ghidra_status` is non-mutating: it does not validate/install Ghidra, regenerate the bridge, run `analyzeHeadless`, or modify project state. Read-only inspection tools require an already-current SHA-scoped project and disable auto-analysis during inspection.
 
-The packaged RE-MCP bundle includes its three Ghidra Java scripts, but it does **not** bundle Ghidra itself. Normal CI/package smoke verifies the bridge, resources, runner, state model, and tool registration without downloading Ghidra. Real Ghidra 12.1.2 acceptance is a separate manual workflow and is also separate from the physical Intel Catalina/DeSmuME debugger acceptance gate. See [`docs/nds-ghidra-integration.md`](docs/nds-ghidra-integration.md) for the focused integration contract.
+The packaged RE-MCP bundle includes its Ghidra Java resources, but it does **not** bundle Ghidra itself. Normal CI/package smoke verifies the bridge, resources, runner, state model, and tool registration without downloading Ghidra. Real Ghidra 12.1.2 acceptance is a separate workflow and is also separate from the physical Intel Catalina/DeSmuME debugger acceptance gate. See [`docs/nds-ghidra-integration.md`](docs/nds-ghidra-integration.md) for the focused integration contract.
+
+## Current-stop NDS runtime correlation
+
+`nds_correlate_stop_context` connects the server-owned stopped DeSmuME ARM9 session to the canonical static-analysis stack without resuming execution. The ROM path comes only from the owned process metadata, and every DeSmuME generation is bound to the full launch-time ROM SHA-256. Correlation reparses/revalidates that exact ROM, uses the observed PC and CPSR ARM/Thumb mode without breakpoint rewind heuristics, and revalidates the source SHA before returning.
+
+Inputs are deliberately narrow:
+
+- `timeoutMs`: 100–30000, default 3000
+- `nearbyInstructions`: 1–32, default 8
+- `referenceLimit`: 0–64, default 16
+- `includeGhidra`: boolean, default `false`
+- `decompileGhidraFunction`: boolean, default `false`; requires `includeGhidra: true`
+
+By default, correlation performs no Ghidra work. With `includeGhidra: true`, each decodable canonical candidate may be enriched from an **already-current Ghidra** project that is scoped to the same full ROM SHA-256. Runtime correlation **does not bootstrap Ghidra**, reconcile/migrate projects, run auto-analysis, or mutate persistent analyst state. `decompileGhidraFunction: true` requests bounded decompilation only after the exact candidate function is found by the controlled read-only inspection path.
+
+Overlapping overlay candidates remain separate canonical candidates. Each candidate may receive candidate-specific static/Ghidra interpretation using its exact overlay ID, but Ghidra output is never used to claim which overlay is loaded. Compressed overlays use the validated decoded derived runtime image and retain `romOffset: null`; BSS/runtime-only candidates never receive fabricated instructions.
+
+The result keeps authority classes separate: observed runtime facts, canonical NDS ownership, RE-MCP static evidence, and `ghidraDerived` inference. A missing/stale Ghidra project is reported as `not-ready` for enrichment without invalidating an otherwise valid canonical/static correlation result.
+
+Real Ghidra 12.1.2/JDK 21 acceptance covers both ARM9 main code and a compressed-overlay candidate and verifies that the ROM and persistent Ghidra project remain byte-for-byte unchanged. Physical Catalina/DeSmuME debugger acceptance remains a separate gate.
 
 ## Dynamic-debugging tools
 
@@ -492,17 +519,18 @@ The existing `desmume_read_register_packet`, `desmume_read_memory`, `desmume_pro
 3. Add a validated breakpoint with `desmume_breakpoint_add`. Specify `arm` or `thumb` when mode is not already unambiguous.
 4. Call `desmume_continue`, optionally supplying `expectedBreakpointId`. Context capture is enabled by default.
 5. Inspect the returned stop reason, decoded `pc`/`cpsr`, matched breakpoint, hit count, and bounded memory windows.
-6. Use `desmume_step_instruction` for a bounded instruction sequence while stopped.
-7. If execution is running after a timeout, use `desmume_wait_for_stop` or `desmume_pause` rather than issuing a stopped-state command.
-8. Remove the breakpoint with `desmume_breakpoint_remove` when finished.
-9. Call `desmume_stop` or restart the emulator. Session-scoped breakpoints, executable ranges, stop state, and the old GDB connection are invalidated.
+6. Call `nds_correlate_stop_context` while stopped to map the exact live PC/mode back to canonical code and bounded static evidence; opt into already-current Ghidra enrichment only when needed.
+7. Use `desmume_step_instruction` for a bounded instruction sequence while stopped.
+8. If execution is running after a timeout, use `desmume_wait_for_stop` or `desmume_pause` rather than issuing a stopped-state command.
+9. Remove the breakpoint with `desmume_breakpoint_remove` when finished.
+10. Call `desmume_stop` or restart the emulator. Session-scoped breakpoints, executable ranges, stop state, and the old GDB connection are invalidated.
 
 ## Requirements
 
 - Node.js 20 or newer
 - An MCP host that can launch local stdio servers
 - A dedicated workspace containing the intended repositories and private ROM-development inputs
-- For Ghidra bootstrap, a supported local Ghidra 12.x installation; Ghidra 12.1.2 is the reference acceptance release
+- For Ghidra bootstrap/inspection or optional runtime-correlation enrichment, a supported local Ghidra 12.x installation; Ghidra 12.1.2 is the reference acceptance release
 - For emulator tools, a verified DeSmuME debug bundle
 
 ## Downloadable RE-MCP bundle
@@ -511,12 +539,12 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 
 - Compiled JavaScript
 - Production dependencies, including the pinned Capstone.js WebAssembly backend
-- RE-MCP-owned Ghidra Java bridge scripts
+- RE-MCP-owned Ghidra Java bridge/inspection resources
 - Configuration template
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra Java resources and controlled tool registration, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The package check does not require a Ghidra installation or external disassembler download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra resources and controlled tool registration, requires the runtime-correlation service/Ghidra adapter/tool modules, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The package check does not require a Ghidra installation or external disassembler download.
 
 After downloading and extracting the archive:
 
@@ -525,9 +553,9 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, assembled function/Ghidra-tool registration, Ghidra bridge resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
+The same self-check verifies the required package files, assembled function/Ghidra/runtime-correlation tool registration, Ghidra resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
 
-Copy `mcp-config.example.json`, replace the required workspace/server paths, and either set the optional Ghidra paths for Ghidra bootstrap or remove those optional environment entries when Ghidra tools are not needed.
+Copy `mcp-config.example.json`, replace the required workspace/server paths, and either set the optional Ghidra paths for Ghidra bootstrap/inspection/runtime enrichment or remove those optional environment entries when Ghidra tools are not needed.
 
 ## Build the Catalina-native DeSmuME debugger bundle
 
@@ -557,7 +585,7 @@ Only remove quarantine after verifying the checksum and confirming that the arti
 
 Automated CI verifies packet framing, breakpoint lifecycle, execution state, timeout behavior, register decoding, context capture, lifecycle reset, and MCP validation. Final acceptance still requires the verified native DeSmuME bundle on the target Intel macOS Catalina system.
 
-Follow [`docs/dynamic-debugging-catalina-acceptance.md`](docs/dynamic-debugging-catalina-acceptance.md) to verify breakpoint installation, continue/stop, PC and CPSR capture, single stepping, pause, breakpoint removal, and debugger-state reset after emulator restart.
+Follow [`docs/dynamic-debugging-catalina-acceptance.md`](docs/dynamic-debugging-catalina-acceptance.md) to verify breakpoint installation, continue/stop, PC and CPSR capture, single stepping, pause, breakpoint removal, debugger-state reset after emulator restart, and the final stopped `nds_correlate_stop_context` check. That final check must confirm the launch SHA-256, observed PC/CPSR, canonical candidates, and bounded static interpretation against the real stop.
 
 ## Build RE-MCP from source
 
@@ -583,7 +611,7 @@ RE_MCP_GHIDRA_TIMEOUT_MS=900000 \
 node dist/index.js
 ```
 
-The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra bootstrap is requested.
+The server refuses to start without an explicit workspace root. A Ghidra home is not required unless a Ghidra operation is requested.
 
 ## DeSmuME launcher contract
 
@@ -619,6 +647,9 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - No arbitrary GDB packet tool
 - No register writes, general memory writes, or watchpoints
 - Runtime evidence restricted to project `analysis/generated`
+- Runtime correlation derives ROM identity, stopped PC/mode, and process generation only from the owned session; callers cannot supply a ROM path, PC/registers, processor, overlay selector, arbitrary GDB memory range, or arbitrary Ghidra project/program/script path
+- Runtime correlation defaults to zero Ghidra work; optional Ghidra enrichment requires an already-current full-SHA-scoped project and never bootstraps/reconciles/mutates it
+- Runtime correlation preserves overlapping overlay candidates and never turns candidate-specific static/Ghidra interpretation into a loaded-overlay claim
 - NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
 - NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
 - NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
@@ -639,20 +670,21 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Function entries are proven only by NDS program-entry or exact deterministic direct-call evidence; direct branches, indirect calls, returns, explicit seeds, alignment, and prologue-like bytes do not prove functions
 - Function tools do not infer end addresses, tail calls, shared-epilogue ownership, or exclusive function byte ranges
 - Function proof preserves exact processor/component/overlay/address/mode identity; scope selection never turns ambiguous overlay ownership into proof
-- Explicit function seeds provide coverage only; unseeded/compressed components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
+- Explicit function seeds provide coverage only; unseeded components remain explicit coverage gaps and incomplete negative proof returns `proof-inconclusive`
 - No persistent pattern/xref/function index or heuristic pointer/function discovery
 - Indirect targets are never guessed
-- Compressed overlay runtime bytes and BSS are never disassembled and never receive fabricated direct ROM offsets
+- Compressed overlay runtime code is consumed only from validated decoded derived artifacts and never receives a fabricated direct ROM offset; BSS remains non-decodable runtime-only memory
 - Overlapping static overlay ranges are reported as ambiguous candidates rather than guessed
 - Static overlay selection/disassembly/reference/function search never claims that an overlay is loaded at runtime
 - Static operations revalidate the source ROM SHA-256 before and after decoding/searching
 - Ghidra bootstrap derives one `analyzeHeadless` executable from `RE_MCP_GHIDRA_HOME`; callers cannot provide executable paths, project paths, loaders, languages, scripts, raw Ghidra arguments, environment maps, or output paths
 - Ghidra projects are isolated by full source ROM SHA-256; generated bridge inputs remain separate from persistent analyst state
-- Uncompressed NDS overlays use distinct Ghidra overlay address spaces; compressed overlays are never decoded/imported as executable runtime bytes
+- NDS overlays use distinct Ghidra overlay address spaces; validated compressed-overlay runtime images remain derived and separate from stored-byte provenance
 - RE-MCP imports proven entries/modes/direct-call evidence only and does not promote Ghidra-derived functions, bodies, types, or other heuristics into canonical RE-MCP evidence
 - Ghidra reruns preserve analyst-created state and fail `project-state-mismatch` instead of destructively repairing unrecognized ownership
 - Ghidra headless execution is shell-free, timeout-bounded, output-bounded, and source-ROM identity is revalidated during bootstrap
 - `nds_ghidra_status` is non-mutating and does not invoke Ghidra
+- Controlled Ghidra inspection and correlation enrichment are read-only and disable auto-analysis; correlation does not create or repair projects
 - Debugger session, breakpoint registry, executable ranges, and stop state reset with emulator lifecycle
 - No attachment to unrelated emulator processes
 

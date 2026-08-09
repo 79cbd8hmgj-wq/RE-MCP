@@ -209,6 +209,8 @@ test("registers only bounded current-stop correlation inputs", () => {
   const tool = server.tools.get("nds_correlate_stop_context");
   assert.notEqual(tool, undefined);
   assert.deepEqual(Object.keys(tool!.schema).sort(), [
+    "decompileGhidraFunction",
+    "includeGhidra",
     "nearbyInstructions",
     "referenceLimit",
     "timeoutMs",
@@ -217,6 +219,8 @@ test("registers only bounded current-stop correlation inputs", () => {
     timeoutMs: 3000,
     nearbyInstructions: 8,
     referenceLimit: 16,
+    includeGhidra: false,
+    decompileGhidraFunction: false,
   });
   assert.throws(
     () => server.parse("nds_correlate_stop_context", { timeoutMs: 99 }),

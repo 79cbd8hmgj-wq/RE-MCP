@@ -162,6 +162,18 @@ jobs:
 
           Launch:
             ./run-desmume-debug.command /absolute/path/to/game.nds 20000
+
+          Physical Catalina acceptance checklist:
+            1. Start this owned DeSmuME build with the intended unchanged ROM.
+            2. Install and hit a real ARM9 breakpoint, leaving the debugger stopped.
+            3. Run nds_correlate_stop_context against that stopped generation.
+            4. Verify the launch SHA-256 matches the current source ROM.
+            5. Verify the observed PC/CPSR and ARM/Thumb mode match the live stop.
+            6. Verify canonical candidates preserve any overlay ambiguity instead of guessing loaded state.
+            7. Verify the bounded static interpretation begins at the exact observed PC.
+
+          This physical Catalina acceptance remains separate from fake-RSP CI and the
+          Linux real-Ghidra acceptance workflow.
           TXT
 
           {
