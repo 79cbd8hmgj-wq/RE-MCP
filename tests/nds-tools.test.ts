@@ -642,7 +642,7 @@ test("xref handler rejects missing or duplicate target selectors before scanning
   assert.equal(resultBody(duplicate).category, "range-out-of-bounds");
 });
 
-test("disassembly handlers preserve compressed-overlay status as a successful result", async () => {
+test("disassembly handler fails closed for malformed compressed-overlay runtime bytes", async () => {
   const { fixture, rom } = await buildToolRom();
   const server = register(fixture.directory);
   const result = await server.invoke("nds_disassemble_range", {
@@ -652,8 +652,10 @@ test("disassembly handlers preserve compressed-overlay status as a successful re
     overlayId: 7,
     mode: "arm",
   });
-  assert.equal(resultIsError(result), false);
-  assert.equal(resultBody(result).status, "compressed-overlay-not-decodable");
+  assert.equal(resultIsError(result), true);
+  const body = resultBody(result);
+  assert.equal(body.category, "malformed-blz");
+  assert.equal(typeof body.correctiveAction, "string");
 });
 
 test("disassembly handlers reject missing or duplicate location selectors structurally", async () => {
