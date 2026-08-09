@@ -33,8 +33,8 @@ test("Ghidra preparation imports both stored and derived overlays using manifest
   assert.match(prepare, /"importable"/);
   assert.doesNotMatch(prepare, /not-imported-compressed/);
   assert.match(prepare, /requireString\s*\(\s*overlay\s*,\s*"representation"\s*\)/);
-  assert.match(prepare, /requireNonNegativeLong\s*\(\s*overlay\s*,\s*"initializedSize"\s*\)/);
-  assert.match(prepare, /requireString\s*\(\s*overlay\s*,\s*"runtimeSha256"\s*\)/);
+  assert.match(prepare, /require(?:Positive|NonNegative)Long\s*\(\s*overlay\s*,\s*"initializedSize"\s*\)/);
+  assert.match(prepare, /requireSha256\s*\(\s*overlay\s*,\s*"runtimeSha256"\s*\)/);
   assert.match(prepare, /"rom-file-backed"/);
   assert.match(prepare, /"derived-blz"/);
   assert.doesNotMatch(prepare, /Math\.min\s*\(\s*ramSize\s*,\s*fileBackedSize\s*\)/,
