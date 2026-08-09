@@ -32,7 +32,7 @@ test("loads and canonically normalizes one strict mutation manifest", async () =
   assert.equal(loaded.workspaceRelativePath, "plans/mutation.json");
 });
 
-test("rejects uppercase source hashes and no-op byte operations", async () => {
+test("rejects uppercase source hashes as invalid manifests", async () => {
   const fixture = await createMutationFixture();
   const uppercasePath = await fixture.writeManifest({
     sourceSha256: fixture.sourceSha256.toUpperCase(),
@@ -40,13 +40,18 @@ test("rejects uppercase source hashes and no-op byte operations", async () => {
   await rejectsAsManifestInvalid(
     loadNdsMutationManifest(fixture.directory, uppercasePath),
   );
+});
 
+test("rejects byte-operation no-ops with the dedicated mutation category", async () => {
+  const fixture = await createMutationFixture();
   const noOpPath = await fixture.writeManifest({
     expected: "a9a9",
     replacement: "A9A9",
   }, "plans/no-op.json");
-  await rejectsAsManifestInvalid(
+  await assert.rejects(
     loadNdsMutationManifest(fixture.directory, noOpPath),
+    (error: unknown) => error instanceof NdsError
+      && error.category === "mutation-no-op",
   );
 });
 
@@ -104,7 +109,7 @@ test("requires portable workspace-relative replacement artifact paths", async ()
   );
 });
 
-test("normalizes operation order deterministically", async () => {
+test("canonical JSON preserves semantic operation order", async () => {
   const fixture = await createMutationFixture();
   const first = {
     type: "replace-bytes" as const,
@@ -128,8 +133,10 @@ test("normalizes operation order deterministically", async () => {
   const loadedA = await loadNdsMutationManifest(fixture.directory, pathA);
   const loadedB = await loadNdsMutationManifest(fixture.directory, pathB);
 
-  assert.equal(loadedA.canonicalJson, loadedB.canonicalJson);
-  assert.equal(loadedA.sha256, loadedB.sha256);
+  assert.notEqual(loadedA.canonicalJson, loadedB.canonicalJson);
+  assert.notEqual(loadedA.sha256, loadedB.sha256);
+  assert.equal(loadedA.manifest.operations[0]?.target.component, "arm7");
+  assert.equal(loadedB.manifest.operations[0]?.target.component, "arm9");
 });
 
 test("rejects manifest paths that escape the workspace", async () => {
