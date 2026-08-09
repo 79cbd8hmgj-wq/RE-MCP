@@ -70,6 +70,10 @@ export interface NdsExtractionFs {
   rm(target: string, options: { recursive: true; force: true }): Promise<void>;
 }
 
+export interface NdsAnalysisBundleOptions {
+  readonly includeDerivedRuntimeArtifacts?: boolean;
+}
+
 const defaultExtractionFs: NdsExtractionFs = {
   mkdir: nativeMkdir,
   rename: nativeRename,
@@ -410,6 +414,7 @@ export async function extractNdsAnalysisBundle(
   map: NdsRomMap,
   workspaceRoot: string,
   fsOps: NdsExtractionFs = defaultExtractionFs,
+  options: NdsAnalysisBundleOptions = {},
 ): Promise<{ readonly outputRoot: string; readonly manifestPath: string }> {
   await assertSourceIdentity(map, workspaceRoot);
   const finalRoot = generatedRoot(map, workspaceRoot);
@@ -423,7 +428,10 @@ export async function extractNdsAnalysisBundle(
 
   const artifacts: NdsExtractedArtifact[] = [];
   const runtimeArtifacts: NdsDerivedRuntimeArtifact[] = [];
-  const runtimeContext = createNdsOverlayRuntimeContext(map);
+  const includeDerivedRuntimeArtifacts = options.includeDerivedRuntimeArtifacts ?? true;
+  const runtimeContext = includeDerivedRuntimeArtifacts
+    ? createNdsOverlayRuntimeContext(map)
+    : null;
   try {
     const arm9 = selectComponent(map, { component: "arm9" });
     const arm7 = selectComponent(map, { component: "arm7" });
@@ -434,7 +442,7 @@ export async function extractNdsAnalysisBundle(
       artifacts.push(
         await extractSourceTo(map, source, resolveInside(temporaryRoot, source.relativeOutput)),
       );
-      if (overlay.compressed) {
+      if (overlay.compressed && runtimeContext !== null) {
         const image = await runtimeContext.getCompressedOverlay(
           overlay.processor,
           overlay.overlayId,
