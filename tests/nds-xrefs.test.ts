@@ -217,7 +217,7 @@ async function buildOverlayCoverageFixture() {
   return { fixture, map: await readNdsRomMap(fixture.romPath) };
 }
 
-test("reports explicit, unseeded, and compressed overlay coverage distinctly", async () => {
+test("reports scanned and unseeded overlay coverage independent of storage representation", async () => {
   const { map } = await buildOverlayCoverageFixture();
   const backend = new FakeBackend(new Map([
     [0x02000000, returned(0x02000000)],
@@ -241,7 +241,7 @@ test("reports explicit, unseeded, and compressed overlay coverage distinctly", a
     [
       ["main", null, "scanned"],
       ["overlay", 7, "scanned"],
-      ["overlay", 9, "compressed-overlay-not-decodable"],
+      ["overlay", 9, "no-proven-seed"],
     ],
   );
 

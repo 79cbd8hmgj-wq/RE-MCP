@@ -17,6 +17,7 @@ import {
 } from "./helpers/nds-fixture.js";
 
 const ARM_BX_LR = Buffer.from([0x1e, 0xff, 0x2f, 0xe1]);
+const ARM_BL_COMPRESSED_OVERLAY = Buffer.from([0xfe, 0x3f, 0x08, 0xeb]);
 
 async function createBridgeFixture() {
   const fixture = await createNdsFixture({
@@ -54,7 +55,8 @@ async function createBridgeFixture() {
     flags: 1,
   });
 
-  ARM_BX_LR.copy(fixture.buffer, 0x200);
+  ARM_BL_COMPRESSED_OVERLAY.copy(fixture.buffer, 0x200);
+  ARM_BX_LR.copy(fixture.buffer, 0x204);
   ARM_BX_LR.copy(fixture.buffer, 0x600);
   ARM_BX_LR.copy(fixture.buffer, 0x1000);
   fixture.buffer.fill(0xcc, 0x1100, 0x1120);

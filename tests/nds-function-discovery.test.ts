@@ -406,7 +406,7 @@ async function buildCoverageFixture() {
   return { fixture, map: await readNdsRomMap(fixture.romPath) };
 }
 
-test("function discovery reports scanned, unseeded, and compressed component coverage", async () => {
+test("function discovery reports scanned and unseeded component coverage independent of storage representation", async () => {
   const { map } = await buildCoverageFixture();
   const backend = new FakeBackend(new Map([
     [0x02000000, returned(0x02000000)],
@@ -430,7 +430,7 @@ test("function discovery reports scanned, unseeded, and compressed component cov
     [
       ["main", null, "scanned"],
       ["overlay", 7, "scanned"],
-      ["overlay", 9, "compressed-overlay-not-decodable"],
+      ["overlay", 9, "no-proven-seed"],
       ["overlay", 11, "no-proven-seed"],
     ],
   );

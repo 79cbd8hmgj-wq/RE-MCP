@@ -145,16 +145,19 @@ async function buildOverlayFixture(options: {
   return { fixture, map: await readNdsRomMap(fixture.romPath) };
 }
 
-test("compressed overlays and BSS never become decodable code sources", async () => {
+test("compressed initialized overlays resolve as derived sources while BSS remains runtime-only", async () => {
   const compressed = await buildOverlayFixture({ compressed: true });
-  assert.equal(
-    resolveNdsCodeSource(compressed.map, {
-      processor: "arm9",
-      runtimeAddress: 0x02200010,
-      mode: "arm",
-    }).status,
-    "compressed-overlay-not-decodable",
-  );
+  const derived = resolveNdsCodeSource(compressed.map, {
+    processor: "arm9",
+    runtimeAddress: 0x02200010,
+    mode: "arm",
+  });
+  assert.equal(derived.status, "resolved");
+  if (derived.status === "resolved") {
+    assert.equal(derived.source.representation, "derived-overlay");
+    assert.equal(derived.source.romOffset, null);
+    assert.equal(derived.source.runtimeImageOffset, 0x10);
+  }
 
   const plain = await buildOverlayFixture({ bssSize: 0x20 });
   assert.equal(

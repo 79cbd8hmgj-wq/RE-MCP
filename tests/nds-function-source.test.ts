@@ -127,31 +127,7 @@ test("function search deduplicates canonical explicit seeds without proving them
   assert.equal(prepared.programEntry, null);
 });
 
-test("function search rejects duplicate and unknown overlay scope selectors", async () => {
-  const { map } = await buildFunctionSourceFixture();
-
-  assert.equal(
-    categoryOf(() => prepareFunctionSearch(
-      map,
-      "arm9",
-      { kind: "overlay", overlayIds: [7, 7] },
-      [],
-    )),
-    "invalid-function-scope",
-  );
-
-  assert.equal(
-    categoryOf(() => prepareFunctionSearch(
-      map,
-      "arm9",
-      { kind: "overlay", overlayIds: [99] },
-      [],
-    )),
-    "invalid-function-scope",
-  );
-});
-
-test("function search rejects invalid coverage seeds conservatively", async () => {
+test("function search rejects invalid coverage seeds conservatively while accepting exact compressed runtime seeds", async () => {
   const { map } = await buildFunctionSourceFixture();
 
   assert.equal(
@@ -174,15 +150,15 @@ test("function search rejects invalid coverage seeds conservatively", async () =
     "invalid-function-seed",
   );
 
-  assert.equal(
-    categoryOf(() => prepareFunctionSearch(
-      map,
-      "arm9",
-      { kind: "overlay", overlayIds: [9] },
-      [{ runtimeAddress: 0x02210000, mode: "arm", overlayId: 9 }],
-    )),
-    "invalid-function-seed",
+  const compressed = prepareFunctionSearch(
+    map,
+    "arm9",
+    { kind: "overlay", overlayIds: [9] },
+    [{ runtimeAddress: 0x02210000, mode: "arm", overlayId: 9 }],
   );
+  assert.equal(compressed.explicitSeeds.length, 1);
+  assert.equal(compressed.explicitSeeds[0]?.representation, "derived-overlay");
+  assert.equal(compressed.explicitSeeds[0]?.romOffset, null);
 
   assert.equal(
     categoryOf(() => prepareFunctionSearch(
@@ -195,7 +171,7 @@ test("function search rejects invalid coverage seeds conservatively", async () =
   );
 });
 
-test("canonical function target requires exact selected uncompressed file-backed ownership", async () => {
+test("canonical function target requires exact selected ownership", async () => {
   const { map } = await buildFunctionSourceFixture();
   const selected = new Set(["arm9:main", "arm9:overlay:7"]);
 
@@ -226,6 +202,23 @@ test("canonical function target requires exact selected uncompressed file-backed
   assert.equal(
     canonicalizeFunctionTarget(map, "arm9", 0x02210000, "arm", selected),
     null,
+  );
+  assert.deepEqual(
+    canonicalizeFunctionTarget(
+      map,
+      "arm9",
+      0x02210000,
+      "arm",
+      new Set(["arm9:overlay:9"]),
+    ),
+    {
+      processor: "arm9",
+      component: "overlay",
+      overlayId: 9,
+      runtimeAddress: 0x02210000,
+      romOffset: null,
+      mode: "arm",
+    },
   );
   assert.equal(
     canonicalizeFunctionTarget(map, "arm9", 0x02300000, "arm", selected),

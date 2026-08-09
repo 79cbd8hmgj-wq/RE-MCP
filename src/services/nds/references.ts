@@ -27,7 +27,7 @@ export interface StaticReference {
     readonly component: "main" | "overlay";
     readonly overlayId: number | null;
     readonly instructionAddress: number;
-    readonly instructionRomOffset: number;
+    readonly instructionRomOffset: number | null;
     readonly mode: ArmMode;
   };
   readonly target: {

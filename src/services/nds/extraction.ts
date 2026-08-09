@@ -14,6 +14,10 @@ import { pipeline } from "node:stream/promises";
 import { resolveInside } from "../../security/paths.js";
 import { NdsError } from "./errors.js";
 import { hashFileSha256 } from "./io.js";
+import {
+  createNdsOverlayRuntimeContext,
+  type NdsOverlayRuntimeImage,
+} from "./overlay-runtime.js";
 import type { NdsOverlay, NdsProcessor } from "./overlays.js";
 import type { NdsRomMap } from "./rom-map.js";
 
@@ -40,10 +44,34 @@ export interface NdsExtractedArtifact {
   readonly compressedSize: number | null;
 }
 
+export interface NdsDerivedRuntimeArtifact {
+  readonly output: string;
+  readonly processor: NdsProcessor;
+  readonly overlayId: number;
+  readonly fileId: number;
+  readonly sourceRomSha256: string;
+  readonly representation: "derived-blz";
+  readonly romOffset: null;
+  readonly storedRomOffset: number;
+  readonly storedSize: number;
+  readonly compressedSize: number;
+  readonly storedSha256: string;
+  readonly compressedPayloadSha256: string;
+  readonly runtimeAddress: number;
+  readonly runtimeSize: number;
+  readonly bssSize: number;
+  readonly runtimeSha256: string;
+  readonly outputSha256: string;
+}
+
 export interface NdsExtractionFs {
   mkdir(target: string, options: { recursive: true }): Promise<string | undefined>;
   rename(source: string, destination: string): Promise<void>;
   rm(target: string, options: { recursive: true; force: true }): Promise<void>;
+}
+
+export interface NdsAnalysisBundleOptions {
+  readonly includeDerivedRuntimeArtifacts?: boolean;
 }
 
 const defaultExtractionFs: NdsExtractionFs = {
@@ -216,6 +244,24 @@ async function copyRangeAtomic(
   }
 }
 
+async function writeBufferAtomic(outputPath: string, bytes: Buffer): Promise<string> {
+  const temporary = `${outputPath}.tmp-${process.pid}-${Date.now()}`;
+  await nativeMkdir(path.dirname(outputPath), { recursive: true });
+  try {
+    await writeFile(temporary, bytes, { flag: "wx" });
+    await syncFile(temporary);
+    await nativeRename(temporary, outputPath);
+    return await hashFileSha256(outputPath);
+  } catch (error) {
+    try {
+      await nativeRm(temporary, { force: true });
+    } catch {
+      // Best-effort cleanup.
+    }
+    throw asGeneratedError("Atomic NDS runtime artifact write", error);
+  }
+}
+
 async function writeJsonAtomic(outputPath: string, value: unknown): Promise<void> {
   const temporary = `${outputPath}.tmp-${process.pid}-${Date.now()}`;
   await nativeMkdir(path.dirname(outputPath), { recursive: true });
@@ -270,6 +316,43 @@ async function extractSourceTo(
   };
 }
 
+async function writeRuntimeArtifactTo(
+  image: NdsOverlayRuntimeImage,
+  outputPath: string,
+): Promise<NdsDerivedRuntimeArtifact> {
+  const outputSha256 = await writeBufferAtomic(outputPath, image.bytes);
+  if (outputSha256 !== image.runtimeSha256) {
+    try {
+      await nativeRm(outputPath, { force: true });
+    } catch {
+      // Best-effort cleanup of an artifact whose hash failed validation.
+    }
+    throw new NdsError(
+      "generated-path-failure",
+      `Decoded ${image.processor.toUpperCase()} overlay ${image.overlayId} artifact hash does not match the canonical runtime image`,
+    );
+  }
+  return {
+    output: outputPath,
+    processor: image.processor,
+    overlayId: image.overlayId,
+    fileId: image.fileId,
+    sourceRomSha256: image.sourceRomSha256,
+    representation: image.representation,
+    romOffset: null,
+    storedRomOffset: image.storedRomOffset,
+    storedSize: image.storedSize,
+    compressedSize: image.compressedSize,
+    storedSha256: image.storedSha256,
+    compressedPayloadSha256: image.compressedPayloadSha256,
+    runtimeAddress: image.runtimeAddress,
+    runtimeSize: image.runtimeSize,
+    bssSize: image.bssSize,
+    runtimeSha256: image.runtimeSha256,
+    outputSha256,
+  };
+}
+
 export async function extractNdsComponent(
   map: NdsRomMap,
   workspaceRoot: string,
@@ -317,10 +400,21 @@ function manifestArtifact(
   };
 }
 
+function manifestRuntimeArtifact(
+  artifact: NdsDerivedRuntimeArtifact,
+  root: string,
+): Omit<NdsDerivedRuntimeArtifact, "output"> & { readonly output: string } {
+  return {
+    ...artifact,
+    output: path.relative(root, artifact.output).split(path.sep).join("/"),
+  };
+}
+
 export async function extractNdsAnalysisBundle(
   map: NdsRomMap,
   workspaceRoot: string,
   fsOps: NdsExtractionFs = defaultExtractionFs,
+  options: NdsAnalysisBundleOptions = {},
 ): Promise<{ readonly outputRoot: string; readonly manifestPath: string }> {
   await assertSourceIdentity(map, workspaceRoot);
   const finalRoot = generatedRoot(map, workspaceRoot);
@@ -333,6 +427,11 @@ export async function extractNdsAnalysisBundle(
   await fsOps.mkdir(temporaryRoot, { recursive: true });
 
   const artifacts: NdsExtractedArtifact[] = [];
+  const runtimeArtifacts: NdsDerivedRuntimeArtifact[] = [];
+  const includeDerivedRuntimeArtifacts = options.includeDerivedRuntimeArtifacts ?? true;
+  const runtimeContext = includeDerivedRuntimeArtifacts
+    ? createNdsOverlayRuntimeContext(map)
+    : null;
   try {
     const arm9 = selectComponent(map, { component: "arm9" });
     const arm7 = selectComponent(map, { component: "arm7" });
@@ -343,6 +442,22 @@ export async function extractNdsAnalysisBundle(
       artifacts.push(
         await extractSourceTo(map, source, resolveInside(temporaryRoot, source.relativeOutput)),
       );
+      if (overlay.compressed && runtimeContext !== null) {
+        const image = await runtimeContext.getCompressedOverlay(
+          overlay.processor,
+          overlay.overlayId,
+        );
+        const runtimeOutput = resolveInside(
+          temporaryRoot,
+          path.join(
+            "runtime",
+            "overlays",
+            overlay.processor,
+            `overlay_${overlay.overlayId}.bin`,
+          ),
+        );
+        runtimeArtifacts.push(await writeRuntimeArtifactTo(image, runtimeOutput));
+      }
     }
 
     await writeJsonAtomic(resolveInside(temporaryRoot, "address-map.json"), {
@@ -365,6 +480,9 @@ export async function extractNdsAnalysisBundle(
       sourceRomSha256: map.sha256,
       sha256Prefix: map.sha256Prefix,
       artifacts: artifacts.map((artifact) => manifestArtifact(artifact, temporaryRoot)),
+      runtimeArtifacts: runtimeArtifacts.map(
+        (artifact) => manifestRuntimeArtifact(artifact, temporaryRoot),
+      ),
     });
 
     const afterSha256 = await hashFileSha256(map.romPath);

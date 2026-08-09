@@ -316,7 +316,7 @@ test("positive proof remains proven when unrelated selected coverage is incomple
   assert.ok(result.cfg);
 });
 
-test("unseeded or compressed proof scope returns proof-inconclusive when no proof exists", async () => {
+test("unseeded proof scopes return proof-inconclusive regardless of overlay storage representation", async () => {
   const unseeded = await buildOverlayFixture(false);
   const unseededResult = await analyzeNdsFunction(
     unseeded.map,
@@ -348,10 +348,8 @@ test("unseeded or compressed proof scope returns proof-inconclusive when no proo
     new FakeBackend(new Map()),
   );
   assert.equal(compressedResult.proofStatus, "proof-inconclusive");
-  assert.equal(
-    compressedResult.proofSearch.coverage[0]?.status,
-    "compressed-overlay-not-decodable",
-  );
+  assert.equal(compressedResult.proofSearch.status, "partial-coverage");
+  assert.equal(compressedResult.proofSearch.coverage[0]?.status, "no-proven-seed");
 });
 
 test("focused proof reconstructs contextual overlay ownership from a proven direct call", async () => {

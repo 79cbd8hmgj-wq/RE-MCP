@@ -7,7 +7,10 @@ import { pathToFileURL } from "node:url";
 const root = path.resolve(process.argv[2] ?? process.cwd());
 const required = [
   "dist/index.js",
+  "dist/services/nds/blz.js",
   "dist/services/nds/disassembly.js",
+  "dist/services/nds/extraction.js",
+  "dist/services/nds/overlay-runtime.js",
   "dist/services/nds/references.js",
   "dist/services/nds/pattern-search.js",
   "dist/services/nds/function-discovery.js",
@@ -66,6 +69,9 @@ const adapterUrl = pathToFileURL(
 const disassemblyUrl = pathToFileURL(
   path.join(root, "dist/services/nds/disassembly.js"),
 ).href;
+const extractionUrl = pathToFileURL(
+  path.join(root, "dist/services/nds/extraction.js"),
+).href;
 const referencesUrl = pathToFileURL(
   path.join(root, "dist/services/nds/references.js"),
 ).href;
@@ -80,6 +86,7 @@ const romMapUrl = pathToFileURL(
 ).href;
 const { createCapstoneArmBackend } = await import(adapterUrl);
 const { decodeNdsInstructionDetailed } = await import(disassemblyUrl);
+const { extractNdsAnalysisBundle } = await import(extractionUrl);
 const { classifyNdsInstructionReferences } = await import(referencesUrl);
 const { searchNdsPattern } = await import(patternSearchUrl);
 const { discoverNdsFunctions } = await import(functionDiscoveryUrl);
@@ -285,6 +292,119 @@ try {
   }
 } finally {
   await rm(functionTemp, { recursive: true, force: true });
+}
+
+const compressedTemp = await mkdtemp(path.join(os.tmpdir(), "re-mcp-compressed-"));
+try {
+  const compressedStored = Buffer.from(
+    "060000eb0034009fe5000000ea0000000df0110021a010402d1ce91eff2f0d606000201002011001f001f001f001f001f001f0fe01f001f001f001f00000a0e10f49000008b7000000",
+    "hex",
+  );
+  const compressedDecodedHead = Buffer.from(
+    [
+      "060000eb",
+      "34009fe5",
+      "000000ea",
+      "0000a0e1",
+      "1eff2fe1",
+      "0000a0e1",
+      "0000a0e1",
+      "0000a0e1",
+      "1eff2fe1",
+      "0000a0e1",
+      "0000a0e1",
+      "0000a0e1",
+      "10402de9",
+      "1eff2fe1",
+      "0000a0e1",
+      "0000a0e1",
+      "60002002",
+    ].join(""),
+    "hex",
+  );
+  const compressedDecoded = Buffer.concat([
+    compressedDecodedHead,
+    Buffer.from("0000a0e1".repeat(47), "hex"),
+  ]);
+  const trailingBackingBytes = 8;
+  const backingSize = compressedStored.length + trailingBackingBytes;
+  const fixture = Buffer.alloc(0x3000);
+
+  fixture.write("RE-MCP TEST", 0x00, 12, "ascii");
+  fixture.write("TEST", 0x0c, 4, "ascii");
+  fixture.write("01", 0x10, 2, "ascii");
+  fixture.writeUInt8(8, 0x14);
+  fixture.writeUInt32LE(0x200, 0x20);
+  fixture.writeUInt32LE(0x02000000, 0x24);
+  fixture.writeUInt32LE(0x02000000, 0x28);
+  fixture.writeUInt32LE(0x100, 0x2c);
+  fixture.writeUInt32LE(0x600, 0x30);
+  fixture.writeUInt32LE(0x03800000, 0x34);
+  fixture.writeUInt32LE(0x03800000, 0x38);
+  fixture.writeUInt32LE(0x100, 0x3c);
+  fixture.writeUInt32LE(0x800, 0x40);
+  fixture.writeUInt32LE(0, 0x44);
+  fixture.writeUInt32LE(0x900, 0x48);
+  fixture.writeUInt32LE(8, 0x4c);
+  fixture.writeUInt32LE(0xa00, 0x50);
+  fixture.writeUInt32LE(32, 0x54);
+  fixture.writeUInt32LE(0xb00, 0x58);
+  fixture.writeUInt32LE(0, 0x5c);
+  fixture.writeUInt32LE(0xc00, 0x68);
+
+  fixture.writeUInt32LE(0x1200, 0x900);
+  fixture.writeUInt32LE(0x1200 + backingSize, 0x904);
+
+  fixture.writeUInt32LE(7, 0xa00);
+  fixture.writeUInt32LE(0x02200000, 0xa04);
+  fixture.writeUInt32LE(compressedDecoded.length, 0xa08);
+  fixture.writeUInt32LE(0x20, 0xa0c);
+  fixture.writeUInt32LE(0, 0xa10);
+  fixture.writeUInt32LE(0, 0xa14);
+  fixture.writeUInt32LE(0, 0xa18);
+  fixture.writeUInt32LE(
+    ((compressedStored.length & 0x00ffffff) | (1 << 24)) >>> 0,
+    0xa1c,
+  );
+  compressedStored.copy(fixture, 0x1200);
+  Buffer.alloc(trailingBackingBytes, 0x5a).copy(
+    fixture,
+    0x1200 + compressedStored.length,
+  );
+
+  const compressedRom = path.join(compressedTemp, "compressed-smoke.nds");
+  await writeFile(compressedRom, fixture);
+  const sourceBefore = await readFile(compressedRom);
+  const compressedMap = await readNdsRomMap(compressedRom);
+  const bundle = await extractNdsAnalysisBundle(compressedMap, compressedTemp);
+  const rawOverlay = await readFile(
+    path.join(bundle.outputRoot, "overlays", "arm9", "overlay_7.bin"),
+  );
+  const runtimeOverlay = await readFile(
+    path.join(bundle.outputRoot, "runtime", "overlays", "arm9", "overlay_7.bin"),
+  );
+  const manifest = JSON.parse(await readFile(bundle.manifestPath, "utf8"));
+  const runtimeArtifact = manifest.runtimeArtifacts?.[0];
+
+  if (
+    rawOverlay.length !== backingSize
+    || !rawOverlay.subarray(0, compressedStored.length).equals(compressedStored)
+    || !runtimeOverlay.equals(compressedDecoded)
+    || runtimeArtifact?.output !== "runtime/overlays/arm9/overlay_7.bin"
+    || runtimeArtifact?.representation !== "derived-blz"
+    || runtimeArtifact?.romOffset !== null
+    || runtimeArtifact?.runtimeSize !== compressedDecoded.length
+    || runtimeArtifact?.bssSize !== 0x20
+    || runtimeArtifact?.runtimeSha256 !== runtimeArtifact?.outputSha256
+  ) {
+    throw new Error("Packaged compressed-overlay bundle smoke failed");
+  }
+  const sourceAfter = await readFile(compressedRom);
+  if (!sourceAfter.equals(sourceBefore)) {
+    throw new Error("Packaged compressed-overlay bundle smoke modified its source ROM");
+  }
+} finally {
+  await rm(compressedTemp, { recursive: true, force: true });
 }
 
 process.stdout.write(

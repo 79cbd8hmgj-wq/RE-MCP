@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import type { ArmMode } from "../disassembly/backend.js";
 import { NdsError } from "./errors.js";
 import { hashFileSha256, readExact } from "./io.js";
+import { createNdsOverlayRuntimeContext } from "./overlay-runtime.js";
 import type { NdsOverlay, NdsProcessor } from "./overlays.js";
 import {
   resolveRomOffset,
@@ -15,6 +16,7 @@ import type { NdsRomMap } from "./rom-map.js";
 const UINT32_MAX = 0xffffffff;
 
 export type NdsDisassemblyMode = ArmMode | "auto";
+export type NdsCodeRepresentation = "rom-file-backed" | "derived-overlay";
 
 export interface NdsDisassemblyLocation {
   readonly processor: NdsProcessor;
@@ -30,10 +32,12 @@ export interface NdsCodeSourceCandidate {
   readonly overlayId: number | null;
   readonly runtimeAddress: number | null;
   readonly romOffset: number | null;
+  readonly runtimeImageOffset: number | null;
   readonly runtimeStart: number;
   readonly runtimeEnd: number;
-  readonly romStart: number;
-  readonly romEnd: number;
+  readonly romStart: number | null;
+  readonly romEnd: number | null;
+  readonly representation: NdsCodeRepresentation | "runtime-only";
   readonly compressed: boolean;
   readonly bss: boolean;
 }
@@ -43,13 +47,20 @@ export interface NdsCodeSource {
   readonly component: "main" | "overlay";
   readonly overlayId: number | null;
   readonly runtimeAddress: number;
-  readonly romOffset: number;
+  readonly romOffset: number | null;
+  readonly runtimeImageOffset: number;
   readonly runtimeStart: number;
   readonly runtimeEnd: number;
-  readonly romStart: number;
-  readonly romEnd: number;
+  readonly romStart: number | null;
+  readonly romEnd: number | null;
+  readonly representation: NdsCodeRepresentation;
   readonly mode: ArmMode;
 }
+
+export type NdsCodeRead = (
+  source: NdsCodeSource,
+  maxBytes: number,
+) => Promise<Buffer>;
 
 export type NdsCodeSourceResolution =
   | { readonly status: "resolved"; readonly source: NdsCodeSource }
@@ -129,10 +140,12 @@ function mainCandidate(
     overlayId: null,
     runtimeAddress,
     romOffset,
+    runtimeImageOffset: runtimeAddress - executable.ramAddress,
     runtimeStart: executable.ramAddress,
     runtimeEnd: executable.ramEnd,
     romStart: executable.romOffset,
     romEnd: executable.romEnd,
+    representation: "rom-file-backed",
     compressed: false,
     bss: false,
   };
@@ -145,27 +158,60 @@ function overlayCandidate(
   bss: boolean,
 ): NdsCodeSourceCandidate {
   const fileBackedSize = Math.min(overlay.ramSize, overlay.romSize);
-  const runtimeStart = bss ? overlay.ramEnd : overlay.ramAddress;
-  const runtimeEnd = bss
-    ? overlay.bssEnd
-    : overlay.compressed
-      ? overlay.ramEnd
-      : overlay.ramAddress + fileBackedSize;
-  const romEnd = overlay.compressed
-    ? overlay.romOffset + overlay.romSize
-    : overlay.romOffset + fileBackedSize;
+  const relativeOffset = runtimeAddress === null
+    ? null
+    : runtimeAddress - overlay.ramAddress;
+
+  if (bss) {
+    return {
+      processor: overlay.processor,
+      component: "overlay",
+      overlayId: overlay.overlayId,
+      runtimeAddress,
+      romOffset: null,
+      runtimeImageOffset: null,
+      runtimeStart: overlay.ramEnd,
+      runtimeEnd: overlay.bssEnd,
+      romStart: null,
+      romEnd: null,
+      representation: "runtime-only",
+      compressed: overlay.compressed,
+      bss: true,
+    };
+  }
+
+  if (overlay.compressed) {
+    return {
+      processor: overlay.processor,
+      component: "overlay",
+      overlayId: overlay.overlayId,
+      runtimeAddress,
+      romOffset: null,
+      runtimeImageOffset: relativeOffset,
+      runtimeStart: overlay.ramAddress,
+      runtimeEnd: overlay.ramEnd,
+      romStart: null,
+      romEnd: null,
+      representation: "derived-overlay",
+      compressed: true,
+      bss: false,
+    };
+  }
+
   return {
     processor: overlay.processor,
     component: "overlay",
     overlayId: overlay.overlayId,
     runtimeAddress,
     romOffset,
-    runtimeStart,
-    runtimeEnd,
+    runtimeImageOffset: relativeOffset,
+    runtimeStart: overlay.ramAddress,
+    runtimeEnd: overlay.ramAddress + fileBackedSize,
     romStart: overlay.romOffset,
-    romEnd,
-    compressed: overlay.compressed,
-    bss,
+    romEnd: overlay.romOffset + fileBackedSize,
+    representation: romOffset === null ? "runtime-only" : "rom-file-backed",
+    compressed: false,
+    bss: false,
   };
 }
 
@@ -232,7 +278,7 @@ function fromRomMatch(
     return mainCandidate(map, processor, match.runtimeAddress, romOffset);
   }
 
-  if (match.overlayId === null) {
+  if (match.overlayId === null || match.runtimeAddress === null) {
     return null;
   }
   const overlay = findOverlay(map, processor, match.overlayId);
@@ -241,6 +287,9 @@ function fromRomMatch(
       "unknown-overlay-id",
       `Missing ${processor.toUpperCase()} overlay ${match.overlayId}`,
     );
+  }
+  if (overlay.compressed) {
+    return null;
   }
   return overlayCandidate(
     overlay,
@@ -311,19 +360,29 @@ function classifyCandidate(
   if (candidate.bss) {
     return { status: "runtime-only-bss", candidate };
   }
-  if (candidate.compressed) {
-    return { status: "compressed-overlay-not-decodable", candidate };
-  }
-  if (candidate.runtimeAddress === null || candidate.romOffset === null) {
+  if (
+    candidate.runtimeAddress === null
+    || candidate.runtimeImageOffset === null
+    || candidate.representation === "runtime-only"
+  ) {
     return { status: "unmapped-address", address: selectorAddress, processor };
   }
   if (
     candidate.runtimeAddress < candidate.runtimeStart
     || candidate.runtimeAddress >= candidate.runtimeEnd
-    || candidate.romOffset < candidate.romStart
-    || candidate.romOffset >= candidate.romEnd
   ) {
     return { status: "unmapped-address", address: selectorAddress, processor };
+  }
+  if (candidate.representation === "rom-file-backed") {
+    if (
+      candidate.romOffset === null
+      || candidate.romStart === null
+      || candidate.romEnd === null
+      || candidate.romOffset < candidate.romStart
+      || candidate.romOffset >= candidate.romEnd
+    ) {
+      return { status: "unmapped-address", address: selectorAddress, processor };
+    }
   }
 
   const mode = requestedMode(map, candidate, requested);
@@ -343,10 +402,12 @@ function classifyCandidate(
       overlayId: candidate.overlayId,
       runtimeAddress: candidate.runtimeAddress,
       romOffset: candidate.romOffset,
+      runtimeImageOffset: candidate.runtimeImageOffset,
       runtimeStart: candidate.runtimeStart,
       runtimeEnd: candidate.runtimeEnd,
       romStart: candidate.romStart,
       romEnd: candidate.romEnd,
+      representation: candidate.representation,
       mode,
     },
   };
@@ -446,7 +507,11 @@ export function codeSourceAt(
   return {
     ...source,
     runtimeAddress,
-    romOffset: source.romStart + relativeOffset,
+    runtimeImageOffset: relativeOffset,
+    romOffset: source.representation === "rom-file-backed"
+      && source.romStart !== null
+      ? source.romStart + relativeOffset
+      : null,
   };
 }
 
@@ -478,11 +543,18 @@ export function resolveNdsControlFlowTarget(
   });
 }
 
-export async function withValidatedNdsRomReader<T>(
+function requireReadSize(maxBytes: number): void {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new NdsError(
+      "range-out-of-bounds",
+      "Disassembly read size must be a non-negative safe integer",
+    );
+  }
+}
+
+export async function withValidatedNdsCodeReader<T>(
   map: NdsRomMap,
-  callback: (
-    read: (source: NdsCodeSource, maxBytes: number) => Promise<Buffer>,
-  ) => Promise<T>,
+  callback: (read: NdsCodeRead) => Promise<T>,
 ): Promise<T> {
   if (await hashFileSha256(map.romPath) !== map.sha256) {
     throw new NdsError(
@@ -492,27 +564,66 @@ export async function withValidatedNdsRomReader<T>(
   }
 
   const handle = await open(map.romPath, "r");
+  const runtimeContext = createNdsOverlayRuntimeContext(map);
   let outcome:
     | { readonly ok: true; readonly value: T }
     | { readonly ok: false; readonly error: unknown };
   try {
     const value = await callback(async (source, maxBytes) => {
-      if (
-        !Number.isSafeInteger(maxBytes)
-        || maxBytes < 0
-      ) {
-        throw new NdsError(
-          "range-out-of-bounds",
-          "Disassembly read size must be a non-negative safe integer",
+      requireReadSize(maxBytes);
+      const runtimeRemaining = source.runtimeEnd - source.runtimeAddress;
+      const requestedLength = Math.min(maxBytes, runtimeRemaining);
+
+      if (source.representation === "rom-file-backed") {
+        if (
+          source.romOffset === null
+          || source.romEnd === null
+        ) {
+          throw new NdsError(
+            "range-out-of-bounds",
+            "ROM-backed NDS code source unexpectedly lacks physical provenance",
+          );
+        }
+        const length = Math.min(
+          requestedLength,
+          source.romEnd - source.romOffset,
+        );
+        return await readExact(
+          handle,
+          source.romOffset,
+          length,
+          "NDS disassembly source",
         );
       }
-      const length = Math.min(maxBytes, source.romEnd - source.romOffset);
-      return await readExact(
-        handle,
-        source.romOffset,
-        length,
-        "NDS disassembly source",
+
+      if (source.overlayId === null) {
+        throw new NdsError(
+          "range-out-of-bounds",
+          "Derived NDS code source unexpectedly lacks an overlay ID",
+        );
+      }
+      const image = await runtimeContext.getCompressedOverlay(
+        source.processor,
+        source.overlayId,
       );
+      if (
+        image.runtimeAddress !== source.runtimeStart
+        || image.runtimeSize !== source.runtimeEnd - source.runtimeStart
+      ) {
+        throw new NdsError(
+          "compressed-overlay-runtime-unavailable",
+          "Derived NDS code source no longer matches its canonical overlay runtime image",
+        );
+      }
+      const start = source.runtimeImageOffset;
+      const end = Math.min(start + requestedLength, image.bytes.length);
+      if (start < 0 || start > image.bytes.length || end < start) {
+        throw new NdsError(
+          "range-out-of-bounds",
+          "Derived NDS code source offset lies outside its runtime image",
+        );
+      }
+      return image.bytes.subarray(start, end);
     });
     outcome = { ok: true, value };
   } catch (error) {
@@ -531,4 +642,11 @@ export async function withValidatedNdsRomReader<T>(
     throw outcome.error;
   }
   return outcome.value;
+}
+
+export async function withValidatedNdsRomReader<T>(
+  map: NdsRomMap,
+  callback: (read: NdsCodeRead) => Promise<T>,
+): Promise<T> {
+  return await withValidatedNdsCodeReader(map, callback);
 }

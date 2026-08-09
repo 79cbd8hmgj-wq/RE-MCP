@@ -90,6 +90,14 @@ function correctiveAction(category: NdsToolErrorCategory): string {
     case "malformed-fnt":
     case "malformed-overlay-table":
       return "Inspect the ROM structure or use a known-good ROM revision; RE-MCP will not guess through malformed metadata.";
+    case "malformed-blz":
+      return "Use a ROM with valid Nintendo DS BLZ overlay data; RE-MCP will not interpret malformed compressed bytes as runtime code.";
+    case "blz-output-size-mismatch":
+      return "Verify the overlay compression metadata and canonical RAM size; decoded BLZ bytes must exactly match the declared runtime image size.";
+    case "blz-output-limit":
+      return "Use compressed overlays within the documented stored, decoded, and aggregate runtime-image limits; RE-MCP will not allocate beyond those bounds.";
+    case "compressed-overlay-runtime-unavailable":
+      return "Verify the selected compressed overlay metadata and backing bytes, then retry; RE-MCP will not substitute stored compressed bytes for runtime code.";
     case "range-out-of-bounds":
       return "Use an address, ROM offset, mode, or canonical component that lies inside the validated source ROM ranges and approved bounds.";
     case "unknown-file-id":
@@ -107,7 +115,7 @@ function correctiveAction(category: NdsToolErrorCategory): string {
     case "invalid-reference-scope":
       return "Choose main, existing overlay IDs for the selected processor, or all executable components without duplicate overlay IDs.";
     case "invalid-reference-seed":
-      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected uncompressed file-backed code.";
+      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected initialized code; seeds provide coverage without inferring overlay loaded state.";
     case "reference-scan-limit-exceeded":
       return "Use valid positive bounded scan limits; internal reference-scan limit invariants must not be bypassed.";
     case "invalid-pattern":
@@ -119,7 +127,7 @@ function correctiveAction(category: NdsToolErrorCategory): string {
     case "invalid-function-scope":
       return "Choose main, existing overlay IDs, selected main plus overlays, or all executable components without duplicate overlay IDs.";
     case "invalid-function-seed":
-      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected uncompressed file-backed code; seeds provide coverage only and do not prove functions.";
+      return "Use an aligned ARM/Thumb seed that resolves uniquely to selected initialized code; seeds provide coverage only and do not prove functions.";
     case "function-entry-not-uniquely-resolved":
       return "Provide processor, ARM/Thumb mode, and overlay context when needed so the requested function entry selects one exact initialized executable source.";
     case "function-discovery-limit-exceeded":

@@ -59,6 +59,17 @@ export interface GeneratedGhidraBridge {
   readonly manifest: GhidraBridgeManifest;
 }
 
+function ghidraDiscoveryMap(map: NdsRomMap): NdsRomMap {
+  return {
+    ...map,
+    overlays: {
+      arm9: map.overlays.arm9.filter((overlay) => !overlay.compressed),
+      arm7: map.overlays.arm7.filter((overlay) => !overlay.compressed),
+    },
+    executableRanges: map.executableRanges.filter((range) => !range.compressed),
+  };
+}
+
 function portable(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
 }
@@ -267,7 +278,12 @@ export async function generateNdsGhidraBridge(
 ): Promise<GeneratedGhidraBridge> {
   let temporaryRoot: string | null = null;
   try {
-    const bundle = await extractNdsAnalysisBundle(map, workspaceRoot);
+    const bundle = await extractNdsAnalysisBundle(
+      map,
+      workspaceRoot,
+      undefined,
+      { includeDerivedRuntimeArtifacts: false },
+    );
     const bridgeRoot = ghidraGeneratedBridgeRoot(map, workspaceRoot);
     if (path.dirname(bridgeRoot) !== path.resolve(bundle.outputRoot)) {
       throw new NdsError(
@@ -276,12 +292,13 @@ export async function generateNdsGhidraBridge(
       );
     }
 
+    const discoveryMap = ghidraDiscoveryMap(map);
     const backend = await createCapstoneArmBackend();
     let arm9;
     let arm7;
     try {
       arm9 = await discoverNdsFunctions(
-        map,
+        discoveryMap,
         {
           processor: "arm9",
           scope: { kind: "all-executable-components" },
@@ -291,7 +308,7 @@ export async function generateNdsGhidraBridge(
         backend,
       );
       arm7 = await discoverNdsFunctions(
-        map,
+        discoveryMap,
         {
           processor: "arm7",
           scope: { kind: "all-executable-components" },

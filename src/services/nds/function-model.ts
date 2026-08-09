@@ -6,7 +6,7 @@ export interface ProvenFunctionIdentity {
   readonly component: "main" | "overlay";
   readonly overlayId: number | null;
   readonly runtimeAddress: number;
-  readonly romOffset: number;
+  readonly romOffset: number | null;
   readonly mode: ArmMode;
 }
 
@@ -23,7 +23,7 @@ export type FunctionProof =
       readonly component: "main" | "overlay";
       readonly overlayId: number | null;
       readonly instructionAddress: number;
-      readonly instructionRomOffset: number;
+      readonly instructionRomOffset: number | null;
       readonly mode: ArmMode;
     };
     readonly target: ProvenFunctionIdentity;
@@ -32,14 +32,13 @@ export type FunctionProof =
 export interface ProvenFunctionCallEdge {
   readonly callerFunctionId: string;
   readonly instructionAddress: number;
-  readonly instructionRomOffset: number;
+  readonly instructionRomOffset: number | null;
   readonly calleeFunctionId: string;
 }
 
 export type FunctionComponentCoverageStatus =
   | "scanned"
   | "no-proven-seed"
-  | "compressed-overlay-not-decodable"
   | "out-of-limit";
 
 const PROCESSOR_ORDER: Record<NdsProcessor, number> = {
