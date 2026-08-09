@@ -1,11 +1,20 @@
 import { createHash } from "node:crypto";
-import { lstat as nativeLstat, readFile as nativeReadFile } from "node:fs/promises";
+import {
+  lstat as nativeLstat,
+  open,
+  readFile as nativeReadFile,
+  stat,
+} from "node:fs/promises";
 import path from "node:path";
 
 import { resolveInside } from "../../../security/paths.js";
 import { NdsError } from "../errors.js";
 import type { NdsRomMap } from "../rom-map.js";
-import type { NdsAddNitroFsFileOperation } from "./manifest.js";
+import type {
+  NdsAddNitroFsFileOperation,
+  NdsReplaceNitroFsFileOperation,
+} from "./manifest.js";
+import { resolveNdsMutationComponent } from "./selectors.js";
 
 const ROOT_DIRECTORY_ID = 0xf000;
 const MAX_DIRECTORY_COUNT = 0x1000;
@@ -13,6 +22,7 @@ const MAX_FINAL_FILE_COUNT = 0x10000;
 const MAX_NEW_FILES = 256;
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 const MAX_AGGREGATE_NEW_FILE_BYTES = 64 * 1024 * 1024;
+const HASH_CHUNK_BYTES = 64 * 1024;
 
 export interface NdsAddedDirectoryPlan {
   readonly path: string;
@@ -40,14 +50,31 @@ export interface NdsFilesystemExtensionPlan {
   readonly finalFileCount: number;
 }
 
+export interface NdsRelocatedFilePlan {
+  readonly operationIndex: number;
+  readonly fileId: number;
+  readonly filePath: string | null;
+  readonly sourceStart: number;
+  readonly sourceEnd: number;
+  readonly sourceSha256: string;
+  readonly replacementWorkspacePath: string;
+  readonly replacementAbsolutePath: string;
+  readonly replacementSha256: string;
+  readonly replacementSize: number;
+}
+
 export interface NdsFilesystemPlanningIo {
   lstat(filePath: string): Promise<{
     isFile(): boolean;
     isSymbolicLink(): boolean;
     readonly size: number;
+    readonly dev?: number;
+    readonly ino?: number;
   }>;
   readFile(filePath: string): Promise<Buffer>;
 }
+
+export type NdsVariableFilePlanningIo = NdsFilesystemPlanningIo;
 
 const defaultIo: NdsFilesystemPlanningIo = {
   lstat: nativeLstat,
@@ -71,12 +98,77 @@ function extensionError(message: string): NdsError<"filesystem-extension-invalid
   return new NdsError("filesystem-extension-invalid", message);
 }
 
+function rebuildTargetError(message: string): NdsError<"unsupported-rebuild-target"> {
+  return new NdsError("unsupported-rebuild-target", message);
+}
+
 function capacityError(message: string): NdsError<"filesystem-id-capacity-exceeded"> {
   return new NdsError("filesystem-id-capacity-exceeded", message);
 }
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function workspaceRelativePath(workspaceRoot: string, absolutePath: string): string {
+  return path
+    .relative(path.resolve(workspaceRoot), path.resolve(absolutePath))
+    .split(path.sep)
+    .join("/");
+}
+
+async function hashFileRangeSha256(
+  filePath: string,
+  start: number,
+  size: number,
+): Promise<string> {
+  const handle = await open(filePath, "r");
+  const hash = createHash("sha256");
+  try {
+    let offset = 0;
+    while (offset < size) {
+      const length = Math.min(HASH_CHUNK_BYTES, size - offset);
+      const buffer = Buffer.alloc(length);
+      let filled = 0;
+      while (filled < length) {
+        const { bytesRead } = await handle.read(
+          buffer,
+          filled,
+          length - filled,
+          start + offset + filled,
+        );
+        if (bytesRead < 1) {
+          throw new NdsError(
+            "range-out-of-bounds",
+            "NitroFS source hash range extends beyond the immutable source ROM",
+          );
+        }
+        filled += bytesRead;
+      }
+      hash.update(buffer);
+      offset += length;
+    }
+  } finally {
+    await handle.close();
+  }
+  return hash.digest("hex");
+}
+
+async function assertArtifactDoesNotAliasSource(
+  map: NdsRomMap,
+  absolutePath: string,
+  artifactInfo: { readonly dev?: number; readonly ino?: number },
+): Promise<void> {
+  if (path.resolve(absolutePath) === path.resolve(map.romPath)) {
+    throw rebuildTargetError("Replacement artifact may not alias the immutable source ROM");
+  }
+  if (artifactInfo.dev === undefined || artifactInfo.ino === undefined) {
+    return;
+  }
+  const sourceInfo = await stat(map.romPath);
+  if (artifactInfo.dev === sourceInfo.dev && artifactInfo.ino === sourceInfo.ino) {
+    throw rebuildTargetError("Replacement artifact may not hard-link to the immutable source ROM");
+  }
 }
 
 function sourceTopLevelNames(map: NdsRomMap): ReadonlySet<string> {
@@ -140,9 +232,6 @@ async function inspectArtifacts(
     const filename = segments.at(-1)!;
     const directoryPath = segments.slice(0, -1).join("/");
     const absolutePath = resolveInside(workspaceRoot, operation.replacement.artifact);
-    if (path.resolve(absolutePath) === path.resolve(map.romPath)) {
-      throw extensionError("New NitroFS replacement artifact may not be the immutable source ROM");
-    }
 
     let info;
     try {
@@ -159,6 +248,7 @@ async function inspectArtifacts(
         `New NitroFS artifact ${operation.replacement.artifact} must be a regular non-symlink file`,
       );
     }
+    await assertArtifactDoesNotAliasSource(map, absolutePath, info);
     if (!Number.isSafeInteger(info.size) || info.size < 1 || info.size > MAX_ARTIFACT_BYTES) {
       throw extensionError(
         `New NitroFS artifact ${operation.replacement.artifact} size ${info.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
@@ -342,7 +432,7 @@ export async function planNdsFilesystemExtensions(
       fileId: identity.fileId,
       directoryId: identity.directoryId,
       filename: item.filename,
-      replacementWorkspacePath: item.operation.replacement.artifact,
+      replacementWorkspacePath: workspaceRelativePath(workspaceRoot, item.absolutePath),
       replacementAbsolutePath: item.absolutePath,
       replacementSha256: actualSha256,
       replacementSize: bytes.length,
@@ -355,5 +445,104 @@ export async function planNdsFilesystemExtensions(
     addedFiles,
     finalDirectoryCount: map.filesystem.directories.length + addedDirectories.length,
     finalFileCount: nextFileId,
+  };
+}
+
+function variableFileSelector(
+  target: NdsReplaceNitroFsFileOperation["target"],
+) {
+  return "fileId" in target
+    ? { component: "nitrofs-file" as const, fileId: target.fileId }
+    : { component: "nitrofs-path" as const, filePath: target.filePath };
+}
+
+export async function planNdsVariableFileReplacement(
+  map: NdsRomMap,
+  workspaceRoot: string,
+  index: number,
+  operation: NdsReplaceNitroFsFileOperation,
+  io: NdsVariableFilePlanningIo = defaultIo,
+): Promise<NdsRelocatedFilePlan> {
+  let component;
+  try {
+    component = resolveNdsMutationComponent(map, variableFileSelector(operation.target));
+  } catch (error) {
+    if (error instanceof NdsError && error.category === "unsupported-mutation-target") {
+      throw rebuildTargetError(
+        `NitroFS file selected by operation ${index} is overlay-backed and must use decoded-overlay rebuild semantics`,
+      );
+    }
+    throw error;
+  }
+  if (component.fileId === null || component.processor !== null || component.overlayId !== null) {
+    throw rebuildTargetError(`Mutation operation ${index} does not resolve to one ordinary NitroFS file`);
+  }
+
+  const sourceSha256 = await hashFileRangeSha256(
+    map.romPath,
+    component.romStart,
+    component.size,
+  );
+  if (sourceSha256 !== operation.expectedOriginalSha256) {
+    throw new NdsError(
+      "original-component-guard-failed",
+      `Mutation operation ${index} source NitroFS file SHA-256 is ${sourceSha256}, expected ${operation.expectedOriginalSha256}`,
+    );
+  }
+
+  const absolutePath = resolveInside(workspaceRoot, operation.replacement.artifact);
+  let info;
+  try {
+    info = await io.lstat(absolutePath);
+  } catch (error) {
+    throw new NdsError(
+      "replacement-artifact-missing",
+      `Replacement artifact ${operation.replacement.artifact} is unavailable inside the workspace: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new NdsError(
+      "replacement-artifact-missing",
+      `Replacement artifact ${operation.replacement.artifact} must be a regular non-symlink file`,
+    );
+  }
+  await assertArtifactDoesNotAliasSource(map, absolutePath, info);
+  if (!Number.isSafeInteger(info.size) || info.size < 1 || info.size > MAX_ARTIFACT_BYTES) {
+    throw rebuildTargetError(
+      `Mutation operation ${index} replacement size ${info.size} is outside the 1..${MAX_ARTIFACT_BYTES} byte limit`,
+    );
+  }
+
+  const replacementBytes = await io.readFile(absolutePath);
+  if (replacementBytes.length !== info.size) {
+    throw rebuildTargetError(
+      `Mutation operation ${index} replacement artifact changed size during planning`,
+    );
+  }
+  const replacementSha256 = sha256(replacementBytes);
+  if (replacementSha256 !== operation.replacement.sha256) {
+    throw new NdsError(
+      "replacement-artifact-hash-mismatch",
+      `Mutation operation ${index} replacement SHA-256 is ${replacementSha256}, expected ${operation.replacement.sha256}`,
+    );
+  }
+  if (replacementSha256 === sourceSha256) {
+    throw new NdsError(
+      "mutation-no-op",
+      `Mutation operation ${index} replacement is byte-identical to the source NitroFS file`,
+    );
+  }
+
+  return {
+    operationIndex: index,
+    fileId: component.fileId,
+    filePath: component.filePath,
+    sourceStart: component.romStart,
+    sourceEnd: component.romEnd,
+    sourceSha256,
+    replacementWorkspacePath: workspaceRelativePath(workspaceRoot, absolutePath),
+    replacementAbsolutePath: absolutePath,
+    replacementSha256,
+    replacementSize: replacementBytes.length,
   };
 }
