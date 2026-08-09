@@ -12,6 +12,7 @@ import type { ExecutableRangeInput } from "../services/executable-ranges.js";
 import { GdbSession } from "../services/gdb-session.js";
 import { validateMemoryRead } from "../services/gdb-rsp.js";
 import { readArm9ExecutableRange } from "../services/nds-arm9.js";
+import { hashFileSha256 } from "../services/nds/io.js";
 import {
   OwnedProcessManager,
   type OwnedProcessStatus,
@@ -185,14 +186,30 @@ export function registerDesmumeTools(
         await access(launcherPath, fsConstants.X_OK);
         await access(romPath, fsConstants.R_OK);
         const arm9Range = await readArm9ExecutableRange(romPath);
+        const romSha256 = await hashFileSha256(romPath);
 
         const status = await manager.start({
           executable: launcherPath,
           args: buildDesmumeArguments(port, romPath),
           cwd: path.dirname(launcherPath),
           maxOutputBytes: config.maxOutputBytes,
-          metadata: { emulator: "desmume", arm9GdbPort: port, rom: romPath },
+          metadata: {
+            emulator: "desmume",
+            arm9GdbPort: port,
+            rom: romPath,
+            romSha256,
+          },
         });
+
+        const verifiedSha256 = await hashFileSha256(romPath);
+        if (verifiedSha256 !== romSha256) {
+          await manager.stop();
+          await debuggerController.reset("ROM identity changed during DeSmuME start");
+          throw new Error(
+            "ROM changed during DeSmuME start; restart with an unchanged ROM",
+          );
+        }
+
         const sessionIdentity = ownedProcessIdentity(status);
         debuggerController.initialize(sessionIdentity, arm9Range);
 
