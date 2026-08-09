@@ -288,10 +288,10 @@ export function resolveNdsMutationByteTarget(
   byteLength: number,
 ): NdsResolvedMutationRange {
   const component = resolveNdsMutationComponent(map, byteTargetComponentSelector(target));
-  if (component.compressed) {
+  if (component.compressed || component.overlayOwners.some((owner) => owner.compressed)) {
     throw new NdsError(
       "unsupported-mutation-target",
-      "Byte edits to compressed overlays are not supported; replace the exact stored component instead",
+      "Byte edits to compressed overlay backing bytes are not supported; replace the exact stored component instead",
     );
   }
 
