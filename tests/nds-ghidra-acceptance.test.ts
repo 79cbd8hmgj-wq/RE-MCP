@@ -27,7 +27,7 @@ test("manual Ghidra acceptance workflow is dispatch-only and pins the verified 1
   assert.match(workflow, /Reject hidden Ghidra script errors/);
 });
 
-test("manual Ghidra bootstrap acceptance uses only a synthetic NDS and checks project/evidence preservation", async () => {
+test("manual Ghidra bootstrap acceptance verifies decoded imports, migration, conflicts, and analyst preservation", async () => {
   const source = await readFile(acceptancePath, "utf8");
   assert.match(source, /Buffer\.alloc\s*\(/);
   assert.match(source, /writeSyntheticRom\s*\(/);
@@ -36,20 +36,33 @@ test("manual Ghidra bootstrap acceptance uses only a synthetic NDS and checks pr
   assert.match(source, /writeOverlayRecord/);
   assert.match(source, /RE_MCP_ARM9_OVL_1/);
   assert.match(source, /RE_MCP_ARM9_OVL_2/);
-  assert.match(source, /not-imported-compressed|compressedOverlayIds/);
+  assert.match(source, /RE_MCP_ARM9_OVL_3/);
+  assert.match(source, /COMPRESSED_ARM_CODE_STORED/);
+  assert.match(source, /COMPRESSED_ARM_CODE_DECODED/);
+  assert.match(source, /importable-derived/);
+  assert.match(source, /derived-blz/);
+  assert.match(source, /runtimeSha256/);
+  assert.match(source, /compressedOverlayIds/);
   assert.match(source, /ARM:LE:32:v5t/);
   assert.match(source, /ARM:LE:32:v4t/);
-  assert.match(source, /0x02000008[\s\S]{0,80}["']thumb["']/);
+  assert.match(source, /0x02000010/);
+  assert.match(source, /0x02210000/);
+  assert.match(source, /instructionRomOffset\s*===\s*null/);
   assert.match(source, /re-mcp\.function-mode/);
   assert.match(source, /REMCP_ACCEPTANCE_ANALYST_MARKER/);
   assert.match(source, /SourceType\.USER_DEFINED/);
   assert.match(source, /createLabel\s*\(/);
+  assert.match(source, /downgrade-v1/);
+  assert.match(source, /re-mcp-nds-ghidra:1/);
+  assert.match(source, /tamper-derived/);
+  assert.match(source, /runtime bytes do not match runtimeSha256/);
   assert.match(source, /already-current/);
+  assert.match(source, /sourceRomPreserved/);
   assert.match(source, /bodyEnd|functionEnd|bodySize/);
   assert.doesNotMatch(source, /\.nds["']\s*\)\s*\.download|private ROM/i);
 });
 
-test("manual Ghidra inspection acceptance verifies hardened authority shape and read-only preservation", async () => {
+test("manual Ghidra inspection acceptance verifies derived overlays and read-only preservation", async () => {
   const source = await readFile(inspectionAcceptancePath, "utf8");
   assert.match(source, /hardenedAuthorityShape/);
   assert.match(source, /ghidraDerived/);
@@ -58,5 +71,12 @@ test("manual Ghidra inspection acceptance verifies hardened authority shape and 
   assert.match(source, /projectFilesVerified/);
   assert.match(source, /read-only\/no-analysis inspection changed persistent project bytes/);
   assert.match(source, /REMCP_ACCEPTANCE_ANALYST_MARKER/);
-  assert.match(source, /overlaysVerified:\s*\[1,\s*2\]/);
+  assert.match(source, /0x02000010/);
+  assert.match(source, /0x02210000/);
+  assert.match(source, /0x02210020/);
+  assert.match(source, /overlayId:\s*3/);
+  assert.match(source, /canonical\.compressed/);
+  assert.match(source, /canonical\.fileBacked/);
+  assert.match(source, /derivedOverlayVerified/);
+  assert.match(source, /overlaysVerified:\s*\[1,\s*2,\s*3\]/);
 });
