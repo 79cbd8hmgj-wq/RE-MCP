@@ -39,9 +39,12 @@ export interface GhidraMainManifest {
   readonly fileBackedSize: number;
 }
 
+// The legacy value remains in the type only while Task 9 migrates existing
+// v1 project/result handling. The v2 manifest builder rejects it and never emits it.
 export type GhidraOverlayImportStatus =
   | "importable"
-  | "importable-derived";
+  | "importable-derived"
+  | "not-imported-compressed";
 
 export type GhidraOverlayRepresentation =
   | "rom-file-backed"
