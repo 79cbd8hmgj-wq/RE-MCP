@@ -104,6 +104,15 @@ function componentForFile(
   file: NdsNitroFile,
 ): NdsResolvedMutationComponent {
   const overlayOwners = overlayOwnersForFile(map, file.fileId);
+  if (overlayOwners.length > 0) {
+    const owners = overlayOwners
+      .map((owner) => `${owner.processor.toUpperCase()} overlay ${owner.overlayId}`)
+      .join(", ");
+    throw new NdsError(
+      "unsupported-mutation-target",
+      `NitroFS file ${file.fileId} backs ${owners}; use the explicit overlay selector for mutation`,
+    );
+  }
   return {
     component: selector.component,
     processor: null,
@@ -113,8 +122,8 @@ function componentForFile(
     romStart: file.startOffset,
     romEnd: file.endOffset,
     size: file.size,
-    compressed: overlayOwners.some((owner) => owner.compressed),
-    overlayOwners,
+    compressed: false,
+    overlayOwners: [],
   };
 }
 
@@ -279,10 +288,10 @@ export function resolveNdsMutationByteTarget(
   byteLength: number,
 ): NdsResolvedMutationRange {
   const component = resolveNdsMutationComponent(map, byteTargetComponentSelector(target));
-  if (component.compressed || component.overlayOwners.some((owner) => owner.compressed)) {
+  if (component.compressed) {
     throw new NdsError(
       "unsupported-mutation-target",
-      "Byte edits to compressed overlay backing bytes are not supported; replace the exact stored component instead",
+      "Byte edits to compressed overlays are not supported; replace the exact stored component instead",
     );
   }
 
