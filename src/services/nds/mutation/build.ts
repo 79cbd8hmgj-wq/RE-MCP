@@ -10,8 +10,10 @@ import {
 import path from "node:path";
 
 import { NdsError } from "../errors.js";
+import { hashFileSha256 } from "../io.js";
 import type { NdsRomMap } from "../rom-map.js";
 import { applyNdsMutationPlan } from "./apply.js";
+import { assertNdsMutationSourceIdentity } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
 import { compileNdsMutationPlan, type NdsResolvedMutationPlan } from "./planner.js";
 import {
@@ -36,6 +38,10 @@ export interface NdsMutationBuildResult {
   readonly outputRomPath: string;
   readonly outputSha256: string;
   readonly verification: NdsMutationVerificationResult;
+}
+
+export interface NdsMutationBuildHooks {
+  readonly beforePublish?: (stage: NdsMutationStage) => Promise<void>;
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -124,6 +130,22 @@ async function comparePublishedEvidence(
   }
 }
 
+async function assertVerifiedOutputStillCurrent(
+  map: NdsRomMap,
+  plan: NdsResolvedMutationPlan,
+  outputRomPath: string,
+  expectedOutputSha256: string,
+): Promise<void> {
+  await assertNdsMutationSourceIdentity(map, plan.sourceSha256);
+  const currentOutputSha256 = await hashFileSha256(outputRomPath);
+  if (currentOutputSha256 !== expectedOutputSha256) {
+    throw new NdsError(
+      "output-verification-failed",
+      `Verified output changed before publication; expected SHA-256 ${expectedOutputSha256}, found ${currentOutputSha256}`,
+    );
+  }
+}
+
 export async function verifyPublishedNdsMutationBuild(
   map: NdsRomMap,
   workspaceRoot: string,
@@ -143,6 +165,12 @@ export async function verifyPublishedNdsMutationBuild(
       loadedManifest,
       plan,
       verification,
+    );
+    await assertVerifiedOutputStillCurrent(
+      map,
+      plan,
+      outputPaths.finalRomPath,
+      verification.outputSha256,
     );
     return {
       buildId: plan.buildId,
@@ -167,6 +195,7 @@ export async function buildNdsMutation(
   map: NdsRomMap,
   workspaceRoot: string,
   loadedManifest: LoadedNdsMutationManifest,
+  hooks: NdsMutationBuildHooks = {},
 ): Promise<NdsMutationBuildResult> {
   const plan = await compileNdsMutationPlan(map, workspaceRoot, loadedManifest);
   const outputPaths = resolveNdsMutationOutputPaths(plan, workspaceRoot);
@@ -180,6 +209,13 @@ export async function buildNdsMutation(
     await applyNdsMutationPlan(plan, stage);
     const verification = await verifyNdsMutationOutput(map, plan, stage.stagedRomPath);
     await writeEvidence(stage, loadedManifest, plan, verification);
+    await hooks.beforePublish?.(stage);
+    await assertVerifiedOutputStillCurrent(
+      map,
+      plan,
+      stage.stagedRomPath,
+      verification.outputSha256,
+    );
 
     try {
       await rename(stage.temporaryRoot, stage.finalRoot);
