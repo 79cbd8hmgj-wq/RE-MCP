@@ -44,7 +44,7 @@ async function createCompressedOverlayMap() {
 }
 
 test("explicit compressed overlay runtime source resolves as derived code without fabricated ROM provenance", async () => {
-  const { map } = await createCompressedOverlayMap();
+  const { map, decoded } = await createCompressedOverlayMap();
   const result = resolveNdsCodeSource(map, {
     processor: "arm9",
     runtimeAddress: 0x02200010,
@@ -59,7 +59,7 @@ test("explicit compressed overlay runtime source resolves as derived code withou
   assert.equal(result.source.overlayId, 7);
   assert.equal(result.source.runtimeAddress, 0x02200010);
   assert.equal(result.source.runtimeStart, 0x02200000);
-  assert.equal(result.source.runtimeEnd, 0x02200000 + (await createCompressedOverlayMap()).decoded.length);
+  assert.equal(result.source.runtimeEnd, 0x02200000 + decoded.length);
   assert.equal(result.source.representation, "derived-overlay");
   assert.equal(result.source.romOffset, null);
   assert.equal(result.source.runtimeImageOffset, 0x10);
