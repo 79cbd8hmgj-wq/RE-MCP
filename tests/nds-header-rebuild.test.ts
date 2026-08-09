@@ -65,7 +65,7 @@ test("computes the Nintendo DS header CRC16 deterministically", () => {
   assert.equal(crc16NdsHeader(vector), 0x7191);
 
   const changed = Buffer.from(vector);
-  changed[0x40] ^= 0x01;
+  changed[0x40] = (changed[0x40] ?? 0) ^ 0x01;
   assert.notEqual(crc16NdsHeader(changed), 0x7191);
 });
 
@@ -105,7 +105,7 @@ test("reads a rebuild-critical header only when its stored CRC is valid", async 
   assert.equal(snapshot.headerCrc16, header.readUInt16LE(HEADER_CRC_OFFSET));
 
   const corrupt = Buffer.from(header);
-  corrupt[0x40] ^= 0x01;
+  corrupt[0x40] = (corrupt[0x40] ?? 0) ^ 0x01;
   const corruptPath = await writeHeaderFixture(corrupt);
   await assert.rejects(
     readNdsRebuildHeader(corruptPath),
