@@ -14,8 +14,8 @@ import {
 } from "../src/services/nds/mutation/manifest.js";
 import {
   compileNdsMutationPlan,
+  isNdsResolvedMutationPlanV2,
   serializeResolvedNdsMutationPlan,
-  type NdsResolvedMutationPlanV2,
 } from "../src/services/nds/mutation/planner.js";
 import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
 
@@ -111,18 +111,20 @@ async function compileMixedPlan() {
 
   const loaded = await loadNdsMutationManifest(ready.fixture.directory, manifestPath);
   const beforeSha256 = await hashFileSha256(ready.fixture.romPath);
-  const plan = await compileNdsMutationPlan(
+  const resolved = await compileNdsMutationPlan(
     ready.map,
     ready.fixture.directory,
     loaded,
   );
   const afterSha256 = await hashFileSha256(ready.fixture.romPath);
   assert.equal(beforeSha256, afterSha256);
-  assert.equal(plan.formatVersion, 2);
+  if (!isNdsResolvedMutationPlanV2(resolved)) {
+    assert.fail("Expected formatVersion 2 rebuild plan");
+  }
 
   return {
     ...ready,
-    plan: plan as NdsResolvedMutationPlanV2,
+    plan: resolved,
     loaded,
     ordinaryReplacement,
     added,
@@ -147,11 +149,11 @@ test("v2 planner compiles the mixed rebuild into deterministic IDs, ranges, meta
   const added = plan.operations[2];
   const overlay = plan.operations[3];
   assert.equal(relocated?.kind, "relocated-file");
-  assert.equal(relocated.kind === "relocated-file" ? relocated.file.fileId : -1, fixture.ordinaryFileId);
+  assert.equal(relocated?.kind === "relocated-file" ? relocated.file.fileId : -1, fixture.ordinaryFileId);
   assert.equal(added?.kind, "new-file");
-  assert.equal(added.kind === "new-file" ? added.file.fileId : -1, map.fat.length);
+  assert.equal(added?.kind === "new-file" ? added.file.fileId : -1, map.fat.length);
   assert.equal(overlay?.kind, "decoded-overlay");
-  assert.equal(overlay.kind === "decoded-overlay" ? overlay.overlay.fileId : -1, fixture.compressedFileId);
+  assert.equal(overlay?.kind === "decoded-overlay" ? overlay.overlay.fileId : -1, fixture.compressedFileId);
 
   assert.deepEqual(
     plan.layout.segments.slice(0, 3).map((segment) => [segment.kind, segment.ownerId]),
