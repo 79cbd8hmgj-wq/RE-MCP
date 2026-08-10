@@ -51,7 +51,6 @@ export type NdsMutationErrorCategory =
   | "mutation-no-op"
   | "mutation-overlap"
   | "compressed-overlay-invalid"
-  | "blz-recompression-failed"
   | "filesystem-extension-invalid"
   | "filesystem-path-collision"
   | "filesystem-id-capacity-exceeded"
