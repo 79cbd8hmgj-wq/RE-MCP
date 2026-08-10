@@ -6,7 +6,6 @@ import {
   mkdir,
   readdir,
   readFile,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -43,6 +42,7 @@ function workspaceRelative(workspaceRoot, absolutePath) {
 async function loadServices() {
   const { crc16NdsHeader } = await import(moduleUrl("dist/services/nds/header-rebuild.js"));
   const { readNdsRomMap } = await import(moduleUrl("dist/services/nds/rom-map.js"));
+  const { NdsError } = await import(moduleUrl("dist/services/nds/errors.js"));
   const {
     readControllerCheckpoint,
     writeControllerCheckpoint,
@@ -59,6 +59,7 @@ async function loadServices() {
   return {
     crc16NdsHeader,
     readNdsRomMap,
+    NdsError,
     readControllerCheckpoint,
     writeControllerCheckpoint,
     loadNdsMutationManifest,
@@ -462,8 +463,9 @@ async function scoreGuardRejection(services, map, workspaceRoot, checks) {
       INVALID_MANIFEST_RELATIVE_PATH,
     );
     await services.compileNdsMutationPlan(map, workspaceRoot, loaded);
-  } catch {
-    rejectedByCanonicalPlanner = true;
+  } catch (error) {
+    rejectedByCanonicalPlanner = error instanceof services.NdsError
+      && error.category === "original-byte-guard-failed";
   }
   checks.push(check("guard-canonically-rejected", rejectedByCanonicalPlanner));
   checks.push(check(
