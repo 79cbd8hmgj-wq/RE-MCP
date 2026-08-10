@@ -44,6 +44,7 @@ jobs:
             node scripts/check-ghidra-inspection-install.mjs .
             node scripts/check-nds-mutation-install.mjs .
             node scripts/check-copilot-mcp-install.mjs .
+            node scripts/check-controller-checkpoint-install.mjs .
           )
           tar -C /tmp -czf "/tmp/re-mcp-${version}.tar.gz" "re-mcp-${version}"
           sha256sum "/tmp/re-mcp-${version}.tar.gz" > "/tmp/re-mcp-${version}.tar.gz.sha256"
