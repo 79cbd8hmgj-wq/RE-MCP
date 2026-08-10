@@ -82,3 +82,17 @@ test("Copilot instructions preserve the deterministic RE-MCP trust boundary", as
   assert.match(instructions, /never.*fabricate tool output/i);
   assert.match(instructions, /alternate ROM writer/i);
 });
+
+test("package workflow ships and smoke-checks the Copilot controller integration", async () => {
+  const workflow = await readText(".github/workflows/package.yml");
+  const smoke = await readText("scripts/check-copilot-mcp-install.mjs");
+
+  assert.match(workflow, /cp -R \.vscode/);
+  assert.match(workflow, /copilot-instructions\.md/);
+  assert.match(workflow, /check-copilot-mcp-install\.mjs/);
+
+  assert.match(smoke, /\.vscode["']?,\s*["']mcp\.json/);
+  assert.match(smoke, /copilot-instructions\.md/);
+  assert.match(smoke, /dist["']?,\s*["']index\.js/);
+  assert.match(smoke, /GitHub Copilot RE-MCP package smoke passed/);
+});
