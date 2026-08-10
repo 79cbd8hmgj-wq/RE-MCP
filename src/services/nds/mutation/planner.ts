@@ -526,7 +526,7 @@ async function readPlannedArtifactBytes(
 }
 
 function segmentByOwner(
-  layout: NdsRebuildLayout,
+  layout: Pick<NdsRebuildLayout, "segments">,
   ownerId: string,
 ) {
   const matches = layout.segments.filter((segment) => segment.ownerId === ownerId);
@@ -542,7 +542,7 @@ function segmentByOwner(
 function buildFinalFat(
   map: NdsRomMap,
   extension: NdsFilesystemExtensionPlan,
-  layout: NdsRebuildLayout,
+  layout: Pick<NdsRebuildLayout, "segments">,
   relocatedFiles: readonly NdsRelocatedFilePlan[],
   decodedOverlays: readonly NdsDecodedOverlayReplacementPlan[],
 ): readonly NdsFinalFatEntry[] {
@@ -820,10 +820,10 @@ async function compileV2Plan(
     : undefined;
 
   const layout = finalizeNdsRebuildLayout(payloadLayout, {
-    fnt,
     fat,
-    arm9OverlayTable,
-    arm7OverlayTable,
+    ...(fnt === undefined ? {} : { fnt }),
+    ...(arm9OverlayTable === undefined ? {} : { arm9OverlayTable }),
+    ...(arm7OverlayTable === undefined ? {} : { arm7OverlayTable }),
   });
   const sourceHeader = await readNdsRebuildHeader(map.romPath);
   const headerPlan = compileNdsHeaderRewritePlan(sourceHeader, layout);
