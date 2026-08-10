@@ -50,10 +50,8 @@ function segmentFor(
   return matches[0];
 }
 
-function regionFor(segment: NdsRebuildSegment | undefined): NdsOwnedHeaderRegionRewrite | undefined {
-  return segment === undefined
-    ? undefined
-    : { offset: segment.start, size: segment.size };
+function regionFor(segment: NdsRebuildSegment): NdsOwnedHeaderRegionRewrite {
+  return { offset: segment.start, size: segment.size };
 }
 
 function allowedRanges(layout: NdsRebuildLayout): readonly AllowedRange[] {
@@ -135,10 +133,10 @@ export function compileNdsHeaderRewritePlan(
   const outputHeaderBytes = serializeNdsRebuildHeader(source, {
     deviceCapacity: layout.deviceCapacity,
     romUsedSize: layout.logicalUsedSize,
-    fnt: regionFor(fnt),
     fat: regionFor(fat),
-    arm9OverlayTable: regionFor(arm9),
-    arm7OverlayTable: regionFor(arm7),
+    ...(fnt === undefined ? {} : { fnt: regionFor(fnt) }),
+    ...(arm9 === undefined ? {} : { arm9OverlayTable: regionFor(arm9) }),
+    ...(arm7 === undefined ? {} : { arm7OverlayTable: regionFor(arm7) }),
   });
   const rewrites = compileChangedRuns(
     source.bytes,
