@@ -14,15 +14,13 @@ model_list:
       model: ollama/llama3.1
       api_base: http://127.0.0.1:11434
 
-litellm_settings:
+router_settings:
+  num_retries: 1
+  timeout: 120
   fallbacks:
     - re-mcp-controller:
         - re-mcp-openrouter
         - re-mcp-ollama
-
-router_settings:
-  num_retries: 1
-  timeout: 120
 
 # The proxy is intended to be launched on loopback only.
 general_settings:
