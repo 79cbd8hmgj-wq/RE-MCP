@@ -14,7 +14,8 @@
 - RE-MCP must never call LiteLLM, Groq, OpenRouter, Ollama, or another model provider.
 - Cloud credentials are referenced only through environment/secret placeholders; no usable key value may be committed.
 - Continue MCP tools must launch `node dist/index.js` and receive only secret-backed `RE_MCP_WORKSPACE_ROOT`.
-- LiteLLM fallback order is `re-mcp-controller` -> `re-mcp-openrouter` -> `re-mcp-ollama` using `litellm_settings.fallbacks`.
+- LiteLLM fallback order is `re-mcp-controller` -> `re-mcp-openrouter` -> `re-mcp-ollama` using `router_settings.fallbacks`.
+- LiteLLM proxy auth is configured through `general_settings.master_key: os.environ/LITELLM_MASTER_KEY`.
 - Provider endpoints in shipped examples are loopback except provider traffic initiated by LiteLLM.
 - Checkpoint prose remains `controller-state-only`; consequential facts require deterministic RE-MCP revalidation.
 - CI/package acceptance must not claim live provider availability, native Continue success, local Ollama availability, or physical DeSmuME acceptance.
@@ -36,6 +37,7 @@ Create tests that read the planned files and assert:
 
 ```ts
 assert.match(continueMcp, /name:\s*RE-MCP/i);
+assert.match(continueMcp, /type:\s*stdio/);
 assert.match(continueMcp, /command:\s*node/);
 assert.match(continueMcp, /dist\/index\.js/);
 assert.match(continueMcp, /RE_MCP_WORKSPACE_ROOT/);
@@ -48,7 +50,8 @@ assert.match(continueConfig, /tool_use/);
 assert.match(litellmConfig, /groq\/openai\/gpt-oss-120b/);
 assert.match(litellmConfig, /openrouter\/openrouter\/free/);
 assert.match(litellmConfig, /ollama\/llama3\.1/);
-assert.match(litellmConfig, /litellm_settings:[\s\S]*fallbacks:/);
+assert.match(litellmConfig, /router_settings:[\s\S]*fallbacks:/);
+assert.match(litellmConfig, /general_settings:[\s\S]*master_key:\s*os\.environ\/LITELLM_MASTER_KEY/);
 ```
 
 Also reject checked-in private paths, `.nds` paths, output paths, `sk-`/`gsk_`/`sk-or-` key-shaped values, and cloud keys outside environment references.
@@ -84,6 +87,7 @@ Use schema-v1 block metadata and:
 ```yaml
 mcpServers:
   - name: RE-MCP
+    type: stdio
     command: node
     args:
       - dist/index.js
@@ -135,17 +139,18 @@ model_list:
     litellm_params:
       model: ollama/llama3.1
       api_base: http://127.0.0.1:11434
-litellm_settings:
+router_settings:
+  num_retries: 1
+  timeout: 120
   fallbacks:
     - re-mcp-controller:
         - re-mcp-openrouter
         - re-mcp-ollama
-router_settings:
-  num_retries: 1
-  timeout: 120
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
 ```
 
-Protect the local proxy with `general_settings.master_key: os.environ/LITELLM_MASTER_KEY` and document loopback binding at launch.
+Document loopback binding at launch.
 
 - [ ] **Step 5: Add environment example**
 
@@ -184,7 +189,7 @@ Require Package workflow failure while the smoke/wiring is absent, without chang
 
 - [ ] **Step 3: Add the fallback guide**
 
-Document build/start sequence, Continue Agent mode, LiteLLM loopback launch, secret setup, direct provider failure behavior, checkpoint handoff, deterministic fact revalidation, and explicit external/native acceptance limits.
+Document build/start sequence, Continue Agent mode, LiteLLM loopback launch, secret setup, provider failure behavior, checkpoint handoff, deterministic fact revalidation, and explicit external/native acceptance limits.
 
 - [ ] **Step 4: Add assembled-package smoke**
 
