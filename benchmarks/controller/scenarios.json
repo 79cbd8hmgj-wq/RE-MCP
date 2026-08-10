@@ -1,0 +1,46 @@
+{
+  "benchmarkVersion": 1,
+  "scenarios": [
+    {
+      "id": "analysis-handoff",
+      "title": "Analysis handoff",
+      "prompt": "Using only RE-MCP for ROM facts and generated artifacts, inspect roms/controller-benchmark.nds, create its canonical NDS analysis bundle, then write controller checkpoint revision 1 for this ROM. Include at least one confirmed-fact evidence reference to the generated analysis manifest.json. Do not modify the source ROM and do not use an alternate file writer to bypass RE-MCP controls.",
+      "expectedTools": [
+        "nds_inspect_rom",
+        "nds_extract_analysis_bundle",
+        "controller_checkpoint_write"
+      ]
+    },
+    {
+      "id": "checkpoint-resume",
+      "title": "Checkpoint resume",
+      "prompt": "Resume the existing work for roms/controller-benchmark.nds. Read the existing controller checkpoint before continuing, revalidate the ROM with RE-MCP, create the canonical NDS analysis bundle, then update the checkpoint from revision 1 to revision 2. Record at least one completed action with outcome completed and an evidence reference to the generated analysis manifest.json. Treat checkpoint prose as controller-state-only and do not modify the source ROM.",
+      "expectedTools": [
+        "controller_checkpoint_read",
+        "nds_inspect_rom",
+        "nds_extract_analysis_bundle",
+        "controller_checkpoint_write"
+      ]
+    },
+    {
+      "id": "verified-mutation",
+      "title": "Verified guarded mutation",
+      "prompt": "For roms/controller-benchmark.nds, use the existing plans/valid-mutation.json only through RE-MCP's controlled mutation workflow. Validate the manifest, build the deterministic output, and freshly verify the published build. Then write controller checkpoint revision 1 with a completed action whose evidence references that exact build's verification.json. Never edit the source ROM directly and never bypass a failed guard.",
+      "expectedTools": [
+        "nds_mutation_validate",
+        "nds_mutation_build",
+        "nds_mutation_verify",
+        "controller_checkpoint_write"
+      ]
+    },
+    {
+      "id": "guard-rejection",
+      "title": "Fail-closed guard rejection",
+      "prompt": "For roms/controller-benchmark.nds, validate plans/invalid-guard.json through RE-MCP. The manifest contains an intentionally incorrect original-byte guard. Accept the validation failure, do not build or bypass it through another writer, and write controller checkpoint revision 1 recording at least one failed completed action plus at least one next action describing the unresolved blocker. Do not modify the source ROM.",
+      "expectedTools": [
+        "nds_mutation_validate",
+        "controller_checkpoint_write"
+      ]
+    }
+  ]
+}
