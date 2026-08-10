@@ -7,7 +7,11 @@ import { createNdsOverlayRuntimeContext } from "../overlay-runtime.js";
 import type { NdsOverlay, NdsProcessor } from "../overlays.js";
 import { readNdsRomMap, type NdsRomMap } from "../rom-map.js";
 import { assertNdsMutationSourceIdentity } from "./guards.js";
-import type { NdsResolvedMutationPlan } from "./planner.js";
+import {
+  isNdsResolvedMutationPlanV2,
+  type NdsResolvedMutationPlan,
+  type NdsResolvedMutationPlanV1,
+} from "./planner.js";
 
 const DIFF_CHUNK_BYTES = 64 * 1024;
 const RANGE_HASH_CHUNK_BYTES = 64 * 1024;
@@ -86,7 +90,7 @@ function structuralSnapshot(map: NdsRomMap): unknown {
 
 async function assertStructuralBytesUnchanged(
   sourceMap: NdsRomMap,
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
   outputRomPath: string,
 ): Promise<void> {
   const sourceHandle = await open(sourceMap.romPath, "r");
@@ -122,7 +126,7 @@ function assertStructuralGeometryUnchanged(sourceMap: NdsRomMap, outputMap: NdsR
 }
 
 async function verifyOperations(
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
   outputRomPath: string,
 ): Promise<readonly NdsMutationOperationVerification[]> {
   const outputHandle = await open(outputRomPath, "r");
@@ -179,7 +183,7 @@ function overlayFor(
 async function verifyCompressedOverlays(
   sourceMap: NdsRomMap,
   outputMap: NdsRomMap,
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
 ): Promise<readonly NdsCompressedOverlayVerification[]> {
   const owners = new Map<string, { readonly processor: NdsProcessor; readonly overlayId: number }>();
   for (const operation of plan.operations) {
@@ -248,7 +252,7 @@ async function verifyCompressedOverlays(
 
 async function countAndAttributeDiff(
   sourceMap: NdsRomMap,
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
   outputRomPath: string,
 ): Promise<number> {
   const sourceHandle = await open(sourceMap.romPath, "r");
@@ -308,6 +312,12 @@ export async function verifyNdsMutationOutput(
   outputRomPath: string,
   hooks: NdsMutationVerifyHooks = {},
 ): Promise<NdsMutationVerificationResult> {
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    throw new NdsError(
+      "unsupported-rebuild-target",
+      "NDS mutation v2 planning is available, but v2 semantic verification is not enabled until the rebuild verifier is implemented",
+    );
+  }
   await assertNdsMutationSourceIdentity(sourceMap, plan.sourceSha256);
 
   const outputInfo = await stat(outputRomPath);
