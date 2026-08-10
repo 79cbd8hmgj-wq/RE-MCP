@@ -13,12 +13,13 @@ test("package smoke exercises the shipped v2 rebuild surface", async () => {
     "dist/services/nds/blz-encode.js",
     "dist/services/nds/header-rebuild.js",
     "dist/services/nds/mutation/filesystem-plan.js",
-    "dist/services/nds/mutation/layout-plan.js",
+    "dist/services/nds/mutation/layout.js",
     "dist/services/nds/mutation/header-plan.js",
     "dist/services/nds/mutation/build.js",
   ]) {
     assert.match(install, new RegExp(requiredModule.replaceAll("/", "\\/"), "u"));
   }
+  assert.doesNotMatch(install, /dist\/services\/nds\/mutation\/layout-plan\.js/u);
 
   assert.match(install, /formatVersion:\s*2/u);
   assert.match(install, /replace-nitrofs-file/u);
