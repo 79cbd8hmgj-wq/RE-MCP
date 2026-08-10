@@ -15,7 +15,11 @@ import type { NdsRomMap } from "../rom-map.js";
 import { applyNdsMutationPlan } from "./apply.js";
 import { assertNdsMutationSourceIdentity } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
-import { compileNdsMutationPlan, type NdsResolvedMutationPlan } from "./planner.js";
+import {
+  compileNdsMutationPlan,
+  isNdsResolvedMutationPlanV2,
+  type NdsResolvedMutationPlan,
+} from "./planner.js";
 import {
   NDS_MUTATION_EVIDENCE_FILENAMES,
   renderNdsMutationEvidence,
@@ -92,6 +96,15 @@ function publishCollision(message: string, error?: unknown): NdsError<"publish-c
   return new NdsError("publish-collision", `${message}${suffix}`);
 }
 
+function assertMaterializablePlan(plan: NdsResolvedMutationPlan): void {
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    throw new NdsError(
+      "unsupported-rebuild-target",
+      "NDS mutation v2 planning is available, but v2 materialization is not enabled until the rebuild writer is implemented",
+    );
+  }
+}
+
 async function requireExactPublishedEntries(
   finalRoot: string,
   outputFilename: string,
@@ -152,6 +165,7 @@ export async function verifyPublishedNdsMutationBuild(
   loadedManifest: LoadedNdsMutationManifest,
 ): Promise<NdsMutationBuildResult> {
   const plan = await compileNdsMutationPlan(map, workspaceRoot, loadedManifest);
+  assertMaterializablePlan(plan);
   const outputPaths = resolveNdsMutationOutputPaths(plan, workspaceRoot);
   try {
     await requireExactPublishedEntries(outputPaths.finalRoot, plan.outputFilename);
@@ -198,6 +212,7 @@ export async function buildNdsMutation(
   hooks: NdsMutationBuildHooks = {},
 ): Promise<NdsMutationBuildResult> {
   const plan = await compileNdsMutationPlan(map, workspaceRoot, loadedManifest);
+  assertMaterializablePlan(plan);
   const outputPaths = resolveNdsMutationOutputPaths(plan, workspaceRoot);
   if (await pathExists(outputPaths.finalRoot)) {
     return await verifyPublishedNdsMutationBuild(map, workspaceRoot, loadedManifest);
