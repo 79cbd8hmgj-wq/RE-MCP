@@ -4,10 +4,12 @@ import path from "node:path";
 const root = path.resolve(process.argv[2] ?? process.cwd());
 const mcpPath = path.join(root, ".vscode", "mcp.json");
 const instructionsPath = path.join(root, ".github", "copilot-instructions.md");
+const guidePath = path.join(root, "docs", "github-copilot-agent.md");
 
 await access(path.join(root, "dist", "index.js"));
 await access(mcpPath);
 await access(instructionsPath);
+await access(guidePath);
 
 const configText = await readFile(mcpPath, "utf8");
 const config = JSON.parse(configText);
@@ -61,6 +63,21 @@ for (const required of [
 ]) {
   if (!instructions.toLowerCase().includes(required.toLowerCase())) {
     throw new Error(`Missing Copilot controller instruction: ${required}`);
+  }
+}
+
+const guide = await readFile(guidePath, "utf8");
+for (const required of [
+  "GitHub Copilot Agent",
+  ".vscode/mcp.json",
+  "npm run build",
+  "reMcpWorkspaceRoot",
+  "Configure Tools",
+  "not part of RE-MCP's trust boundary",
+  "does not prove a native VS Code/Copilot session",
+]) {
+  if (!guide.toLowerCase().includes(required.toLowerCase())) {
+    throw new Error(`Missing Copilot controller guide contract: ${required}`);
   }
 }
 
