@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -236,6 +236,48 @@ function isInside(root: string, target: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+async function assertNoSymlinkSegments(
+  workspaceRoot: string,
+  target: string,
+  category: "checkpoint-evidence-path-invalid" | "checkpoint-io-failure",
+  description: string,
+): Promise<void> {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(target);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new ControllerCheckpointError(category, `${description} escapes the configured workspace`);
+  }
+
+  const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+  let current = resolvedRoot;
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]!);
+    let metadata;
+    try {
+      metadata = await lstat(current);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return;
+      throw new ControllerCheckpointError(
+        category,
+        `Unable to inspect ${description}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (metadata.isSymbolicLink()) {
+      throw new ControllerCheckpointError(
+        category,
+        `${description} may not traverse symbolic links`,
+      );
+    }
+    if (index < segments.length - 1 && !metadata.isDirectory()) {
+      throw new ControllerCheckpointError(
+        category,
+        `${description} contains a non-directory path component`,
+      );
+    }
+  }
+}
+
 function hashPayload(payload: StoredPayload): string {
   return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
 }
@@ -310,7 +352,8 @@ async function bindEvidenceRef(
   }
 
   const roots = evidenceRoots(source, workspaceRoot);
-  if (!roots.some((root) => isInside(root, absolutePath))) {
+  const allowedRoot = roots.find((root) => isInside(root, absolutePath));
+  if (allowedRoot === undefined) {
     throw new ControllerCheckpointError(
       "checkpoint-evidence-path-invalid",
       "Controller checkpoint evidence must be inside the exact source-SHA analysis/generated/nds or output/nds namespace",
@@ -322,6 +365,13 @@ async function bindEvidenceRef(
       "Controller checkpoint files, locks, and temporary files cannot be referenced as evidence",
     );
   }
+
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    absolutePath,
+    "checkpoint-evidence-path-invalid",
+    "Controller checkpoint evidence path",
+  );
 
   let metadata;
   try {
@@ -342,6 +392,21 @@ async function bindEvidenceRef(
     throw new ControllerCheckpointError(
       "checkpoint-evidence-path-invalid",
       `Controller checkpoint evidence must be a regular file: ${input.path}`,
+    );
+  }
+
+  // Recheck immediately before hashing so a pre-existing or replaced symlink is
+  // never accepted by the checkpoint evidence binder.
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    absolutePath,
+    "checkpoint-evidence-path-invalid",
+    "Controller checkpoint evidence path",
+  );
+  if (!isInside(allowedRoot, absolutePath)) {
+    throw new ControllerCheckpointError(
+      "checkpoint-evidence-path-invalid",
+      "Controller checkpoint evidence escaped its exact source-SHA namespace",
     );
   }
 
@@ -493,6 +558,12 @@ export async function readControllerCheckpoint(
   validateSource(source);
   const checkpointPath = controllerCheckpointPath(source, workspaceRoot);
   const relativePath = relativeWorkspacePath(workspaceRoot, checkpointPath);
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    checkpointPath,
+    "checkpoint-io-failure",
+    "Controller checkpoint storage path",
+  );
   const checkpoint = await readCheckpointFile(source, checkpointPath);
   if (checkpoint === null) {
     return {
@@ -569,6 +640,12 @@ export async function writeControllerCheckpoint(
   const directory = path.dirname(checkpointPath);
   const lockPath = path.join(directory, "checkpoint.lock");
 
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    directory,
+    "checkpoint-io-failure",
+    "Controller checkpoint storage path",
+  );
   try {
     await mkdir(directory, { recursive: true });
   } catch (error) {
@@ -577,6 +654,18 @@ export async function writeControllerCheckpoint(
       `Unable to create controller checkpoint directory: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    directory,
+    "checkpoint-io-failure",
+    "Controller checkpoint storage path",
+  );
+  await assertNoSymlinkSegments(
+    workspaceRoot,
+    checkpointPath,
+    "checkpoint-io-failure",
+    "Controller checkpoint storage path",
+  );
 
   let lockHandle;
   try {
@@ -595,6 +684,12 @@ export async function writeControllerCheckpoint(
   }
 
   try {
+    await assertNoSymlinkSegments(
+      workspaceRoot,
+      checkpointPath,
+      "checkpoint-io-failure",
+      "Controller checkpoint storage path",
+    );
     const existing = await readCheckpointFile(source, checkpointPath);
     const currentRevision = existing?.revision ?? 0;
     if (currentRevision !== expectedRevision) {
@@ -626,8 +721,20 @@ export async function writeControllerCheckpoint(
       ...payload,
       contentSha256: hashPayload(payload),
     };
+    await assertNoSymlinkSegments(
+      workspaceRoot,
+      checkpointPath,
+      "checkpoint-io-failure",
+      "Controller checkpoint storage path",
+    );
     await writeCheckpointAtomic(checkpointPath, checkpoint);
 
+    await assertNoSymlinkSegments(
+      workspaceRoot,
+      checkpointPath,
+      "checkpoint-io-failure",
+      "Controller checkpoint storage path",
+    );
     const verified = await readCheckpointFile(source, checkpointPath);
     if (verified === null || verified.contentSha256 !== checkpoint.contentSha256) {
       throw new ControllerCheckpointError(
