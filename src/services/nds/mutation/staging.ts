@@ -11,7 +11,11 @@ import path from "node:path";
 import { resolveInside } from "../../../security/paths.js";
 import { NdsError } from "../errors.js";
 import { hashFileSha256 } from "../io.js";
-import type { NdsResolvedMutationPlan } from "./planner.js";
+import {
+  isNdsResolvedMutationPlanV2,
+  resolvedNdsMutationArtifactPaths,
+  type NdsResolvedMutationPlan,
+} from "./planner.js";
 
 export interface NdsMutationOutputPaths {
   readonly finalParent: string;
@@ -52,17 +56,29 @@ async function syncReadOnlyFile(filePath: string): Promise<void> {
 
 async function assertArtifactsDoNotAliasStage(
   plan: NdsResolvedMutationPlan,
+  workspaceRoot: string,
   stagedRomPath: string,
+  finalRomPath: string,
 ): Promise<void> {
-  for (const operation of plan.operations) {
-    if (
-      operation.type === "replace-component"
-      && await sameExistingFile(operation.replacement.absolutePath, stagedRomPath)
-    ) {
-      throw new NdsError(
-        "unsupported-mutation-target",
-        "Replacement artifact may not alias the staged ROM",
-      );
+  const manifestPath = resolveInside(workspaceRoot, plan.manifestWorkspacePath);
+  const aliasCategory = isNdsResolvedMutationPlanV2(plan)
+    ? "unsupported-rebuild-target" as const
+    : "unsupported-mutation-target" as const;
+  const protectedPaths = [
+    { path: plan.sourceRomPath, label: "immutable source ROM" },
+    { path: manifestPath, label: "mutation manifest" },
+    { path: stagedRomPath, label: "staged ROM" },
+    { path: finalRomPath, label: "deterministic final output ROM" },
+  ] as const;
+
+  for (const artifactPath of resolvedNdsMutationArtifactPaths(plan)) {
+    for (const protectedPath of protectedPaths) {
+      if (await sameExistingFile(artifactPath, protectedPath.path)) {
+        throw new NdsError(
+          aliasCategory,
+          `Replacement artifact may not alias the ${protectedPath.label}`,
+        );
+      }
     }
   }
 }
@@ -103,6 +119,12 @@ export async function createNdsMutationStage(
       throw stagingError("Staged ROM path must differ from the immutable source ROM");
     }
 
+    await assertArtifactsDoNotAliasStage(
+      plan,
+      workspaceRoot,
+      stagedRomPath,
+      outputPaths.finalRomPath,
+    );
     await copyFile(plan.sourceRomPath, stagedRomPath);
     await syncReadOnlyFile(stagedRomPath);
     const stagedSha256 = await hashFileSha256(stagedRomPath);
@@ -112,7 +134,12 @@ export async function createNdsMutationStage(
       );
     }
 
-    await assertArtifactsDoNotAliasStage(plan, stagedRomPath);
+    await assertArtifactsDoNotAliasStage(
+      plan,
+      workspaceRoot,
+      stagedRomPath,
+      outputPaths.finalRomPath,
+    );
     return {
       buildId: plan.buildId,
       temporaryRoot,
