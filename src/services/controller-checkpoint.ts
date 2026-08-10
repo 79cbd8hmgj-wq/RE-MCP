@@ -370,7 +370,7 @@ async function bindEvidenceRefs(
   source: ControllerCheckpointSource,
   workspaceRoot: string,
   refs: readonly z.infer<typeof evidenceInputSchema>[],
-): Promise<readonly ControllerEvidenceRef[]> {
+): Promise<ControllerEvidenceRef[]> {
   const result: ControllerEvidenceRef[] = [];
   for (const ref of refs) {
     result.push(await bindEvidenceRef(source, workspaceRoot, ref));
@@ -383,7 +383,7 @@ async function bindState(
   workspaceRoot: string,
   state: ParsedStateInput,
 ): Promise<Omit<StoredPayload, "formatVersion" | "authority" | "sourceRomSha256" | "sourceRomSha256Prefix" | "revision">> {
-  const confirmedFacts: ControllerCheckpointFinding[] = [];
+  const confirmedFacts: StoredPayload["confirmedFacts"] = [];
   for (const entry of state.confirmedFacts) {
     confirmedFacts.push({
       id: entry.id,
@@ -391,7 +391,7 @@ async function bindState(
       evidenceRefs: await bindEvidenceRefs(source, workspaceRoot, entry.evidenceRefs),
     });
   }
-  const hypotheses: ControllerCheckpointFinding[] = [];
+  const hypotheses: StoredPayload["hypotheses"] = [];
   for (const entry of state.hypotheses) {
     hypotheses.push({
       id: entry.id,
@@ -399,7 +399,7 @@ async function bindState(
       evidenceRefs: await bindEvidenceRefs(source, workspaceRoot, entry.evidenceRefs),
     });
   }
-  const completedActions: ControllerCheckpointCompletedAction[] = [];
+  const completedActions: StoredPayload["completedActions"] = [];
   for (const entry of state.completedActions) {
     completedActions.push({
       id: entry.id,
@@ -408,7 +408,7 @@ async function bindState(
       evidenceRefs: await bindEvidenceRefs(source, workspaceRoot, entry.evidenceRefs),
     });
   }
-  const nextActions: ControllerCheckpointNextAction[] = state.nextActions.map((entry) => ({
+  const nextActions: StoredPayload["nextActions"] = state.nextActions.map((entry) => ({
     id: entry.id,
     description: entry.description,
   }));
