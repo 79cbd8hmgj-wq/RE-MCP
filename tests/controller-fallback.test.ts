@@ -36,6 +36,7 @@ test("Continue project MCP block launches only the existing RE-MCP stdio server"
     "version:",
     "schema: v1",
     "mcpServers:",
+    "type: stdio",
     "command: node",
     "dist/index.js",
     "RE_MCP_WORKSPACE_ROOT",
@@ -91,7 +92,7 @@ test("Continue fallback model uses loopback LiteLLM and explicit tool capability
   assertNoCommittedSecretsOrPrivatePaths(source);
 });
 
-test("LiteLLM config has exact provider groups and ordered fallbacks outside RE-MCP", async () => {
+test("LiteLLM config has exact provider groups and current router fallback semantics", async () => {
   const source = await readText("configs/controller/litellm-re-mcp.yaml");
 
   for (const phrase of [
@@ -104,11 +105,11 @@ test("LiteLLM config has exact provider groups and ordered fallbacks outside RE-
     "model_name: re-mcp-ollama",
     "model: ollama/llama3.1",
     "api_base: http://127.0.0.1:11434",
-    "litellm_settings:",
-    "fallbacks:",
     "router_settings:",
+    "fallbacks:",
     "num_retries: 1",
     "timeout: 120",
+    "general_settings:",
     "master_key: os.environ/LITELLM_MASTER_KEY",
   ]) {
     assert.match(source, new RegExp(escapeRegex(phrase), "i"));
@@ -116,9 +117,9 @@ test("LiteLLM config has exact provider groups and ordered fallbacks outside RE-
 
   assert.match(
     source,
-    /litellm_settings:[\s\S]*fallbacks:[\s\S]*-\s*re-mcp-controller:[\s\S]*-\s*re-mcp-openrouter[\s\S]*-\s*re-mcp-ollama/,
+    /router_settings:[\s\S]*fallbacks:[\s\S]*-\s*re-mcp-controller:[\s\S]*-\s*re-mcp-openrouter[\s\S]*-\s*re-mcp-ollama/,
   );
-  assert.doesNotMatch(source, /router_settings:[\s\S]*fallbacks:/);
+  assert.doesNotMatch(source, /litellm_settings:[\s\S]*fallbacks:/);
   assertNoCommittedSecretsOrPrivatePaths(source);
 });
 
