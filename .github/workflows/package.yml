@@ -29,13 +29,14 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           root="/tmp/re-mcp-${version}"
-          mkdir -p "$root/dist" "$root/.github" "$root/docs" "$root/configs"
+          mkdir -p "$root/dist" "$root/.github" "$root/docs" "$root/configs" "$root/benchmarks"
           cp package.json README.md mcp-config.example.json "$root/"
           cp -R .vscode "$root/"
           cp -R .continue "$root/"
           cp .github/copilot-instructions.md "$root/.github/"
-          cp docs/github-copilot-agent.md docs/controller-fallback.md "$root/docs/"
+          cp docs/github-copilot-agent.md docs/controller-fallback.md docs/controller-benchmark.md "$root/docs/"
           cp -R configs/controller "$root/configs/"
+          cp -R benchmarks/controller "$root/benchmarks/"
           cp -R scripts "$root/"
           cp -R resources "$root/"
           cp -R dist/src/. "$root/dist/"
@@ -48,6 +49,7 @@ jobs:
             node scripts/check-copilot-mcp-install.mjs .
             node scripts/check-controller-checkpoint-install.mjs .
             node scripts/check-controller-fallback-install.mjs .
+            node scripts/check-controller-benchmark-install.mjs .
           )
           tar -C /tmp -czf "/tmp/re-mcp-${version}.tar.gz" "re-mcp-${version}"
           sha256sum "/tmp/re-mcp-${version}.tar.gz" > "/tmp/re-mcp-${version}.tar.gz.sha256"
