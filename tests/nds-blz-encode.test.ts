@@ -88,10 +88,13 @@ test("NDS BLZ recompression fails closed when canonical compressed form is not s
   );
 });
 
-test("NDS BLZ recompression handles a large repetitive image without changing bytes", () => {
+test("NDS BLZ recompression uses overlapping matches for large repetitive images", () => {
   const decoded = Buffer.alloc(512 * 1024, 0xa5);
   const result = encodeNdsBlz(decoded);
 
-  assert.ok(result.storedSize < decoded.length);
+  assert.ok(
+    result.storedSize < decoded.length / 4,
+    `expected repetitive image to compress below 25%, got ${result.storedSize}/${decoded.length}`,
+  );
   assert.deepEqual(decodeNdsBlz(result.bytes, decoded.length).bytes, decoded);
 });
