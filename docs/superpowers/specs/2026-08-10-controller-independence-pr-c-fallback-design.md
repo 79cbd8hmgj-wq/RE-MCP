@@ -26,11 +26,11 @@ LiteLLM never proxies MCP calls. RE-MCP never calls LiteLLM or a model provider.
 
 The configuration in this PR follows the current upstream controller/provider contracts verified on 2026-08-10:
 
-- Continue uses schema `v1` YAML, supports project-local MCP blocks under `.continue/mcpServers/`, and requires Agent mode for MCP tools.
+- Continue uses schema `v1` YAML, supports project-local MCP blocks under `.continue/mcpServers/`, supports secret references through `${{ secrets.NAME }}`, and requires Agent mode for MCP tools.
 - Continue can talk to an OpenAI-compatible endpoint by using `provider: openai` plus `apiBase`.
 - Groq currently exposes `openai/gpt-oss-120b` with tool use.
 - OpenRouter currently exposes the zero-cost `openrouter/free` router and filters candidates for requested capabilities such as tool use.
-- LiteLLM proxy configuration uses `model_list` plus `litellm_settings.fallbacks`; bounded retry/timeout behavior belongs under `router_settings`.
+- LiteLLM proxy configuration uses `model_list`; current proxy/router source treats `fallbacks`, `num_retries`, and `timeout` as router settings. Proxy authentication belongs under `general_settings.master_key`.
 - Ollama is loopback-only in this shipped example and remains optional.
 
 These are configuration/package contracts only; provider availability and quotas remain external.
@@ -52,17 +52,15 @@ LiteLLM exposes three model groups:
 2. `re-mcp-openrouter` -> OpenRouter `openrouter/openrouter/free`
 3. `re-mcp-ollama` -> Ollama `ollama/llama3.1` at `http://127.0.0.1:11434`
 
-`litellm_settings.fallbacks` defines the ordered chain:
+`router_settings.fallbacks` defines the ordered chain:
 
 ```text
 re-mcp-controller -> re-mcp-openrouter -> re-mcp-ollama
 ```
 
-`router_settings` limits retry/timeout behavior; it does not define the fallback chain.
+The same `router_settings` block bounds retry/timeout behavior. This is inference failover only. A successful provider response must still drive RE-MCP through Continue's Agent loop.
 
-This is inference failover only. A successful provider response must still drive RE-MCP through Continue's Agent loop.
-
-Cloud keys are read only through LiteLLM environment references `GROQ_API_KEY` and `OPENROUTER_API_KEY`. The local proxy is intended to bind to loopback. A separate local proxy key (`LITELLM_MASTER_KEY`) may protect the Continue-to-LiteLLM hop, but it is user-supplied and never committed.
+Cloud keys are read only through LiteLLM environment references `GROQ_API_KEY` and `OPENROUTER_API_KEY`. The local proxy is intended to bind to loopback. A separate local proxy key (`LITELLM_MASTER_KEY`) protects the Continue-to-LiteLLM hop through `general_settings.master_key`; it is user-supplied and never committed.
 
 ## Controller policy
 
