@@ -64,6 +64,7 @@ export type NdsMutationErrorCategory =
   | "header-rebuild-failed"
   | "header-checksum-invalid"
   | "rom-capacity-exceeded"
+  | "rebuild-layout-overflow"
   | "staging-failed"
   | "post-build-parse-failed"
   | "structural-map-changed"
