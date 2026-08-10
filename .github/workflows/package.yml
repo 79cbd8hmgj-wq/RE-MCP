@@ -39,7 +39,7 @@ jobs:
           cp -R benchmarks/controller "$root/benchmarks/"
           cp -R scripts "$root/"
           cp -R resources "$root/"
-          cp -R dist/src/. "$root/dist/"
+          cp -R dist/. "$root/dist/"
           (
             cd "$root"
             npm install --omit=dev --ignore-scripts
