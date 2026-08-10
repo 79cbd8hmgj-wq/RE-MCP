@@ -1,0 +1,12 @@
+name: RE-MCP
+version: 1.0.0
+schema: v1
+
+mcpServers:
+  - name: RE-MCP
+    command: node
+    args:
+      - dist/index.js
+    cwd: .
+    env:
+      RE_MCP_WORKSPACE_ROOT: ${{ secrets.RE_MCP_WORKSPACE_ROOT }}
