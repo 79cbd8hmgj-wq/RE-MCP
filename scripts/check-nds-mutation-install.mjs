@@ -14,7 +14,7 @@ for (const relative of [
   "dist/services/nds/mutation/manifest.js",
   "dist/services/nds/mutation/planner.js",
   "dist/services/nds/mutation/filesystem-plan.js",
-  "dist/services/nds/mutation/layout-plan.js",
+  "dist/services/nds/mutation/layout.js",
   "dist/services/nds/mutation/header-plan.js",
   "dist/services/nds/mutation/build.js",
   "dist/tools/nds-mutation.js",
