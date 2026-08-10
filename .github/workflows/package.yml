@@ -29,10 +29,11 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           root="/tmp/re-mcp-${version}"
-          mkdir -p "$root/dist" "$root/.github"
+          mkdir -p "$root/dist" "$root/.github" "$root/docs"
           cp package.json README.md mcp-config.example.json "$root/"
           cp -R .vscode "$root/"
           cp .github/copilot-instructions.md "$root/.github/"
+          cp docs/github-copilot-agent.md "$root/docs/"
           cp -R scripts "$root/"
           cp -R resources "$root/"
           cp -R dist/src/. "$root/dist/"
