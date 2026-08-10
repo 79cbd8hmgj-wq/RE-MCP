@@ -1,0 +1,16 @@
+name: RE-MCP Fallback Controller
+version: 1.0.0
+schema: v1
+
+models:
+  - name: RE-MCP Controller
+    provider: openai
+    model: re-mcp-controller
+    apiBase: http://127.0.0.1:4000/v1
+    apiKey: ${{ secrets.LITELLM_MASTER_KEY }}
+    capabilities:
+      - tool_use
+    roles:
+      - chat
+      - edit
+      - apply
