@@ -31,8 +31,7 @@ export type NdsFunctionErrorCategory =
 export type NdsBlzErrorCategory =
   | "malformed-blz"
   | "blz-output-size-mismatch"
-  | "blz-output-limit"
-  | "blz-recompression-failed";
+  | "blz-output-limit";
 
 export type NdsCompressedOverlayErrorCategory =
   | "compressed-overlay-runtime-unavailable";
@@ -52,6 +51,7 @@ export type NdsMutationErrorCategory =
   | "mutation-no-op"
   | "mutation-overlap"
   | "compressed-overlay-invalid"
+  | "blz-recompression-failed"
   | "filesystem-extension-invalid"
   | "filesystem-path-collision"
   | "filesystem-id-capacity-exceeded"
