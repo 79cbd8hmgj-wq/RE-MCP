@@ -38,18 +38,15 @@ export interface NdsRebuildSegment {
 export interface NdsPayloadLayout {
   readonly sourceSize: number;
   readonly tailStart: number;
-  readonly logicalUsedSize: number;
-  readonly finalSize: number;
-  readonly deviceCapacity: number;
   readonly segments: readonly NdsRebuildSegment[];
   readonly nextOffset: number;
 }
 
 export interface NdsMetadataLayoutInput {
-  readonly fnt?: Buffer | undefined;
+  readonly fnt?: Buffer;
   readonly fat: Buffer;
-  readonly arm9OverlayTable?: Buffer | undefined;
-  readonly arm7OverlayTable?: Buffer | undefined;
+  readonly arm9OverlayTable?: Buffer;
+  readonly arm7OverlayTable?: Buffer;
 }
 
 export interface NdsRebuildLayout {
@@ -188,13 +185,9 @@ export function planNdsPayloadLayout(
     nextOffset = end;
   }
 
-  const preliminaryCapacity = selectNdsDeviceCapacity(nextOffset);
   return {
     sourceSize,
     tailStart,
-    logicalUsedSize: nextOffset,
-    finalSize: preliminaryCapacity.capacityBytes,
-    deviceCapacity: preliminaryCapacity.deviceCapacity,
     segments,
     nextOffset,
   };
