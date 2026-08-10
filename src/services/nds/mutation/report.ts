@@ -254,64 +254,103 @@ interface NdsChangedComponentEvidenceV2 {
   readonly operationIndexes: readonly number[];
 }
 
+function v2ComponentIdentityKey(component: NdsChangedComponentEvidenceV2): string {
+  return [
+    component.romStart,
+    component.romEnd,
+    component.component,
+    component.processor ?? "",
+    component.overlayId ?? "",
+    component.fileId ?? "",
+    component.filePath ?? "",
+    component.compressed ? "1" : "0",
+  ].join(":");
+}
+
+function v2OperationComponent(
+  plan: NdsResolvedMutationPlanV2,
+  resolved: NdsResolvedMutationPlanV2["operations"][number],
+): NdsChangedComponentEvidenceV2 {
+  if (resolved.kind === "fixed") {
+    const component = normalizePhysicalComponent(resolved.operation.component);
+    return {
+      component: component.component,
+      processor: component.processor,
+      overlayId: component.overlayId,
+      fileId: component.fileId,
+      filePath: component.filePath,
+      romStart: component.romStart,
+      romEnd: component.romEnd,
+      size: component.size,
+      compressed: component.compressed,
+      operationIndexes: [resolved.index],
+    };
+  }
+
+  const fileId = resolved.kind === "decoded-overlay"
+    ? resolved.overlay.fileId
+    : resolved.file.fileId;
+  const range = plan.finalFat[fileId]!;
+  if (resolved.kind === "decoded-overlay") {
+    return {
+      component: `${resolved.overlay.processor}-overlay`,
+      processor: resolved.overlay.processor,
+      overlayId: resolved.overlay.overlayId,
+      fileId,
+      filePath: null,
+      romStart: range.startOffset,
+      romEnd: range.endOffset,
+      size: range.endOffset - range.startOffset,
+      compressed: true,
+      operationIndexes: [resolved.index],
+    };
+  }
+
+  return {
+    component: "nitrofs-file",
+    processor: null,
+    overlayId: null,
+    fileId,
+    filePath: resolved.kind === "new-file" ? resolved.file.path : resolved.file.filePath,
+    romStart: range.startOffset,
+    romEnd: range.endOffset,
+    size: range.endOffset - range.startOffset,
+    compressed: false,
+    operationIndexes: [resolved.index],
+  };
+}
+
 function v2ChangedComponents(
   plan: NdsResolvedMutationPlanV2,
 ): readonly NdsChangedComponentEvidenceV2[] {
-  const components: NdsChangedComponentEvidenceV2[] = [];
+  const grouped = new Map<string, {
+    readonly component: Omit<NdsChangedComponentEvidenceV2, "operationIndexes">;
+    readonly operationIndexes: number[];
+  }>();
+
   for (const resolved of plan.operations) {
-    if (resolved.kind === "fixed") {
-      const component = normalizePhysicalComponent(resolved.operation.component);
-      components.push({
-        component: component.component,
-        processor: component.processor,
-        overlayId: component.overlayId,
-        fileId: component.fileId,
-        filePath: component.filePath,
-        romStart: component.romStart,
-        romEnd: component.romEnd,
-        size: component.size,
-        compressed: component.compressed,
-        operationIndexes: [resolved.index],
-      });
+    const operationComponent = v2OperationComponent(plan, resolved);
+    const key = v2ComponentIdentityKey(operationComponent);
+    const existing = grouped.get(key);
+    if (existing !== undefined) {
+      existing.operationIndexes.push(resolved.index);
       continue;
     }
-    const fileId = resolved.kind === "decoded-overlay"
-      ? resolved.overlay.fileId
-      : resolved.file.fileId;
-    const range = plan.finalFat[fileId]!;
-    if (resolved.kind === "decoded-overlay") {
-      components.push({
-        component: `${resolved.overlay.processor}-overlay`,
-        processor: resolved.overlay.processor,
-        overlayId: resolved.overlay.overlayId,
-        fileId,
-        filePath: null,
-        romStart: range.startOffset,
-        romEnd: range.endOffset,
-        size: range.endOffset - range.startOffset,
-        compressed: true,
-        operationIndexes: [resolved.index],
-      });
-    } else {
-      components.push({
-        component: "nitrofs-file",
-        processor: null,
-        overlayId: null,
-        fileId,
-        filePath: resolved.kind === "new-file" ? resolved.file.path : resolved.file.filePath,
-        romStart: range.startOffset,
-        romEnd: range.endOffset,
-        size: range.endOffset - range.startOffset,
-        compressed: false,
-        operationIndexes: [resolved.index],
-      });
-    }
+    const { operationIndexes: _ignored, ...component } = operationComponent;
+    grouped.set(key, {
+      component,
+      operationIndexes: [resolved.index],
+    });
   }
-  return components.sort(
-    (left, right) => left.romStart - right.romStart
+
+  return [...grouped.values()]
+    .map(({ component, operationIndexes }) => ({
+      ...component,
+      operationIndexes: [...operationIndexes].sort((left, right) => left - right),
+    }))
+    .sort((left, right) => left.romStart - right.romStart
       || left.romEnd - right.romEnd
-      || left.operationIndexes[0]! - right.operationIndexes[0]!,
-  );
+      || v2ComponentIdentityKey(left).localeCompare(v2ComponentIdentityKey(right)));
 }
 
 function v2OperationEvidence(
