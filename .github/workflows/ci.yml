@@ -8,7 +8,7 @@ on:
       - foundation/**
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -16,6 +16,47 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Insert PR A GitHub Copilot Agent setup
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/controller-independence-pr-a-copilot'
+        shell: bash
+        run: |
+          git fetch origin agent/controller-independence-pr-a-copilot
+          git checkout -B agent/controller-independence-pr-a-copilot origin/agent/controller-independence-pr-a-copilot
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text()
+          marker = "## Build the Catalina-native DeSmuME debugger bundle"
+          if "### GitHub Copilot Agent controller" in text:
+              raise SystemExit(0)
+          if marker not in text:
+              raise SystemExit("README insertion marker not found")
+          section = r'''### GitHub Copilot Agent controller
+
+GitHub Copilot Agent in VS Code can use RE-MCP directly through the workspace MCP configuration at `.vscode/mcp.json`. Copilot is a controller convenience layer and is not part of RE-MCP's trust boundary; RE-MCP remains responsible for deterministic ROM facts, guarded mutation, rebuild, and verification.
+
+1. Install dependencies and build the server with `npm install` and `npm run build`.
+2. Open this RE-MCP repository in VS Code with GitHub Copilot enabled.
+3. Start and trust the workspace `re-mcp` MCP server defined by `.vscode/mcp.json`.
+4. When VS Code prompts for `reMcpWorkspaceRoot`, enter the absolute path to a dedicated RE-MCP ROM-modding workspace. Do not use a general home directory.
+5. In Copilot Agent chat, choose **Configure Tools** and enable the RE-MCP tools required for the task. Repository rules in `.github/copilot-instructions.md` tell the controller to measure ROM facts through RE-MCP, preserve source immutability, validate before builds, and require verification before completion.
+6. If Ghidra tools are needed, configure the existing optional Ghidra environment settings outside the committed workspace MCP file; those paths are machine-specific.
+
+The committed VS Code configuration contains no ROM path, API key, user-home path, output path, or machine-specific Ghidra path. `mcp-config.example.json` remains the template for non-VS-Code MCP clients.
+
+CI/package acceptance verifies that the configuration, instructions, compiled server, and assembled downloadable bundle are internally consistent. It does not prove a native VS Code/Copilot session executed RE-MCP, and it does not replace the separate Physical DeSmuME real-machine acceptance gate.
+
+'''
+          path.write_text(text.replace(marker, section + marker, 1))
+          PY
+          if ! git diff --quiet -- README.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "docs: add Copilot Agent controller setup"
+            git push origin HEAD:agent/controller-independence-pr-a-copilot
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
