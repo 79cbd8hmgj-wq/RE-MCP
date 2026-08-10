@@ -173,9 +173,9 @@ Commit message: `feat: add Continue fallback controller configuration`.
 - Create: `scripts/check-controller-fallback-install.mjs`
 - Modify: `.github/workflows/package.yml`
 - Modify: `tests/controller-fallback.test.ts`
-- Modify: `README.md`
 
 **Interfaces:**
+- `docs/controller-fallback.md` is the canonical shipped controller-fallback guide.
 - Package workflow must ship `.continue`, `configs/controller`, the fallback guide, and smoke script.
 - Smoke script validates assembled-bundle structure/safety without making network calls.
 
@@ -189,15 +189,15 @@ Require Package workflow failure while the smoke/wiring is absent, without chang
 
 - [ ] **Step 3: Add the fallback guide**
 
-Document build/start sequence, Continue Agent mode, LiteLLM loopback launch, secret setup, provider failure behavior, checkpoint handoff, deterministic fact revalidation, and explicit external/native acceptance limits.
+Document GitHub Copilot as preferred controller, Continue+LiteLLM as fallback, RE-MCP as provider-independent truth/execution authority, build/start sequence, Continue Agent mode, LiteLLM loopback launch, secret setup, provider failure behavior, checkpoint handoff, deterministic fact revalidation, and explicit external/native acceptance limits.
 
 - [ ] **Step 4: Add assembled-package smoke**
 
 The script must fail unless all fallback files exist, verify safe loopback/config strings, reject key-shaped committed values/private paths, and print exactly `Controller fallback package smoke passed` on success. It performs no provider request.
 
-- [ ] **Step 5: Update package workflow and README**
+- [ ] **Step 5: Update package workflow**
 
-Ship the new directories/docs and run the smoke after existing Copilot/checkpoint acceptance. README must identify Copilot as preferred, Continue+LiteLLM as fallback, and RE-MCP as provider-independent truth/execution authority.
+Ship the new directories/docs and run the smoke after existing Copilot/checkpoint acceptance. Do not duplicate the full controller guide into the already-large top-level README; keep the focused guide as the canonical controller-fallback documentation artifact.
 
 - [ ] **Step 6: Verify GREEN**
 
@@ -231,4 +231,4 @@ Record exact head SHA and workflow outcomes in the PR body, including the explic
 
 - [ ] **Step 4: Merge safely**
 
-Merge with `expected_head_sha` under the user's standing authorization and verify `main` contains the merge before rebasing/updating PR D.
+Merge with `expected_head_sha` under the user's standing authorization and verify `main` contains the merge before resetting PR D to the new `main`.
