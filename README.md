@@ -42,15 +42,15 @@ RE-MCP uses **stdio** and exposes narrow, tested tools rather than an unrestrict
 
 The source ROM is read-only. Static-analysis extraction artifacts are restricted to `analysis/generated/nds/<sha-prefix>/` under the configured workspace. The static-analysis tools do not accept generic binary inputs, caller-selected output paths, arbitrary ROM offset/length extraction requests, or caller-defined raw search ranges.
 
-### Controlled NDS Mutation — Milestone 1
+### Controlled NDS Mutation — NDS Rebuild Core 2
 
-RE-MCP now exposes a narrow manifest-driven write/build surface for exact Nintendo DS ROM revisions:
+RE-MCP exposes a narrow manifest-driven write/build surface for exact Nintendo DS ROM revisions:
 
-- `nds_mutation_validate` validates the strict mutation manifest, exact source SHA-256, canonical component selectors, original-byte/component guards, replacement artifacts, conflicts, and deterministic build identity without publishing output.
-- `nds_mutation_build` applies the validated plan only to a temporary copy of the source ROM, reparses and verifies the result, attributes every changed byte to an approved operation, and atomically publishes the deterministic build.
-- `nds_mutation_verify` freshly revalidates an existing deterministic build and its evidence; it never silently repairs or overwrites a divergent/tampered build.
+- `nds_mutation_validate` validates the strict mutation manifest, exact source SHA-256, canonical component selectors, original-byte/component/runtime guards, replacement artifacts, conflicts, rebuild layout, and deterministic build identity without publishing output.
+- `nds_mutation_build` applies the validated plan only to a temporary copy of the source ROM, reparses and semantically verifies the rebuilt result, attributes changes to approved operations or owned rebuild metadata, and atomically publishes the deterministic build.
+- `nds_mutation_verify` freshly revalidates an existing deterministic build and its evidence; it never silently repairs or overwrites a divergent or tampered build.
 
-The **source ROM remains immutable**. Milestone 1 supports only **same-size** guarded byte replacements and exact-size whole-component replacements selected through the canonical NDS model. Callers cannot provide an arbitrary ROM offset or caller-selected output paths.
+The **source ROM remains immutable**. Format-version 1 manifests retain the original **same-size** guarded byte and exact-size whole-component replacement behavior. NDS Rebuild Core 2 format-version 2 additionally supports controlled **variable-size NitroFS** replacement, adding new NitroFS files and directories, and decoded compressed-overlay replacement with deterministic **BLZ recompression**. Rebuilds use a deterministic **append-only** layout for relocated/new payloads and rebuilt metadata, update owned **FAT/FNT** and overlay/header fields through the resolved plan, and select the smallest valid NDS **device capacity** that contains the final logical image.
 
 Successful builds are published beneath:
 
@@ -68,9 +68,9 @@ changed-components.json
 output.sha256
 ```
 
-Verification requires the rebuilt ROM to parse through the canonical NDS model, preserves immutable structural geometry, revalidates compressed-overlay runtime images when applicable, checks every requested operation, and requires zero unexpected changed bytes. Re-running the same exact build may reuse it only after fresh verification; a mismatched or tampered deterministic output fails closed as a publish collision.
+Verification reparses the rebuilt ROM through the canonical NDS model and checks the exact planned header, FAT ranges, NitroFS identities and additions, relocated payload hashes, overlay metadata, decoded compressed-overlay runtime identity, BLZ stored/runtime hashes, zero-filled unowned rebuild gaps/capacity padding, and every fixed operation. Every changed byte in the original source prefix must belong to an approved fixed edit or an owned header rewrite, and `verification.json` records `rebuildSemanticsVerified: true` only after those rebuild semantics pass. Re-running the same exact build may reuse it only after fresh verification; a mismatched or tampered deterministic output fails closed as a publish collision.
 
-Milestone 1 deliberately does **not** provide variable-size rebuilding or relocation, FAT/FNT mutation, decoded compressed-overlay editing, BLZ recompression, generic source-ROM writes, arbitrary ROM offset writes, or caller-selected output paths. Those capabilities remain future controlled-build work rather than being inferred from this narrow mutation surface.
+The controlled mutation surface still does **not** expose a generic source-ROM writer, an arbitrary ROM offset write API, caller-selected output paths, arbitrary caller-defined FAT/FNT records, or unrestricted recompression. Physical DeSmuME runtime acceptance remains separate from Rebuild Core 2 CI/package acceptance; a semantically verified rebuilt ROM is not presented as proof that a specific native emulator/device has executed it successfully.
 
 ### DeSmuME and ARM9 GDB
 
@@ -574,7 +574,7 @@ The `Package` GitHub Actions workflow publishes a `re-mcp-downloadable-bundle` a
 - Installation self-check
 - SHA-256 checksum
 
-Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra resources and controlled tool registration, requires the runtime-correlation service/Ghidra adapter/tool modules, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, and runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction. The package check does not require a Ghidra installation or external disassembler download.
+Before publishing the artifact, the package workflow performs a production-only install inside the assembled bundle, verifies the packaged Ghidra resources and controlled tool registration, requires the runtime-correlation service/Ghidra adapter/tool modules, initializes the packaged Capstone.js runtime, decodes known ARM and Thumb instructions, smoke-classifies an ARM direct call plus a Thumb PC-relative literal-slot reference, smoke-searches a temporary valid NDS ROM through the compiled pattern-search service to verify wildcard overlap and canonical ARM9 ownership, runs a packaged ARM9 `BL` fixture through proven-function discovery to verify program-entry/direct-call proof and call-edge construction, round-trips the deterministic NDS BLZ encoder/decoder, and builds then freshly revalidates an actual format-version 2 variable-size NitroFS rebuild with a replaced file, a newly added nested file, deterministic evidence, and `rebuildSemanticsVerified: true`. The package check does not require a Ghidra installation or external disassembler download and does not claim physical DeSmuME runtime acceptance.
 
 After downloading and extracting the archive:
 
@@ -583,7 +583,7 @@ cd re-mcp-0.6.0
 node scripts/check-install.mjs .
 ```
 
-The same self-check verifies the required package files, assembled function/Ghidra/runtime-correlation tool registration, Ghidra resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, and packaged proven-function discovery path before reporting `ok: true`.
+The same self-check verifies the required package files, assembled function/Ghidra/runtime-correlation tool registration, Ghidra resources, ARM/Thumb decoder fixtures, deterministic reference classifier, packaged NDS pattern-search path, packaged proven-function discovery path, and packaged Rebuild Core 2 mutation/build path before reporting `ok: true`.
 
 Copy `mcp-config.example.json`, replace the required workspace/server paths, and either set the optional Ghidra paths for Ghidra bootstrap/inspection/runtime enrichment or remove those optional environment entries when Ghidra tools are not needed.
 
@@ -681,6 +681,10 @@ RE-MCP owns at most one emulator child process per server instance. It rejects d
 - Runtime correlation defaults to zero Ghidra work; optional Ghidra enrichment requires an already-current full-SHA-scoped project and never bootstraps/reconciles/mutates it
 - Runtime correlation preserves overlapping overlay candidates and never turns candidate-specific static/Ghidra interpretation into a loaded-overlay claim
 - NDS source ROMs are read-only; generated static-analysis artifacts are restricted to `analysis/generated/nds/<sha-prefix>/`
+- Controlled NDS mutation never writes the source ROM; staged writes are confined to the deterministic mutation build path and published beneath `output/nds/<source-sha-prefix>/<build-id>/`
+- Controlled NDS mutation accepts guarded canonical component/NitroFS/decoded-overlay operations only; no generic arbitrary ROM-offset writer or caller-selected output path is exposed
+- Rebuild Core 2 variable-size changes use deterministic append-only placement, owned FAT/FNT/header/overlay metadata rewrites, bounded device-capacity selection, and canonical semantic verification before publication/reuse
+- Existing deterministic mutation builds are freshly revalidated; divergent/tampered outputs fail closed and are never silently repaired
 - NDS extraction accepts canonical component selectors only; no raw offset/length extraction or caller-controlled output path
 - NDS disassembly and reference listing accept canonical NDS code mappings only; no generic binary path, caller-provided byte buffer, arbitrary base address, or arbitrary raw byte range
 - `nds_search_pattern` accepts only a validated NDS ROM plus canonical component scope or explicit whole-ROM scope; no generic binary path, caller-supplied byte buffer, caller-defined start/end range, runtime-memory target, or output path
