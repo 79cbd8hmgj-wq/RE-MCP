@@ -13,6 +13,7 @@ import { NdsError } from "../errors.js";
 import { hashFileSha256 } from "../io.js";
 import type { NdsRomMap } from "../rom-map.js";
 import { applyNdsMutationPlan } from "./apply.js";
+import { completeNdsMutationBuildVerification } from "./build-verification.js";
 import { assertNdsMutationSourceIdentity } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
 import {
@@ -149,6 +150,20 @@ async function assertVerifiedOutputStillCurrent(
   }
 }
 
+async function verifyBuildOutput(
+  map: NdsRomMap,
+  plan: NdsResolvedMutationPlan,
+  outputRomPath: string,
+): Promise<NdsMutationVerificationResult> {
+  const verification = await verifyNdsMutationOutput(map, plan, outputRomPath);
+  return await completeNdsMutationBuildVerification(
+    map,
+    plan,
+    outputRomPath,
+    verification,
+  );
+}
+
 export async function verifyPublishedNdsMutationBuild(
   map: NdsRomMap,
   workspaceRoot: string,
@@ -158,7 +173,7 @@ export async function verifyPublishedNdsMutationBuild(
   const outputPaths = resolveNdsMutationOutputPaths(plan, workspaceRoot);
   try {
     await requireExactPublishedEntries(outputPaths.finalRoot, plan.outputFilename);
-    const verification = await verifyNdsMutationOutput(
+    const verification = await verifyBuildOutput(
       map,
       plan,
       outputPaths.finalRomPath,
@@ -210,7 +225,7 @@ export async function buildNdsMutation(
   let published = false;
   try {
     await applyNdsMutationPlan(plan, stage);
-    const verification = await verifyNdsMutationOutput(map, plan, stage.stagedRomPath);
+    const verification = await verifyBuildOutput(map, plan, stage.stagedRomPath);
     await writeEvidence(stage, loadedManifest, plan, verification);
     await hooks.beforePublish?.(stage);
     await assertVerifiedOutputStillCurrent(
