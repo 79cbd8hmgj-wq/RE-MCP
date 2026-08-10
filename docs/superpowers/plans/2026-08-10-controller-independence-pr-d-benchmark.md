@@ -4,7 +4,7 @@
 
 **Goal:** Ship a packaged, provider-neutral controller acceptance harness that prepares deterministic synthetic NDS scenarios and scores only machine-verifiable RE-MCP outcomes.
 
-**Architecture:** A standalone Node CLI prepares fresh benchmark workspaces and later scores them using the compiled canonical NDS, controller-checkpoint, extraction, and mutation services. The harness never calls model providers and never collects transcripts or chain-of-thought. Scenario definitions/prompts live in a versioned JSON registry. Package acceptance executes the compiled harness in temporary workspaces without network access.
+**Architecture:** A standalone Node CLI prepares fresh benchmark workspaces and later scores them using compiled canonical NDS, extraction, controller-checkpoint, and mutation services. It never calls model providers and never collects transcripts or hidden reasoning. A versioned scenario registry owns the fixed prompts. Package acceptance executes the compiled harness in temporary workspaces without network access.
 
 ## Global constraints
 
@@ -15,35 +15,26 @@
 - `prepare` writes only into an absent or empty explicit benchmark workspace.
 - `score` is read-only.
 - Every score regenerates the expected source fixture and requires exact byte identity before scenario-specific checks.
-- Existing RE-MCP services remain authoritative for canonical parsing, checkpoint integrity, evidence binding, and published mutation verification.
-- Scenario success is deterministic; prose wording, transcripts, chain-of-thought, token counts, and provider self-reporting are not scored.
+- Existing RE-MCP services remain authoritative for canonical parsing, checkpoint integrity/evidence binding, extraction semantics, mutation planning, and published-build verification.
+- Scenario success is deterministic; prose wording, transcripts, hidden reasoning, token counts, and provider self-reporting are not scored.
 - Physical Continue/provider/DeSmuME acceptance remains separate from CI.
 
 ---
 
 ## Task 1 — RED benchmark contract
 
-**Create:**
-- `tests/controller-benchmark.test.ts`
+**Create:** `tests/controller-benchmark.test.ts`
 
-### RED
+Write source-level tests requiring:
 
-Add source-level tests requiring:
+- `benchmarks/controller/scenarios.json` with `benchmarkVersion: 1` and exactly `analysis-handoff`, `checkpoint-resume`, `verified-mutation`, and `guard-rejection`;
+- each scenario has a bounded fixed prompt and informational `expectedTools` list;
+- `scripts/controller-benchmark.mjs` exposes `prepare`/`score`, uses compiled RE-MCP services, regenerates source bytes, has bounded exit semantics, and contains no provider/network/credential or transcript collection surface;
+- guard scoring explicitly requires `original-byte-guard-failed` rather than accepting any exception;
+- `docs/controller-benchmark.md` documents fresh-workspace comparison and native/provider limits;
+- Package workflow ships/runs the benchmark smoke.
 
-- `benchmarks/controller/scenarios.json` with `benchmarkVersion: 1` and exactly:
-  - `analysis-handoff`
-  - `checkpoint-resume`
-  - `verified-mutation`
-  - `guard-rejection`
-- each scenario has a non-empty fixed prompt and bounded informational `expectedTools` list;
-- `scripts/controller-benchmark.mjs` exposes `prepare` and `score` modes and references compiled canonical services;
-- the benchmark script contains no `fetch`, HTTP client, provider key, transcript, or chain-of-thought capture path;
-- preparation requires absent/empty workspace and synthetic ROM creation;
-- scoring includes source byte-identity validation before scenario-specific checks;
-- `docs/controller-benchmark.md` documents fresh-workspace comparison and native/provider acceptance limits;
-- Package workflow eventually ships/runs the benchmark smoke.
-
-Open PR D as draft with the design/plan and RED test only. Require CI/Package to fail because the benchmark registry/scripts/docs are absent.
+Open PR D as draft with the design/plan and RED test before implementation. Require CI/Package to fail because the planned registry/harness/docs are absent.
 
 Commit: `test: define deterministic controller benchmark contract`.
 
@@ -55,9 +46,7 @@ Commit: `test: define deterministic controller benchmark contract`.
 - `benchmarks/controller/scenarios.json`
 - `scripts/controller-benchmark.mjs`
 
-### Registry
-
-Use one JSON document:
+Registry format:
 
 ```json
 {
@@ -73,9 +62,9 @@ Use one JSON document:
 }
 ```
 
-Prompts state required objective and safety boundary without revealing hidden score implementation details.
+`expectedTools` is diagnostic metadata only; no transcript/tool-call log is required for scoring.
 
-### CLI preparation contract
+`prepare` contract:
 
 ```text
 node scripts/controller-benchmark.mjs prepare <scenario-id> <workspace>
@@ -83,19 +72,14 @@ node scripts/controller-benchmark.mjs prepare <scenario-id> <workspace>
 
 Implementation:
 
-1. parse and validate scenario registry;
-2. require target path to be absent or an empty non-symlink directory;
-3. create controlled subdirectories only;
-4. generate one deterministic valid NDS ROM at `roms/controller-benchmark.nds`;
-5. write valid and invalid mutation manifests only for scenarios that need them;
-6. for `checkpoint-resume`, seed revision 1 through the compiled `writeControllerCheckpoint` service;
-7. emit bounded JSON with benchmark version, scenario ID, source SHA, ROM relative path, and fixed prompt.
-
-Synthetic ROM construction should reuse the same minimal NDS geometry already proven in packaged mutation smoke: valid header, ARM9/ARM7 ranges, one FNT/FAT file, header CRC, and deterministic bytes.
-
-### TDD / package-level proof
-
-Source tests turn GREEN for registry/script shape. Functional execution waits for Task 5 package smoke where compiled `dist` exists.
+1. validate scenario registry/version;
+2. require target to be absent or an empty non-symlink directory;
+3. create only controlled subdirectories;
+4. generate a deterministic valid NDS fixture at `roms/controller-benchmark.nds` using the proven package-smoke geometry (header CRC, ARM9/ARM7, one FAT/FNT file);
+5. write valid/invalid mutation manifests only for the scenarios that need them;
+6. for `checkpoint-resume`, seed revision 1 through compiled `writeControllerCheckpoint`;
+7. write bounded non-authoritative scenario metadata;
+8. print bounded JSON containing scenario ID, source SHA, ROM relative path, and fixed prompt.
 
 Commit: `feat: add deterministic controller benchmark preparation`.
 
@@ -107,56 +91,40 @@ Commit: `feat: add deterministic controller benchmark preparation`.
 - `scripts/controller-benchmark.mjs`
 - `tests/controller-benchmark.test.ts`
 
-### Shared score preflight
+Shared `score` preflight:
 
 ```text
 node scripts/controller-benchmark.mjs score <scenario-id> <workspace> [controller-label]
 ```
 
-Before any scenario score:
+Before scenario-specific checks:
 
-1. workspace must exist and not be a symlink;
+1. require a real non-symlink workspace directory;
 2. regenerate expected fixture bytes in memory;
-3. require the ROM file bytes to equal them exactly;
-4. parse via compiled `readNdsRomMap` and require exact expected SHA;
-5. controller label, if supplied, must be bounded display metadata only.
+3. require exact ROM byte identity;
+4. parse through compiled `readNdsRomMap` and require the expected SHA;
+5. validate prepared scenario metadata;
+6. treat optional controller label as bounded display metadata only.
 
-Scorecard:
-
-```json
-{
-  "benchmarkVersion": 1,
-  "scenarioId": "analysis-handoff",
-  "controllerLabel": null,
-  "passed": true,
-  "sourceRomSha256": "...",
-  "checks": [
-    { "id": "source-immutable", "passed": true },
-    { "id": "checkpoint-valid", "passed": true }
-  ]
-}
-```
-
-Failed deterministic checks print the scorecard and exit 1. Setup/usage errors exit 2.
+Failed deterministic checks print a scorecard and exit 1. Usage/setup failures exit 2.
 
 ### `analysis-handoff`
 
 Require:
 
-- canonical `analysis/generated/nds/<prefix>/manifest.json` exists as a regular file;
-- checkpoint read through compiled service succeeds at revision 1;
-- checkpoint authority is `controller-state-only`;
-- some confirmed-fact evidence ref equals that exact manifest path and hash.
+- canonical `analysis/generated/nds/<prefix>/manifest.json` with the expected static-analysis format/source SHA;
+- valid checkpoint revision 1 with authority `controller-state-only`;
+- confirmed-fact evidence exactly bound to the current manifest path and SHA.
 
 ### `checkpoint-resume`
 
-Require:
+Do **not** regenerate the full analysis bundle after the seeded checkpoint. The full bundle exporter atomically replaces the whole SHA-scoped analysis directory, which also contains `controller/checkpoint.json`.
 
-- same canonical bundle manifest;
+Instead require:
+
+- `analysis/generated/nds/<prefix>/arm9.bin` exists and its bytes exactly equal the fixture's canonical ARM9 range;
 - checkpoint validates at revision 2;
-- some completed action has `outcome: completed` and exact manifest evidence path/hash.
-
-Do not grade statement/action prose.
+- a completed action with `outcome: completed` has an exact current path/SHA evidence reference to `arm9.bin`.
 
 Commit: `feat: score controller analysis and checkpoint scenarios`.
 
@@ -170,35 +138,29 @@ Commit: `feat: score controller analysis and checkpoint scenarios`.
 
 ### `verified-mutation`
 
-Preparation creates `plans/valid-mutation.json`:
-
-- format/version 1;
-- exact generated source SHA;
-- one `replace-bytes` ARM9 operation at a known relative offset;
-- exact original bytes and same-size replacement.
+Preparation writes a format-version-1 exact-SHA manifest containing one guarded same-size ARM9 `replace-bytes` operation.
 
 Scoring:
 
-1. source identity already passed shared preflight;
-2. load manifest using compiled mutation manifest service;
-3. call compiled `verifyPublishedNdsMutationBuild` for fresh deterministic revalidation;
-4. require verification status `passed` and zero unexpected changed bytes;
-5. require checkpoint revision 1;
-6. require a completed action with `outcome: completed` and exact hash-bound evidence to that build's `verification.json`.
+1. load the manifest through compiled `loadNdsMutationManifest`;
+2. call compiled `verifyPublishedNdsMutationBuild` for fresh deterministic revalidation;
+3. require verification status `passed` and zero unexpected changed bytes;
+4. require checkpoint revision 1;
+5. require a completed action with an exact current path/SHA evidence reference to the build's `verification.json`.
 
 ### `guard-rejection`
 
-Preparation creates `plans/invalid-guard.json` with deliberately incorrect expected original ARM9 bytes.
+Preparation writes an exact-SHA manifest with deliberately incorrect expected original ARM9 bytes.
 
 Scoring:
 
-- source identity passes;
-- exact source-SHA controlled output root must be absent or contain no build directories;
-- checkpoint validates at revision 1;
-- at least one completed action has `outcome: failed`;
-- at least one next action exists.
+1. load through compiled mutation manifest service;
+2. call compiled `compileNdsMutationPlan`;
+3. require failure with **exact category** `original-byte-guard-failed`—missing/corrupt/different-invalid manifests must not receive credit;
+4. require the exact source-SHA controlled output root to be absent or contain no build directories;
+5. require checkpoint revision 1 with at least one failed completed action and at least one next action.
 
-No failure narrative wording is graded.
+No narrative wording is graded.
 
 Commit: `feat: score controller mutation safety scenarios`.
 
@@ -214,41 +176,28 @@ Commit: `feat: score controller mutation safety scenarios`.
 - `.github/workflows/package.yml`
 - `tests/controller-benchmark.test.ts`
 
-### Documentation
+Documentation must define:
 
-Document:
-
-- build RE-MCP before source-tree benchmark use;
+- build before source-tree benchmark use;
 - `prepare` → controller run → `score` flow;
-- exact fixed prompt use;
-- fresh workspace per controller/scenario pair;
+- exact fixed-prompt use and fresh workspace per controller/scenario pair;
 - no manual repair before scoring;
-- controller label is non-authoritative metadata;
-- elapsed time/cost may be recorded externally but is not RE-MCP evidence;
+- controller label/time/cost are non-authoritative metadata;
 - all four scenarios must pass for functional Controller Independence 1.0 acceptance;
-- CI does not claim a real Copilot/Continue/provider or physical DeSmuME run.
+- CI does not claim a real Copilot/Continue/provider or Physical DeSmuME run.
 
-### Package smoke
+Package must ship the registry, harness, guide, smoke, and compiled services.
 
-Assembled package must include:
+Assembled-package smoke must:
 
-- `benchmarks/controller/scenarios.json`;
-- `scripts/controller-benchmark.mjs`;
-- `docs/controller-benchmark.md`;
-- `scripts/check-controller-benchmark-install.mjs`.
-
-Smoke uses compiled modules and temporary workspaces only. It must:
-
-1. prepare all four scenarios and parse each generated ROM;
-2. prove preparing into a non-empty directory fails without changing existing contents;
-3. seed/complete `analysis-handoff` using compiled extraction + checkpoint services, then score PASS;
-4. score a freshly prepared incomplete `analysis-handoff` as FAIL;
+1. prepare every scenario and canonically parse each generated ROM;
+2. prove preparation into a non-empty directory fails without changing its sentinel;
+3. complete `analysis-handoff` using compiled bundle extraction + checkpoint services, then score PASS;
+4. complete `checkpoint-resume` using compiled ARM9 component extraction + checkpoint revision update, then score PASS;
 5. complete `verified-mutation` using compiled mutation build + checkpoint services, then score PASS;
-6. prove a freshly prepared `guard-rejection` has no output and can be completed with a failed checkpoint state, then score PASS;
-7. verify all benchmark source ROMs remain byte-identical;
+6. complete `guard-rejection` with no output plus a failed-action checkpoint, then score PASS while the scorer independently proves exact canonical guard failure;
+7. score an untouched `analysis-handoff` as FAIL;
 8. perform no network/provider call.
-
-Package workflow runs this after the existing controller-fallback smoke and before artifact publication.
 
 Successful smoke prints exactly:
 
@@ -263,9 +212,9 @@ Commit: `test: ship controller benchmark package acceptance`.
 ## Task 6 — Exact-head review and merge
 
 1. Require exact-head CI and Package success.
-2. Review full diff for provider/network calls, private ROM inputs, generic workspace writers, transcript/CoT capture, or duplicated RE-MCP trust logic.
+2. Review the full diff for provider/network calls, private ROM inputs, generic workspace writers, transcript/hidden-reasoning capture, stale scenario semantics, or duplicated trust logic.
 3. Require changed production `src/` behavior to remain zero.
-4. Require zero unresolved review threads and current head mergeable.
-5. Update PR body with RED→GREEN history, package benchmark smoke evidence, exact SHA, and native/provider acceptance exclusions.
+4. Require zero unresolved review threads and a mergeable current head.
+5. Update the PR body with RED→GREEN history, review fixes, package benchmark-smoke evidence, exact SHA, and live/native exclusions.
 6. Mark ready and merge with `expected_head_sha` under standing user authorization.
-7. Verify merge on `main`.
+7. Verify the merge on `main`.
