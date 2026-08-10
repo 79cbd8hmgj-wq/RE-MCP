@@ -31,7 +31,8 @@ export type NdsFunctionErrorCategory =
 export type NdsBlzErrorCategory =
   | "malformed-blz"
   | "blz-output-size-mismatch"
-  | "blz-output-limit";
+  | "blz-output-limit"
+  | "blz-recompression-failed";
 
 export type NdsCompressedOverlayErrorCategory =
   | "compressed-overlay-runtime-unavailable";
