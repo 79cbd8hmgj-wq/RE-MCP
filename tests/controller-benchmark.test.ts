@@ -90,7 +90,7 @@ test("benchmark CLI prepares synthetic workspaces and scores through compiled RE
   assertNoProviderOrTranscriptSurface(source);
 });
 
-test("benchmark scoring contract covers exact evidence binding and guard rejection", async () => {
+test("benchmark scoring contract covers exact evidence binding and exact guard rejection category", async () => {
   const source = await readText("scripts/controller-benchmark.mjs");
 
   for (const phrase of [
@@ -100,6 +100,7 @@ test("benchmark scoring contract covers exact evidence binding and guard rejecti
     "checkpoint-evidence-bound",
     "build-freshly-verified",
     "guard-rejected-no-output",
+    "original-byte-guard-failed",
     "outcome",
     "failed",
     "completed",
@@ -107,6 +108,11 @@ test("benchmark scoring contract covers exact evidence binding and guard rejecti
     assert.match(source, new RegExp(escapeRegex(phrase), "i"));
   }
 
+  assert.match(
+    source,
+    /rejectedByCanonicalPlanner\s*=\s*[^;]*original-byte-guard-failed/s,
+  );
+  assert.doesNotMatch(source, /catch\s*\{\s*rejectedByCanonicalPlanner\s*=\s*true;/s);
   assert.doesNotMatch(source, /statement\s*===/);
   assert.doesNotMatch(source, /description\s*===/);
 });
