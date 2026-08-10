@@ -130,7 +130,7 @@ export function decodeNdsBlz(
 
   const encodedStart = passthroughSize;
   const encodedEnd = paddingStart;
-  if (encodedEnd - encodedStart !== encodedRegionSize) {
+  if (encodedEnd - encodedStart !== decodedRegionSize) {
     malformed("NDS BLZ encoded-region geometry is inconsistent");
   }
 
@@ -347,7 +347,6 @@ function findBestMatch(
     const maxLength = Math.min(
       MAX_BLZ_MATCH_LENGTH,
       decoded.length - position,
-      displacement,
     );
     let length = 0;
     while (
