@@ -9,10 +9,22 @@ import {
   serializeCanonicalJson,
 } from "../src/services/nds/mutation/manifest.js";
 import {
-  compileNdsMutationPlan,
+  compileNdsMutationPlan as compileAnyNdsMutationPlan,
+  isNdsResolvedMutationPlanV2,
   serializeResolvedNdsMutationPlan,
+  type NdsResolvedMutationPlanV1,
 } from "../src/services/nds/mutation/planner.js";
 import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
+
+async function compileNdsMutationPlan(
+  ...args: Parameters<typeof compileAnyNdsMutationPlan>
+): Promise<NdsResolvedMutationPlanV1> {
+  const plan = await compileAnyNdsMutationPlan(...args);
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    assert.fail("Expected legacy planner test to produce a v1 resolved plan");
+  }
+  return plan;
+}
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
