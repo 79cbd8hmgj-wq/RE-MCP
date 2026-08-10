@@ -60,6 +60,27 @@ function sourceMismatch(message: string): NdsError<"source-rom-mismatch"> {
   return new NdsError("source-rom-mismatch", message);
 }
 
+export function assertNdsDecodedOverlaySourceGuards(
+  index: number,
+  actualStoredSha256: string,
+  expectedStoredSha256: string,
+  actualRuntimeSha256: string,
+  expectedRuntimeSha256: string,
+): void {
+  if (actualStoredSha256 !== expectedStoredSha256) {
+    throw new NdsError(
+      "decoded-overlay-guard-failed",
+      `Mutation operation ${index} source stored overlay SHA-256 is ${actualStoredSha256}, expected ${expectedStoredSha256}`,
+    );
+  }
+  if (actualRuntimeSha256 !== expectedRuntimeSha256) {
+    throw new NdsError(
+      "decoded-overlay-guard-failed",
+      `Mutation operation ${index} source decoded overlay SHA-256 is ${actualRuntimeSha256}, expected ${expectedRuntimeSha256}`,
+    );
+  }
+}
+
 export async function assertNdsMutationSourceIdentity(
   map: NdsRomMap,
   expectedSha256: string,
