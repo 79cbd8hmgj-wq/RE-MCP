@@ -1,4 +1,3 @@
-import { NdsError } from "../errors.js";
 import type { GuardedNdsMutationOperation } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
 import {
@@ -6,6 +5,7 @@ import {
   serializeResolvedNdsMutationPlan,
   type NdsResolvedMutationPlan,
   type NdsResolvedMutationPlanV1,
+  type NdsResolvedMutationPlanV2,
 } from "./planner.js";
 import type { NdsResolvedMutationComponent } from "./selectors.js";
 import type {
@@ -241,18 +241,217 @@ function verificationEvidence(
   };
 }
 
+interface NdsChangedComponentEvidenceV2 {
+  readonly component: string;
+  readonly processor: "arm9" | "arm7" | null;
+  readonly overlayId: number | null;
+  readonly fileId: number | null;
+  readonly filePath: string | null;
+  readonly romStart: number;
+  readonly romEnd: number;
+  readonly size: number;
+  readonly compressed: boolean;
+  readonly operationIndexes: readonly number[];
+}
+
+function v2ChangedComponents(
+  plan: NdsResolvedMutationPlanV2,
+): readonly NdsChangedComponentEvidenceV2[] {
+  const components: NdsChangedComponentEvidenceV2[] = [];
+  for (const resolved of plan.operations) {
+    if (resolved.kind === "fixed") {
+      const component = normalizePhysicalComponent(resolved.operation.component);
+      components.push({
+        component: component.component,
+        processor: component.processor,
+        overlayId: component.overlayId,
+        fileId: component.fileId,
+        filePath: component.filePath,
+        romStart: component.romStart,
+        romEnd: component.romEnd,
+        size: component.size,
+        compressed: component.compressed,
+        operationIndexes: [resolved.index],
+      });
+      continue;
+    }
+    const fileId = resolved.kind === "decoded-overlay"
+      ? resolved.overlay.fileId
+      : resolved.file.fileId;
+    const range = plan.finalFat[fileId]!;
+    if (resolved.kind === "decoded-overlay") {
+      components.push({
+        component: `${resolved.overlay.processor}-overlay`,
+        processor: resolved.overlay.processor,
+        overlayId: resolved.overlay.overlayId,
+        fileId,
+        filePath: null,
+        romStart: range.startOffset,
+        romEnd: range.endOffset,
+        size: range.endOffset - range.startOffset,
+        compressed: true,
+        operationIndexes: [resolved.index],
+      });
+    } else {
+      components.push({
+        component: "nitrofs-file",
+        processor: null,
+        overlayId: null,
+        fileId,
+        filePath: resolved.file.path ?? null,
+        romStart: range.startOffset,
+        romEnd: range.endOffset,
+        size: range.endOffset - range.startOffset,
+        compressed: false,
+        operationIndexes: [resolved.index],
+      });
+    }
+  }
+  return components.sort(
+    (left, right) => left.romStart - right.romStart
+      || left.romEnd - right.romEnd
+      || left.operationIndexes[0]! - right.operationIndexes[0]!,
+  );
+}
+
+function v2OperationEvidence(
+  plan: NdsResolvedMutationPlanV2,
+  verification: NdsMutationVerificationResult,
+): readonly unknown[] {
+  const verifiedByIndex = operationVerificationByIndex(verification);
+  return plan.operations.map((resolved) => {
+    const postBuild = verifiedByIndex.get(resolved.index);
+    if (postBuild === undefined) {
+      throw new Error(`Missing post-build verification for rebuild operation ${resolved.index}`);
+    }
+    if (resolved.kind === "fixed") {
+      return operationEvidence(resolved.operation, postBuild);
+    }
+    if (resolved.kind === "relocated-file") {
+      return {
+        index: resolved.index,
+        type: "replace-nitrofs-file",
+        status: postBuild.status,
+        fileId: resolved.file.fileId,
+        filePath: resolved.file.filePath,
+        guard: {
+          kind: "component-sha256",
+          expectedOriginalSha256: resolved.file.sourceSha256,
+        },
+        replacement: {
+          kind: "artifact",
+          artifact: resolved.file.replacementWorkspacePath,
+          sha256: resolved.file.replacementSha256,
+          size: resolved.file.replacementSize,
+        },
+        postBuild: {
+          status: postBuild.status,
+          romStart: postBuild.romStart,
+          romEnd: postBuild.romEnd,
+          outputComponentSha256: resolved.file.replacementSha256,
+        },
+      };
+    }
+    if (resolved.kind === "new-file") {
+      return {
+        index: resolved.index,
+        type: "add-nitrofs-file",
+        status: postBuild.status,
+        fileId: resolved.file.fileId,
+        filePath: resolved.file.path,
+        replacement: {
+          kind: "artifact",
+          artifact: resolved.file.replacementWorkspacePath,
+          sha256: resolved.file.replacementSha256,
+          size: resolved.file.replacementSize,
+        },
+        postBuild: {
+          status: postBuild.status,
+          romStart: postBuild.romStart,
+          romEnd: postBuild.romEnd,
+          outputComponentSha256: resolved.file.replacementSha256,
+        },
+      };
+    }
+    return {
+      index: resolved.index,
+      type: "replace-decoded-overlay",
+      status: postBuild.status,
+      processor: resolved.overlay.processor,
+      overlayId: resolved.overlay.overlayId,
+      fileId: resolved.overlay.fileId,
+      guard: {
+        expectedStoredSha256: resolved.overlay.sourceStoredSha256,
+        expectedRuntimeSha256: resolved.overlay.sourceRuntimeSha256,
+      },
+      replacement: {
+        kind: "runtime-artifact",
+        artifact: resolved.overlay.replacementWorkspacePath,
+        runtimeSha256: resolved.overlay.replacementRuntimeSha256,
+        runtimeSize: resolved.overlay.runtimeSize,
+        encodedSha256: resolved.overlay.encodedSha256,
+        encodedSize: resolved.overlay.encodedSize,
+      },
+      postBuild: {
+        status: postBuild.status,
+        romStart: postBuild.romStart,
+        romEnd: postBuild.romEnd,
+        runtimeSha256: resolved.overlay.replacementRuntimeSha256,
+      },
+    };
+  });
+}
+
+function verificationEvidenceV2(
+  plan: NdsResolvedMutationPlanV2,
+  verification: NdsMutationVerificationResult,
+  components: readonly NdsChangedComponentEvidenceV2[],
+): unknown {
+  if (verification.rebuildSemanticsVerified !== true) {
+    throw new Error("Missing successful rebuild semantic verification for v2 evidence");
+  }
+  return {
+    status: verification.status,
+    formatVersion: 2,
+    rebuildContractVersion: plan.rebuildContractVersion,
+    blzEncoderContractVersion: plan.blzEncoderContractVersion,
+    rebuildSemanticsVerified: true,
+    source: {
+      rom: plan.sourceWorkspacePath,
+      sha256: plan.sourceSha256,
+      size: plan.sourceSize,
+      unchanged: verification.sourceUnchanged,
+    },
+    output: {
+      rom: `output/nds/${plan.sourceSha256Prefix}/${plan.buildId}/${plan.outputFilename}`,
+      sha256: verification.outputSha256,
+      size: verification.outputSize,
+      logicalUsedSize: plan.layout.logicalUsedSize,
+      deviceCapacity: plan.layout.deviceCapacity,
+    },
+    manifestSha256: plan.manifestSha256,
+    buildId: plan.buildId,
+    operationCount: plan.operations.length,
+    changedComponentCount: components.length,
+    changedByteCount: verification.changedByteCount,
+    canonicalOutputParse: "passed",
+    unexpectedChangedBytes: verification.unexpectedChangedBytes,
+    compressedOverlays: verification.compressedOverlays,
+    operations: v2OperationEvidence(plan, verification),
+  };
+}
+
 export function renderNdsMutationEvidence(
   loadedManifest: LoadedNdsMutationManifest,
   plan: NdsResolvedMutationPlan,
   verification: NdsMutationVerificationResult,
 ): readonly NdsMutationEvidenceFile[] {
-  if (isNdsResolvedMutationPlanV2(plan)) {
-    throw new NdsError(
-      "unsupported-rebuild-target",
-      "NDS mutation v2 planning is available, but v2 evidence reporting is not enabled until rebuild reporting is implemented",
-    );
-  }
-  const components = resolvedChangedComponents(plan);
+  const components = isNdsResolvedMutationPlanV2(plan)
+    ? v2ChangedComponents(plan)
+    : resolvedChangedComponents(plan);
+  const verificationReport = isNdsResolvedMutationPlanV2(plan)
+    ? verificationEvidenceV2(plan, verification, components as readonly NdsChangedComponentEvidenceV2[])
+    : verificationEvidence(plan, verification, components as readonly NdsChangedComponentEvidence[]);
   return [
     {
       filename: "mutation-manifest.json",
@@ -264,7 +463,7 @@ export function renderNdsMutationEvidence(
     },
     {
       filename: "verification.json",
-      bytes: prettyJson(verificationEvidence(plan, verification, components)),
+      bytes: prettyJson(verificationReport),
     },
     {
       filename: "changed-components.json",
