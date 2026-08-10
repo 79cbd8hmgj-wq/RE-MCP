@@ -30,6 +30,7 @@ jobs:
           npm run build
           node --check scripts/ghidra-acceptance.mjs
           node --check scripts/ghidra-inspection-hardening-acceptance.mjs
+          node --check scripts/ghidra-runtime-correlation-acceptance.mjs
 
       - name: Download and verify Ghidra 12.1.2
         shell: bash
@@ -67,6 +68,18 @@ jobs:
           export RE_MCP_WORKSPACE_ROOT="$workspace"
           export RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC"
           node scripts/ghidra-inspection-hardening-acceptance.mjs "$workspace" fixture.nds
+
+      - name: Run real Ghidra runtime correlation acceptance
+        shell: bash
+        env:
+          RE_MCP_GHIDRA_TIMEOUT_MS: '900000'
+          RE_MCP_MAX_OUTPUT_BYTES: '1000000'
+        run: |
+          set -euo pipefail
+          workspace="$RUNNER_TEMP/re-mcp-ghidra-workspace"
+          export RE_MCP_WORKSPACE_ROOT="$workspace"
+          export RE_MCP_GHIDRA_HOME="$RUNNER_TEMP/ghidra_12.1.2_PUBLIC"
+          node scripts/ghidra-runtime-correlation-acceptance.mjs "$workspace" fixture.nds
 
       - name: Reject hidden Ghidra script errors
         if: always()
