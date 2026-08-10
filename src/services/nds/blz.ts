@@ -113,9 +113,6 @@ export function decodeNdsBlz(
 
   const encodedStart = passthroughSize;
   const encodedEnd = paddingStart;
-  if (encodedEnd - encodedStart !== decodedRegionSize) {
-    malformed("NDS BLZ encoded-region geometry is inconsistent");
-  }
 
   const output = Buffer.allocUnsafe(expectedDecodedSize);
   if (passthroughSize > 0) {
@@ -178,6 +175,10 @@ export function decodeNdsBlz(
         decodedCount += 1;
       }
     }
+  }
+
+  if (readIndex !== encodedStart - 1) {
+    malformed("NDS BLZ stream contains unused encoded bytes");
   }
 
   return {
