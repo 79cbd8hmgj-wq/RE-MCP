@@ -9,10 +9,22 @@ import {
   serializeCanonicalJson,
 } from "../src/services/nds/mutation/manifest.js";
 import {
-  compileNdsMutationPlan,
+  compileNdsMutationPlan as compileAnyNdsMutationPlan,
+  isNdsResolvedMutationPlanV2,
   serializeResolvedNdsMutationPlan,
+  type NdsResolvedMutationPlanV1,
 } from "../src/services/nds/mutation/planner.js";
 import { createMutationFixture } from "./helpers/nds-mutation-fixture.js";
+
+async function compileNdsMutationPlan(
+  ...args: Parameters<typeof compileAnyNdsMutationPlan>
+): Promise<NdsResolvedMutationPlanV1> {
+  const plan = await compileAnyNdsMutationPlan(...args);
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    assert.fail("Expected legacy planner test to produce a v1 resolved plan");
+  }
+  return plan;
+}
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -80,6 +92,67 @@ test("uses the exact canonical build-identity JSON contract", async () => {
     replacementArtifactSha256: [artifact.sha256],
   });
   assert.equal(plan.buildId, sha256Text(canonicalIdentity));
+});
+
+test("freezes the literal v1 resolved-plan and build identity", async () => {
+  const fixture = await createMutationFixture();
+  const manifestPath = await fixture.writeManifest({}, "plans/v1-freeze.json");
+  const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+  const plan = await compileNdsMutationPlan(fixture.map, fixture.directory, loaded);
+
+  assert.equal(
+    loaded.sha256,
+    "424caa0dc8c0f0176ec27bb15394d9666823a4ca9bfb1ab5fe48d4e1ecf510a3",
+  );
+  assert.equal(
+    plan.buildId,
+    "5803c5ca1514d8ef96de786646b5949ecdd4c768ce1fc2a8ed9e43b0f58429f8",
+  );
+  assert.deepEqual(serializeResolvedNdsMutationPlan(plan), {
+    source: {
+      rom: "fixture.nds",
+      sha256: "425c5b627aa2ff9269b830b7a6ca68b73e1a363761d49ea358f61a54015fa3dd",
+      sha256Prefix: "425c5b627aa2ff92",
+      size: 24576,
+    },
+    manifest: {
+      path: "plans/v1-freeze.json",
+      sha256: "424caa0dc8c0f0176ec27bb15394d9666823a4ca9bfb1ab5fe48d4e1ecf510a3",
+    },
+    output: {
+      filename: "test-mod.nds",
+      buildId: "5803c5ca1514d8ef96de786646b5949ecdd4c768ce1fc2a8ed9e43b0f58429f8",
+    },
+    immutableStructuralRanges: [
+      { romStart: 0, romEnd: 512, labels: ["header"] },
+      { romStart: 2048, romEnd: 2144, labels: ["fnt"] },
+      { romStart: 2304, romEnd: 2328, labels: ["fat"] },
+      { romStart: 2560, romEnd: 2624, labels: ["arm9-overlay-table"] },
+    ],
+    operations: [{
+      index: 0,
+      type: "replace-bytes",
+      target: { component: "arm9", relativeOffset: 4 },
+      component: {
+        component: "arm9",
+        processor: "arm9",
+        overlayId: null,
+        fileId: null,
+        filePath: null,
+        romStart: 512,
+        romEnd: 1024,
+        size: 512,
+        compressed: false,
+        overlayOwners: [],
+      },
+      romStart: 516,
+      romEnd: 518,
+      size: 2,
+      expected: "a9a9",
+      replacement: "1234",
+    }],
+    applicationOrder: [0],
+  });
 });
 
 test("rejects any physical overlap, including identical overlap", async () => {

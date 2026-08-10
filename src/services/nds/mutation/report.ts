@@ -1,8 +1,11 @@
+import { NdsError } from "../errors.js";
 import type { GuardedNdsMutationOperation } from "./guards.js";
 import type { LoadedNdsMutationManifest } from "./manifest.js";
 import {
+  isNdsResolvedMutationPlanV2,
   serializeResolvedNdsMutationPlan,
   type NdsResolvedMutationPlan,
+  type NdsResolvedMutationPlanV1,
 } from "./planner.js";
 import type { NdsResolvedMutationComponent } from "./selectors.js";
 import type {
@@ -80,7 +83,7 @@ function componentIdentityKey(component: NdsResolvedMutationComponent): string {
 }
 
 function resolvedChangedComponents(
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
 ): readonly NdsChangedComponentEvidence[] {
   const grouped = new Map<string, {
     readonly component: NdsResolvedMutationComponent;
@@ -199,7 +202,7 @@ function operationEvidence(
 }
 
 function verificationEvidence(
-  plan: NdsResolvedMutationPlan,
+  plan: NdsResolvedMutationPlanV1,
   verification: NdsMutationVerificationResult,
   components: readonly NdsChangedComponentEvidence[],
 ): unknown {
@@ -243,6 +246,12 @@ export function renderNdsMutationEvidence(
   plan: NdsResolvedMutationPlan,
   verification: NdsMutationVerificationResult,
 ): readonly NdsMutationEvidenceFile[] {
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    throw new NdsError(
+      "unsupported-rebuild-target",
+      "NDS mutation v2 planning is available, but v2 evidence reporting is not enabled until rebuild reporting is implemented",
+    );
+  }
   const components = resolvedChangedComponents(plan);
   return [
     {

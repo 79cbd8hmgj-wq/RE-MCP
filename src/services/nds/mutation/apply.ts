@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { NdsError } from "../errors.js";
 import type { GuardedNdsMutationOperation } from "./guards.js";
-import type { NdsResolvedMutationPlan } from "./planner.js";
+import {
+  isNdsResolvedMutationPlanV2,
+  type NdsResolvedMutationPlan,
+} from "./planner.js";
 import type { NdsMutationStage } from "./staging.js";
 
 const COPY_CHUNK_BYTES = 64 * 1024;
@@ -87,6 +90,12 @@ export async function applyNdsMutationPlan(
   stage: NdsMutationStage,
   io: NdsMutationApplyIo = defaultApplyIo,
 ): Promise<void> {
+  if (isNdsResolvedMutationPlanV2(plan)) {
+    throw new NdsError(
+      "unsupported-rebuild-target",
+      "NDS mutation v2 planning is available, but v2 materialization is not enabled until the rebuild writer is implemented",
+    );
+  }
   if (stage.buildId !== plan.buildId) {
     throw new NdsError("staging-failed", "Mutation stage build identity does not match the resolved plan");
   }

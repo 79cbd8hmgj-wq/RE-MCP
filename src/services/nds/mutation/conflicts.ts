@@ -1,6 +1,7 @@
 import { NdsError } from "../errors.js";
 import type { NdsRelocatedFilePlan } from "./filesystem-plan.js";
 import type { GuardedNdsMutationOperation } from "./guards.js";
+import type { NdsDecodedOverlayReplacementPlan } from "./overlay-plan.js";
 
 function rangesOverlap(
   leftStart: number,
@@ -38,6 +39,7 @@ export function assertNoNdsMutationConflicts(
 export function assertNoNdsRebuildLogicalConflicts(
   fixedOperations: readonly GuardedNdsMutationOperation[],
   relocatedFiles: readonly NdsRelocatedFilePlan[],
+  decodedOverlays: readonly NdsDecodedOverlayReplacementPlan[] = [],
 ): void {
   assertNoNdsMutationConflicts(fixedOperations);
 
@@ -64,6 +66,53 @@ export function assertNoNdsRebuildLogicalConflicts(
         throw new NdsError(
           "mutation-overlap",
           `Fixed mutation operation ${fixed.index} overlaps variable replacement operation ${relocated.operationIndex} within source NitroFS file ${relocated.fileId}`,
+        );
+      }
+    }
+  }
+
+  const overlayOwners = new Map<string, NdsDecodedOverlayReplacementPlan>();
+  const overlayFiles = new Map<number, NdsDecodedOverlayReplacementPlan>();
+  for (const overlay of decodedOverlays) {
+    const key = `${overlay.processor}:${overlay.overlayId}`;
+    const duplicate = overlayOwners.get(key);
+    if (duplicate !== undefined) {
+      throw new NdsError(
+        "unsupported-rebuild-target",
+        `Mutation operations ${duplicate.operationIndex} and ${overlay.operationIndex} both replace decoded ${overlay.processor.toUpperCase()} overlay ${overlay.overlayId}`,
+      );
+    }
+    overlayOwners.set(key, overlay);
+
+    const fileOwner = overlayFiles.get(overlay.fileId);
+    if (fileOwner !== undefined) {
+      throw new NdsError(
+        "unsupported-rebuild-target",
+        `Decoded overlay operations ${fileOwner.operationIndex} and ${overlay.operationIndex} share NitroFS backing file ${overlay.fileId}`,
+      );
+    }
+    overlayFiles.set(overlay.fileId, overlay);
+
+    const relocated = byFileId.get(overlay.fileId);
+    if (relocated !== undefined) {
+      throw new NdsError(
+        "unsupported-rebuild-target",
+        `Mutation operations ${relocated.operationIndex} and ${overlay.operationIndex} both replace overlay backing NitroFS file ${overlay.fileId}`,
+      );
+    }
+
+    for (const fixed of fixedOperations) {
+      if (
+        rangesOverlap(
+          fixed.romStart,
+          fixed.romEnd,
+          overlay.sourceStoredStart,
+          overlay.sourceStoredEnd,
+        )
+      ) {
+        throw new NdsError(
+          "mutation-overlap",
+          `Fixed mutation operation ${fixed.index} overlaps decoded-overlay operation ${overlay.operationIndex} within source overlay backing file ${overlay.fileId}`,
         );
       }
     }
