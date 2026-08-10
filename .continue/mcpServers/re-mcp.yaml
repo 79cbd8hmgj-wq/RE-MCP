@@ -4,6 +4,7 @@ schema: v1
 
 mcpServers:
   - name: RE-MCP
+    type: stdio
     command: node
     args:
       - dist/index.js
