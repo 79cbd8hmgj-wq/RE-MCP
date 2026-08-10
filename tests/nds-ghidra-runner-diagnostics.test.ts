@@ -47,7 +47,7 @@ test("nonzero Ghidra exits retain bounded stdout and stderr diagnostics", async 
 test("Ghidra failure diagnostics are clipped independently of the process capture ceiling", async () => {
   await assert.rejects(
     runGhidraInvocation(
-      invocation("console.error('PREFIX-' + 'x'.repeat(20000) + '-GHIDRA_TAIL'); process.exit(2)"),
+      invocation("process.stderr.write('PREFIX-' + 'x'.repeat(20000) + '-GHIDRA_TAIL\\n', () => process.exit(2))"),
       config(),
     ),
     (error: unknown) => {

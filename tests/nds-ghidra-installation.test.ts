@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -62,8 +62,8 @@ test("Ghidra installation validation accepts supported 12.x with exact ARM langu
   const fixture = await fakeInstallation();
   try {
     const result = await validateGhidraInstallation(config(fixture.root));
-    assert.equal(result.home, fixture.root);
-    assert.equal(result.analyzeHeadless, fixture.analyzeHeadless);
+    assert.equal(result.home, await realpath(fixture.root));
+    assert.equal(result.analyzeHeadless, await realpath(fixture.analyzeHeadless));
     assert.equal(result.version, "12.1.2");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
