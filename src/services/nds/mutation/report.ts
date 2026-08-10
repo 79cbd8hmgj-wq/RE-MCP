@@ -298,7 +298,7 @@ function v2ChangedComponents(
         processor: null,
         overlayId: null,
         fileId,
-        filePath: resolved.file.path ?? null,
+        filePath: resolved.kind === "new-file" ? resolved.file.path : resolved.file.filePath,
         romStart: range.startOffset,
         romEnd: range.endOffset,
         size: range.endOffset - range.startOffset,
@@ -386,7 +386,7 @@ function v2OperationEvidence(
       },
       replacement: {
         kind: "runtime-artifact",
-        artifact: resolved.overlay.replacementWorkspacePath,
+        artifact: resolved.overlay.replacementRuntimeWorkspacePath,
         runtimeSha256: resolved.overlay.replacementRuntimeSha256,
         runtimeSize: resolved.overlay.runtimeSize,
         encodedSha256: resolved.overlay.encodedSha256,
