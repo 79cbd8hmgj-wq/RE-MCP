@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { open as nativeOpen } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +8,7 @@ import type { GuardedNdsMutationOperation } from "./guards.js";
 import {
   isNdsResolvedMutationPlanV2,
   type NdsResolvedMutationPlan,
+  type NdsResolvedMutationPlanV2,
 } from "./planner.js";
 import type { NdsMutationStage } from "./staging.js";
 
@@ -19,6 +21,10 @@ export interface NdsMutationApplyIo {
 const defaultApplyIo: NdsMutationApplyIo = {
   open: nativeOpen,
 };
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 async function writeAll(
   handle: FileHandle,
@@ -85,17 +91,105 @@ async function applyComponentOperation(
   }
 }
 
+async function applyGuardedOperation(
+  stagedHandle: FileHandle,
+  operation: GuardedNdsMutationOperation,
+  io: NdsMutationApplyIo,
+): Promise<void> {
+  if (operation.type === "replace-bytes") {
+    await applyByteOperation(stagedHandle, operation);
+  } else {
+    await applyComponentOperation(stagedHandle, operation, io);
+  }
+}
+
+async function applyV1Plan(
+  plan: Exclude<NdsResolvedMutationPlan, NdsResolvedMutationPlanV2>,
+  stagedHandle: FileHandle,
+  io: NdsMutationApplyIo,
+): Promise<void> {
+  for (const operation of plan.applicationOperations) {
+    await applyGuardedOperation(stagedHandle, operation, io);
+  }
+  const info = await stagedHandle.stat();
+  if (info.size !== plan.sourceSize) {
+    throw new NdsError(
+      "staging-failed",
+      `Staged ROM size changed to ${info.size} bytes, expected ${plan.sourceSize}`,
+    );
+  }
+}
+
+function assertV2SegmentIntegrity(plan: NdsResolvedMutationPlanV2): void {
+  let previousEnd = plan.sourceSize;
+  for (const segment of plan.layout.segments) {
+    if (
+      segment.start < plan.sourceSize
+      || segment.end < segment.start
+      || segment.end > plan.layout.finalSize
+      || segment.size !== segment.end - segment.start
+      || segment.bytes.length !== segment.size
+      || segment.start < previousEnd
+    ) {
+      throw new NdsError(
+        "staging-failed",
+        `Resolved rebuild segment ${segment.ownerId} has invalid append-only geometry`,
+      );
+    }
+    if (sha256(segment.bytes) !== segment.sha256) {
+      throw new NdsError(
+        "staging-failed",
+        `Resolved rebuild segment ${segment.ownerId} bytes do not match planned SHA-256`,
+      );
+    }
+    previousEnd = segment.end;
+  }
+  if (
+    plan.layout.finalSize < plan.sourceSize
+    || plan.layout.logicalUsedSize > plan.layout.finalSize
+    || plan.headerPlan.outputHeaderBytes.length !== 0x160
+  ) {
+    throw new NdsError(
+      "staging-failed",
+      "Resolved v2 rebuild plan has invalid final-size or header geometry",
+    );
+  }
+}
+
+async function applyV2Plan(
+  plan: NdsResolvedMutationPlanV2,
+  stagedHandle: FileHandle,
+  io: NdsMutationApplyIo,
+): Promise<void> {
+  assertV2SegmentIntegrity(plan);
+
+  // Extend first so every unwritten gap and capacity-padding byte is deterministically zero.
+  await stagedHandle.truncate(plan.layout.finalSize);
+
+  for (const resolved of plan.operations) {
+    if (resolved.kind === "fixed") {
+      await applyGuardedOperation(stagedHandle, resolved.operation, io);
+    }
+  }
+  for (const segment of plan.layout.segments) {
+    await writeAll(stagedHandle, segment.bytes, segment.start);
+  }
+  await writeAll(stagedHandle, plan.headerPlan.outputHeaderBytes, 0);
+
+  const info = await stagedHandle.stat();
+  if (info.size !== plan.layout.finalSize) {
+    throw new NdsError(
+      "staging-failed",
+      `Rebuilt staged ROM size is ${info.size} bytes, expected ${plan.layout.finalSize}`,
+    );
+  }
+}
+
 export async function applyNdsMutationPlan(
   plan: NdsResolvedMutationPlan,
   stage: NdsMutationStage,
   io: NdsMutationApplyIo = defaultApplyIo,
 ): Promise<void> {
-  if (isNdsResolvedMutationPlanV2(plan)) {
-    throw new NdsError(
-      "unsupported-rebuild-target",
-      "NDS mutation v2 planning is available, but v2 materialization is not enabled until the rebuild writer is implemented",
-    );
-  }
   if (stage.buildId !== plan.buildId) {
     throw new NdsError("staging-failed", "Mutation stage build identity does not match the resolved plan");
   }
@@ -106,19 +200,10 @@ export async function applyNdsMutationPlan(
   const stagedHandle = await io.open(stage.stagedRomPath, "r+");
   let completed = false;
   try {
-    for (const operation of plan.applicationOperations) {
-      if (operation.type === "replace-bytes") {
-        await applyByteOperation(stagedHandle, operation);
-      } else {
-        await applyComponentOperation(stagedHandle, operation, io);
-      }
-    }
-    const info = await stagedHandle.stat();
-    if (info.size !== plan.sourceSize) {
-      throw new NdsError(
-        "staging-failed",
-        `Staged ROM size changed to ${info.size} bytes, expected ${plan.sourceSize}`,
-      );
+    if (isNdsResolvedMutationPlanV2(plan)) {
+      await applyV2Plan(plan, stagedHandle, io);
+    } else {
+      await applyV1Plan(plan, stagedHandle, io);
     }
     await stagedHandle.sync();
     completed = true;
