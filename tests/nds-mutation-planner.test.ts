@@ -82,6 +82,18 @@ test("uses the exact canonical build-identity JSON contract", async () => {
   assert.equal(plan.buildId, sha256Text(canonicalIdentity));
 });
 
+test("freezes the literal v1 resolved-plan and build identity", async () => {
+  const fixture = await createMutationFixture();
+  const manifestPath = await fixture.writeManifest({}, "plans/v1-freeze.json");
+  const loaded = await loadNdsMutationManifest(fixture.directory, manifestPath);
+  const plan = await compileNdsMutationPlan(fixture.map, fixture.directory, loaded);
+  assert.fail(`V1_FREEZE=${JSON.stringify({
+    manifestSha256: loaded.sha256,
+    buildId: plan.buildId,
+    serialized: serializeResolvedNdsMutationPlan(plan),
+  })}`);
+});
+
 test("rejects any physical overlap, including identical overlap", async () => {
   const fixture = await createMutationFixture();
   const manifestPath = await fixture.writeManifest({
