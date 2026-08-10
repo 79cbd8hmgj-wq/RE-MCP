@@ -1,16 +1,14 @@
 name: PR A README patch
 
 on:
-  push:
-    branches:
-      - agent/controller-independence-pr-a-copilot
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
   patch-readme:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'agent/controller-independence-pr-a-copilot' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
