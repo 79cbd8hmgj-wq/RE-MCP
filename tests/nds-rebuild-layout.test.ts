@@ -55,6 +55,10 @@ test("payload layout is deterministic, append-only, and ordered by class then fi
   const second = planNdsPayloadLayout(sourceSize, [...inputs].reverse());
 
   assert.equal(NDS_REBUILD_CONTRACT_VERSION, 1);
+  assert.deepEqual(
+    Object.keys(first).sort(),
+    ["nextOffset", "segments", "sourceSize", "tailStart"],
+  );
   assert.equal(first.sourceSize, sourceSize);
   assert.equal(first.tailStart, 0x6200);
   assert.deepEqual(
