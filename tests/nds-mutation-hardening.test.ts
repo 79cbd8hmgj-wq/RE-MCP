@@ -28,21 +28,33 @@ test("mutation write ownership stays confined to apply.ts", async () => {
   }
 });
 
-test("package workflow requires and exercises the controlled mutation core", async () => {
+test("package workflow requires and exercises the controlled Rebuild Core 2 surface", async () => {
   const install = await source("scripts/check-nds-mutation-install.mjs");
   const workflow = await source(".github/workflows/package.yml");
   for (const requiredModule of [
+    "dist/services/nds/blz-encode.js",
+    "dist/services/nds/header-rebuild.js",
     "dist/services/nds/mutation/manifest.js",
     "dist/services/nds/mutation/planner.js",
+    "dist/services/nds/mutation/filesystem-plan.js",
+    "dist/services/nds/mutation/layout.js",
+    "dist/services/nds/mutation/header-plan.js",
     "dist/services/nds/mutation/build.js",
     "dist/tools/nds-mutation.js",
   ]) {
     assert.match(install, new RegExp(requiredModule.replaceAll("/", "\\/"), "u"));
   }
+  assert.doesNotMatch(install, /dist\/services\/nds\/mutation\/layout-plan\.js/u);
   assert.match(install, /registerNdsMutationTools\(server, config\)/u);
   assert.match(install, /loadNdsMutationManifest/u);
   assert.match(install, /buildNdsMutation/u);
   assert.match(install, /verifyPublishedNdsMutationBuild/u);
+  assert.match(install, /formatVersion:\s*2/u);
+  assert.match(install, /replace-nitrofs-file/u);
+  assert.match(install, /add-nitrofs-file/u);
+  assert.match(install, /encodeNdsBlz/u);
+  assert.match(install, /decodeNdsBlz/u);
+  assert.match(install, /rebuildSemanticsVerified/u);
   assert.match(install, /unexpectedChangedBytes/u);
   assert.match(install, /mutation-manifest\.json/u);
   assert.match(install, /resolved-plan\.json/u);
@@ -54,11 +66,11 @@ test("package workflow requires and exercises the controlled mutation core", asy
   assert.match(workflow, /node scripts\/check-nds-mutation-install\.mjs \./u);
 });
 
-test("README documents Controlled NDS Mutation Milestone 1 and its exclusions", async () => {
+test("README documents NDS Rebuild Core 2 and its safety boundary", async () => {
   const readme = await source("README.md");
   assert.match(readme, /Static-analysis extraction artifacts are restricted to `analysis\/generated\/nds\/<sha-prefix>\/`/u);
   assert.doesNotMatch(readme, /Generated NDS artifacts are restricted to `analysis\/generated\/nds\/<sha-prefix>\/`/u);
-  assert.match(readme, /Controlled NDS Mutation.*Milestone 1/iu);
+  assert.match(readme, /NDS Rebuild Core 2/iu);
   for (const tool of [
     "nds_mutation_validate",
     "nds_mutation_build",
@@ -68,6 +80,13 @@ test("README documents Controlled NDS Mutation Milestone 1 and its exclusions", 
   }
   assert.match(readme, /source ROM.*immutable/iu);
   assert.match(readme, /same-size/iu);
+  assert.match(readme, /variable-size NitroFS/iu);
+  assert.match(readme, /decoded compressed-overlay/iu);
+  assert.match(readme, /BLZ recompression/iu);
+  assert.match(readme, /append-only/iu);
+  assert.match(readme, /FAT\/FNT/iu);
+  assert.match(readme, /device capacity/iu);
+  assert.match(readme, /rebuildSemanticsVerified/u);
   assert.match(readme, /output\/nds\/<source-sha-prefix>\/<build-id>/u);
   for (const evidence of [
     "mutation-manifest.json",
@@ -78,9 +97,11 @@ test("README documents Controlled NDS Mutation Milestone 1 and its exclusions", 
   ]) {
     assert.match(readme, new RegExp(evidence.replace(".", "\\."), "u"));
   }
-  assert.match(readme, /variable-size/iu);
-  assert.match(readme, /FAT\/FNT/iu);
-  assert.match(readme, /BLZ recompression/iu);
   assert.match(readme, /arbitrary ROM offset/iu);
   assert.match(readme, /caller-selected output paths?/iu);
+  assert.match(readme, /DeSmuME.*acceptance.*separate/iu);
+  assert.doesNotMatch(
+    readme,
+    /Milestone 1 deliberately does \*\*not\*\* provide variable-size rebuilding/iu,
+  );
 });
