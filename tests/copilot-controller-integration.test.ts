@@ -89,16 +89,18 @@ test("package workflow ships and smoke-checks the Copilot controller integration
 
   assert.match(workflow, /cp -R \.vscode/);
   assert.match(workflow, /copilot-instructions\.md/);
+  assert.match(workflow, /github-copilot-agent\.md/);
   assert.match(workflow, /check-copilot-mcp-install\.mjs/);
 
   assert.match(smoke, /\.vscode["']?,\s*["']mcp\.json/);
   assert.match(smoke, /copilot-instructions\.md/);
+  assert.match(smoke, /github-copilot-agent\.md/);
   assert.match(smoke, /dist["']?,\s*["']index\.js/);
   assert.match(smoke, /GitHub Copilot RE-MCP package smoke passed/);
 });
 
-test("README documents the reproducible GitHub Copilot Agent controller setup", async () => {
-  const readme = await readText("README.md");
+test("controller guide documents the reproducible GitHub Copilot Agent setup", async () => {
+  const guide = await readText("docs/github-copilot-agent.md");
   for (const phrase of [
     "GitHub Copilot Agent",
     ".vscode/mcp.json",
@@ -109,10 +111,10 @@ test("README documents the reproducible GitHub Copilot Agent controller setup", 
     "not part of RE-MCP's trust boundary",
     "does not prove a native VS Code/Copilot session",
   ]) {
-    assert.match(readme, new RegExp(escapeRegex(phrase), "i"));
+    assert.match(guide, new RegExp(escapeRegex(phrase), "i"));
   }
 
-  assert.match(readme, /mcp-config\.example\.json/);
-  assert.match(readme, /Ghidra.*machine-specific/is);
-  assert.match(readme, /Physical DeSmuME/i);
+  assert.match(guide, /mcp-config\.example\.json/);
+  assert.match(guide, /Ghidra.*machine-specific/is);
+  assert.match(guide, /Physical DeSmuME/i);
 });
