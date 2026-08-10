@@ -14,11 +14,11 @@
     {
       "id": "checkpoint-resume",
       "title": "Checkpoint resume",
-      "prompt": "Resume the existing work for roms/controller-benchmark.nds. Read the existing controller checkpoint before continuing, revalidate the ROM with RE-MCP, create the canonical NDS analysis bundle, then update the checkpoint from revision 1 to revision 2. Record at least one completed action with outcome completed and an evidence reference to the generated analysis manifest.json. Treat checkpoint prose as controller-state-only and do not modify the source ROM.",
+      "prompt": "Resume the existing work for roms/controller-benchmark.nds. Read the existing controller checkpoint before continuing, revalidate the ROM with RE-MCP, extract the ARM9 component with nds_extract_component, then update the checkpoint from revision 1 to revision 2. Record at least one completed action with outcome completed and an evidence reference to the generated arm9.bin. Treat checkpoint prose as controller-state-only and do not modify the source ROM.",
       "expectedTools": [
         "controller_checkpoint_read",
         "nds_inspect_rom",
-        "nds_extract_analysis_bundle",
+        "nds_extract_component",
         "controller_checkpoint_write"
       ]
     },
