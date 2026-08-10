@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -151,6 +151,51 @@ test("evidence reference rejects sibling SHA namespace and expected SHA mismatch
     }),
     assertCategory("checkpoint-evidence-sha-mismatch"),
   );
+});
+
+test("evidence references reject symlink escapes from an allowed SHA namespace", async (t) => {
+  const root = await workspace(t);
+  const outside = await mkdtemp(path.join(os.tmpdir(), "re-mcp-controller-evidence-outside-"));
+  t.after(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+  const outsideFile = path.join(outside, "outside-proof.json");
+  await writeFile(outsideFile, "outside");
+
+  const evidenceRelative = `analysis/generated/nds/${SOURCE_PREFIX}/linked-proof.json`;
+  const evidencePath = path.join(root, evidenceRelative);
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await symlink(outsideFile, evidencePath, "file");
+
+  await assert.rejects(
+    writeControllerCheckpoint(SOURCE, root, 0, {
+      ...emptyState(),
+      hypotheses: [{
+        id: "symlink-escape",
+        statement: "must not hash outside the controlled workspace",
+        evidenceRefs: [{ path: evidenceRelative }],
+      }],
+    }),
+    assertCategory("checkpoint-evidence-path-invalid"),
+  );
+});
+
+test("checkpoint storage rejects a symlinked controller directory before writing outside", async (t) => {
+  const root = await workspace(t);
+  const outside = await mkdtemp(path.join(os.tmpdir(), "re-mcp-controller-storage-outside-"));
+  t.after(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  const controllerDirectory = path.dirname(controllerCheckpointPath(SOURCE, root));
+  await mkdir(path.dirname(controllerDirectory), { recursive: true });
+  await symlink(outside, controllerDirectory, "dir");
+
+  await assert.rejects(
+    writeControllerCheckpoint(SOURCE, root, 0, emptyState()),
+    assertCategory("checkpoint-io-failure"),
+  );
+  await assert.rejects(readFile(path.join(outside, "checkpoint.json")), /ENOENT/);
 });
 
 test("checkpoint state rejects duplicate IDs and over-broad evidence paths", async (t) => {
