@@ -7,7 +7,7 @@ const acceptancePath = fileURLToPath(
   new URL("../scripts/ghidra-runtime-correlation-acceptance.mjs", import.meta.url),
 );
 const workflowPath = fileURLToPath(
-  new URL("../.github/workflows/ghidra-compressed-overlay-acceptance-trigger.yml", import.meta.url),
+  new URL("../.github/workflows/ghidra-integration.yml", import.meta.url),
 );
 
 test("real Ghidra runtime-correlation acceptance covers main and compressed overlay read-only", async () => {
@@ -29,11 +29,14 @@ test("real Ghidra runtime-correlation acceptance covers main and compressed over
   assert.doesNotMatch(source, /bootstrapNdsGhidraProject|reconcile/iu);
 });
 
-test("PR B real-Ghidra workflow runs runtime-correlation acceptance on the feature branch", async () => {
+test("manual real-Ghidra workflow runs runtime-correlation acceptance", async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  assert.match(workflow, /feature\/nds-runtime-correlation-ghidra/);
+  assert.match(workflow, /workflow_dispatch/);
+  assert.doesNotMatch(workflow, /pull_request/);
+  assert.doesNotMatch(workflow, /feature\/nds-runtime-correlation-ghidra/);
   assert.match(workflow, /java-version:\s*['"]?21['"]?/);
   assert.match(workflow, /ghidra_12\.1\.2_PUBLIC/);
+  assert.match(workflow, /node --check scripts\/ghidra-runtime-correlation-acceptance\.mjs/);
   assert.match(workflow, /scripts\/ghidra-runtime-correlation-acceptance\.mjs/);
   assert.match(workflow, /Run real Ghidra runtime correlation acceptance/);
 });
