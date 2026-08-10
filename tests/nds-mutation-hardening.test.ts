@@ -37,13 +37,14 @@ test("package workflow requires and exercises the controlled Rebuild Core 2 surf
     "dist/services/nds/mutation/manifest.js",
     "dist/services/nds/mutation/planner.js",
     "dist/services/nds/mutation/filesystem-plan.js",
-    "dist/services/nds/mutation/layout-plan.js",
+    "dist/services/nds/mutation/layout.js",
     "dist/services/nds/mutation/header-plan.js",
     "dist/services/nds/mutation/build.js",
     "dist/tools/nds-mutation.js",
   ]) {
     assert.match(install, new RegExp(requiredModule.replaceAll("/", "\\/"), "u"));
   }
+  assert.doesNotMatch(install, /dist\/services\/nds\/mutation\/layout-plan\.js/u);
   assert.match(install, /registerNdsMutationTools\(server, config\)/u);
   assert.match(install, /loadNdsMutationManifest/u);
   assert.match(install, /buildNdsMutation/u);
