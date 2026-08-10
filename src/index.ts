@@ -10,6 +10,7 @@ import { assertSimpleProjectName, resolveInside } from "./security/paths.js";
 import { OwnedProcessManager } from "./services/owned-process.js";
 import { runProcess } from "./services/process-runner.js";
 import { registerBakuganTools } from "./tools/bakugan.js";
+import { registerControllerCheckpointTools } from "./tools/controller-checkpoint.js";
 import { registerDesmumeTools } from "./tools/desmume.js";
 import { registerNdsFunctionTools } from "./tools/nds-functions.js";
 import { registerNdsGhidraTools } from "./tools/nds-ghidra.js";
@@ -92,6 +93,7 @@ registerNdsMutationTools(server, config);
 registerNdsGhidraTools(server, config);
 registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
 registerRuntimeEvidenceTools(server, config, desmumeManager);
+registerControllerCheckpointTools(server, config);
 
 server.tool(
   "server_capabilities",
@@ -110,6 +112,8 @@ server.tool(
         "Controlled ARM9 software breakpoints and bounded execution control on the owned localhost GDB stub; read-only register/memory inspection and current-stop NDS static correlation with opt-in already-current Ghidra enrichment; no register writes, general memory writes, watchpoints, arbitrary GDB packets, automatic execution during correlation, or Ghidra bootstrap/reconciliation during correlation",
       evidencePolicy:
         "Atomic raw evidence under project analysis/generated plus deterministic NDS mutation evidence under controlled output/nds build directories",
+      controllerCheckpointPolicy:
+        "Provider-neutral exact-ROM-SHA controller checkpoints are stored only beneath analysis/generated/nds/<sha-prefix>/controller. Checkpoint prose has authority controller-state-only, uses fail-closed revisions and integrity hashes, and must not replace deterministic RE-MCP revalidation of consequential ROM facts.",
       ndsStaticAnalysisPolicy:
         "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, bounded proven function-entry/call-graph analysis, and exact-ROM-SHA current-stop ARM9 correlation over canonical executable components; current-stop correlation may opt in to read-only already-current Ghidra enrichment, but performs no Ghidra bootstrap, reconciliation, migration, auto-analysis, or mutation; runtime correlation preserves overlapping overlay candidates and uses the observed CPSR mode without guessing loaded overlay state; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled Ghidra output/project paths",
       ndsMutationTools: {
@@ -119,6 +123,12 @@ server.tool(
           "Apply the validated same-size plan only to a staged source copy, reparse and verify all changes, then atomically publish a deterministic output/nds build.",
         nds_mutation_verify:
           "Freshly revalidate the deterministic published build, evidence, source identity, canonical structure, requested changes, and zero unexpected changed bytes.",
+      },
+      controllerCheckpointTools: {
+        controller_checkpoint_read:
+          "Read the integrity-checked provider-neutral handoff state for the current exact NDS ROM SHA without treating controller prose as authoritative evidence.",
+        controller_checkpoint_write:
+          "Atomically write bounded controller-state-only handoff state beneath the RE-MCP-owned exact-ROM-SHA checkpoint path using expected-revision conflict protection.",
       },
       tools: [
         "get_project_status",
@@ -170,6 +180,8 @@ server.tool(
         "nds_ghidra_search_symbols",
         "nds_ghidra_list_references",
         "nds_ghidra_list_calls",
+        "controller_checkpoint_read",
+        "controller_checkpoint_write",
         "server_capabilities",
       ],
     }),
