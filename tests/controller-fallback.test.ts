@@ -143,7 +143,6 @@ test("fallback package and documentation acceptance are wired into the assembled
   const workflow = await readText(".github/workflows/package.yml");
   const smoke = await readText("scripts/check-controller-fallback-install.mjs");
   const guide = await readText("docs/controller-fallback.md");
-  const readme = await readText("README.md");
 
   assert.match(workflow, /cp -R \.continue/);
   assert.match(workflow, /configs\/controller/);
@@ -160,8 +159,11 @@ test("fallback package and documentation acceptance are wired into the assembled
   }
 
   for (const phrase of [
+    "GitHub Copilot Agent",
+    "preferred RE-MCP controller",
     "Continue",
     "LiteLLM",
+    "provider-independent",
     "Groq",
     "OpenRouter",
     "Ollama",
@@ -169,13 +171,9 @@ test("fallback package and documentation acceptance are wired into the assembled
     "controller_checkpoint_write",
     "controller-state-only",
     "Agent mode",
-    "does not prove",
+    "do not prove",
     "Physical DeSmuME",
   ]) {
     assert.match(guide, new RegExp(escapeRegex(phrase), "i"));
   }
-
-  assert.match(readme, /GitHub Copilot.*preferred/is);
-  assert.match(readme, /Continue.*LiteLLM.*fallback/is);
-  assert.match(readme, /provider-independent/i);
 });
