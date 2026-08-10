@@ -1,0 +1,20 @@
+{
+  "servers": {
+    "re-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/index.js"],
+      "env": {
+        "RE_MCP_WORKSPACE_ROOT": "${input:reMcpWorkspaceRoot}"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "id": "reMcpWorkspaceRoot",
+      "type": "promptString",
+      "description": "Absolute path to the dedicated RE-MCP ROM-modding workspace",
+      "password": false
+    }
+  ]
+}
