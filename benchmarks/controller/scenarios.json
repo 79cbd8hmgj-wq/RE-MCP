@@ -41,6 +41,16 @@
         "nds_mutation_validate",
         "controller_checkpoint_write"
       ]
+    },
+    {
+      "id": "targeted-function-investigation",
+      "title": "Targeted function investigation",
+      "requiredToolProfile": "re-static-core",
+      "prompt": "Using the required re-static-core profile, investigate the prepared helper function at runtime address 0x02000080 in roms/controller-benchmark.nds. Use re_trace_function as the primary operation. Three direct callers are intentionally present: two perform only broad bounds validation, while exactly one loads identity state and applies an identity-dependent eligibility restriction. Identify that caller from the bounded deterministic call-site evidence. Then write controller checkpoint revision 1 with one completed action whose id is identity-restriction- followed by the selected caller runtime address as eight lowercase hexadecimal digits without 0x (for example identity-restriction-02001234). Do not manually chain the full low-level suite when the high-level trace succeeds, do not modify the ROM, and do not invent semantics beyond the deterministic fixture evidence.",
+      "expectedTools": [
+        "re_trace_function",
+        "controller_checkpoint_write"
+      ]
     }
   ]
 }

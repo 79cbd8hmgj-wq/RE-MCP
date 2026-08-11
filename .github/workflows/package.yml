@@ -34,7 +34,7 @@ jobs:
           cp -R .vscode "$root/"
           cp -R .continue "$root/"
           cp .github/copilot-instructions.md "$root/.github/"
-          cp docs/github-copilot-agent.md docs/controller-fallback.md docs/controller-benchmark.md "$root/docs/"
+          cp docs/github-copilot-agent.md docs/controller-fallback.md docs/controller-benchmark.md docs/controller-efficiency-acceptance.md "$root/docs/"
           cp -R configs/controller "$root/configs/"
           cp -R benchmarks/controller "$root/benchmarks/"
           cp -R scripts "$root/"
