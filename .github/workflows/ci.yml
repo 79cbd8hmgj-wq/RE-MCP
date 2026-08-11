@@ -23,8 +23,10 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
-      - name: Tests A-M
-        run: node --import tsx --test tests/[a-m]*.test.ts
+      - name: Tests A-F
+        run: node --import tsx --test tests/[a-f]*.test.ts
+      - name: Tests G-M
+        run: node --import tsx --test tests/[g-m]*.test.ts
       - name: Tests N-Z
         run: node --import tsx --test tests/[n-z]*.test.ts
       - name: Full test suite
