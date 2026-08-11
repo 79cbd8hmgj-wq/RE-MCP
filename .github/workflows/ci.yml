@@ -23,6 +23,12 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
+      - name: Capability profile regression tests
+        run: node --test --import tsx tests/tool-profiles.test.ts
+      - name: Orchestration context regression tests
+        run: node --test --import tsx tests/re-orchestration.test.ts
+      - name: Resume evidence regression tests
+        run: node --test --import tsx tests/re-decompile-resume.test.ts
       - name: Test
         run: npm test
       - name: Build
