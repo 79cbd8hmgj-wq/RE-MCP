@@ -18,10 +18,12 @@ import { registerNdsMutationTools } from "./tools/nds-mutation.js";
 import { registerNdsPatternTools } from "./tools/nds-pattern.js";
 import { registerNdsRuntimeTools } from "./tools/nds-runtime.js";
 import { registerNdsTools } from "./tools/nds.js";
+import { createProfiledToolRegistrar, TOOL_PROFILES } from "./tools/profiles.js";
 import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
 const server = new McpServer({ name: "re-mcp", version: "0.6.0" });
+const exposedServer = createProfiledToolRegistrar(server, config.toolProfile);
 const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
@@ -35,7 +37,7 @@ function textResult(value: unknown, isError = false) {
   };
 }
 
-server.tool(
+exposedServer.tool(
   "get_project_status",
   "Read Git status for one project under the configured workspace root.",
   { project: z.string().min(1) },
@@ -59,7 +61,7 @@ server.tool(
 
 const verificationScript = z.enum(["test", "typecheck", "build", "check"]);
 
-server.tool(
+exposedServer.tool(
   "run_project_verification",
   "Run one allowlisted npm verification script in a project. Arbitrary commands are not accepted.",
   {
@@ -84,26 +86,28 @@ server.tool(
   },
 );
 
-registerBakuganTools(server, config);
-const desmumeDebugger = registerDesmumeTools(server, config, desmumeManager);
-registerNdsTools(server, config);
-registerNdsPatternTools(server, config);
-registerNdsFunctionTools(server, config);
-registerNdsMutationTools(server, config);
-registerNdsGhidraTools(server, config);
-registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
-registerRuntimeEvidenceTools(server, config, desmumeManager);
-registerControllerCheckpointTools(server, config);
+registerBakuganTools(exposedServer, config);
+const desmumeDebugger = registerDesmumeTools(exposedServer, config, desmumeManager);
+registerNdsTools(exposedServer, config);
+registerNdsPatternTools(exposedServer, config);
+registerNdsFunctionTools(exposedServer, config);
+registerNdsMutationTools(exposedServer, config);
+registerNdsGhidraTools(exposedServer, config);
+registerNdsRuntimeTools(exposedServer, config, desmumeManager, desmumeDebugger);
+registerRuntimeEvidenceTools(exposedServer, config, desmumeManager);
+registerControllerCheckpointTools(exposedServer, config);
 
-server.tool(
+exposedServer.tool(
   "server_capabilities",
-  "Describe the current RE-MCP safety boundary and available operations.",
+  "Describe the current RE-MCP safety boundary and active tool profile.",
   {},
   async () =>
     textResult({
       version: "0.6.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
+      activeToolProfile: config.toolProfile,
+      advertisedToolCount: TOOL_PROFILES[config.toolProfile].length,
       arbitraryShell: false,
       mutationPolicy:
         "Controlled manifest-driven NDS build operations may publish verified deterministic outputs beneath output/nds; source ROMs remain immutable. Milestone 1 permits only same-size guarded canonical byte/component replacements, with no arbitrary ROM offsets and no caller-selected output paths.",
@@ -116,74 +120,6 @@ server.tool(
         "Provider-neutral exact-ROM-SHA controller checkpoints are stored only beneath analysis/generated/nds/<sha-prefix>/controller. Checkpoint prose has authority controller-state-only, uses fail-closed revisions and integrity hashes, and must not replace deterministic RE-MCP revalidation of consequential ROM facts.",
       ndsStaticAnalysisPolicy:
         "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, bounded proven function-entry/call-graph analysis, and exact-ROM-SHA current-stop ARM9 correlation over canonical executable components; current-stop correlation may opt in to read-only already-current Ghidra enrichment, but performs no Ghidra bootstrap, reconciliation, migration, auto-analysis, or mutation; runtime correlation preserves overlapping overlay candidates and uses the observed CPSR mode without guessing loaded overlay state; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled Ghidra output/project paths",
-      ndsMutationTools: {
-        nds_mutation_validate:
-          "Preflight the exact source ROM and strict mutation manifest, compile guards/selectors/conflicts/build identity, and publish nothing.",
-        nds_mutation_build:
-          "Apply the validated same-size plan only to a staged source copy, reparse and verify all changes, then atomically publish a deterministic output/nds build.",
-        nds_mutation_verify:
-          "Freshly revalidate the deterministic published build, evidence, source identity, canonical structure, requested changes, and zero unexpected changed bytes.",
-      },
-      controllerCheckpointTools: {
-        controller_checkpoint_read:
-          "Read the integrity-checked provider-neutral handoff state for the current exact NDS ROM SHA without treating controller prose as authoritative evidence.",
-        controller_checkpoint_write:
-          "Atomically write bounded controller-state-only handoff state beneath the RE-MCP-owned exact-ROM-SHA checkpoint path using expected-revision conflict protection.",
-      },
-      tools: [
-        "get_project_status",
-        "run_project_verification",
-        "bakugan_run_quality_suite",
-        "bakugan_regenerate_m6e_contracts",
-        "bakugan_install_m6e_dry_run",
-        "bakugan_analyze_m6e_roster",
-        "verify_file_sha256",
-        "desmume_status",
-        "desmume_start",
-        "desmume_probe_gdb",
-        "desmume_wait_for_gdb",
-        "desmume_read_register_packet",
-        "desmume_read_memory",
-        "desmume_breakpoint_add",
-        "desmume_breakpoint_remove",
-        "desmume_breakpoint_list",
-        "desmume_continue",
-        "desmume_step_instruction",
-        "desmume_pause",
-        "desmume_wait_for_stop",
-        "desmume_capture_stop_context",
-        "desmume_executable_ranges_replace",
-        "desmume_capture_runtime_evidence",
-        "desmume_stop",
-        "nds_inspect_rom",
-        "nds_list_files",
-        "nds_list_overlays",
-        "nds_resolve_runtime_address",
-        "nds_resolve_rom_offset",
-        "nds_extract_component",
-        "nds_extract_analysis_bundle",
-        "nds_disassemble_range",
-        "nds_analyze_control_flow",
-        "nds_list_references",
-        "nds_find_xrefs",
-        "nds_search_pattern",
-        "nds_discover_functions",
-        "nds_analyze_function",
-        "nds_mutation_validate",
-        "nds_mutation_build",
-        "nds_mutation_verify",
-        "nds_correlate_stop_context",
-        "nds_ghidra_bootstrap",
-        "nds_ghidra_status",
-        "nds_ghidra_inspect_function",
-        "nds_ghidra_decompile_function",
-        "nds_ghidra_search_symbols",
-        "nds_ghidra_list_references",
-        "nds_ghidra_list_calls",
-        "controller_checkpoint_read",
-        "controller_checkpoint_write",
-        "server_capabilities",
-      ],
     }),
 );
 
