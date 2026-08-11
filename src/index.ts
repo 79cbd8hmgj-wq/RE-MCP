@@ -9,26 +9,30 @@ import { loadConfig } from "./config.js";
 import { assertSimpleProjectName, resolveInside } from "./security/paths.js";
 import { OwnedProcessManager } from "./services/owned-process.js";
 import { runProcess } from "./services/process-runner.js";
-import { registerBakuganTools } from "./tools/bakugan.js";
 import { registerControllerCheckpointTools } from "./tools/controller-checkpoint.js";
-import { registerDesmumeTools } from "./tools/desmume.js";
-import { registerNdsFunctionTools } from "./tools/nds-functions.js";
-import { registerNdsGhidraTools } from "./tools/nds-ghidra.js";
-import { registerNdsMutationTools } from "./tools/nds-mutation.js";
-import { registerNdsPatternTools } from "./tools/nds-pattern.js";
-import { registerNdsRuntimeTools } from "./tools/nds-runtime.js";
-import { registerNdsTools } from "./tools/nds.js";
 import { createProfiledToolRegistrar, TOOL_PROFILES } from "./tools/profiles.js";
-import { registerReOrchestrationTools } from "./tools/re-orchestration.js";
-import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
 const activeToolProfile = config.toolProfile ?? "re-full";
+const activeProfileTools = new Set(TOOL_PROFILES[activeToolProfile]);
 const transportServer = new McpServer({ name: "re-mcp", version: "0.6.0" });
 const server = createProfiledToolRegistrar(transportServer, activeToolProfile);
 const desmumeManager = new OwnedProcessManager();
 
-const ndsStaticAnalysisToolNames = [
+const projectToolNames = [
+  "get_project_status",
+  "run_project_verification",
+] as const;
+
+const bakuganToolNames = [
+  "bakugan_run_quality_suite",
+  "bakugan_regenerate_m6e_contracts",
+  "bakugan_install_m6e_dry_run",
+  "bakugan_analyze_m6e_roster",
+  "verify_file_sha256",
+] as const;
+
+const ndsCoreToolNames = [
   "nds_inspect_rom",
   "nds_list_files",
   "nds_list_overlays",
@@ -39,8 +43,42 @@ const ndsStaticAnalysisToolNames = [
   "nds_disassemble_range",
   "nds_analyze_control_flow",
   "nds_list_references",
+] as const;
+
+const ndsPatternToolNames = [
   "nds_find_xrefs",
   "nds_search_pattern",
+] as const;
+
+const ndsFunctionToolNames = [
+  "nds_discover_functions",
+  "nds_analyze_function",
+] as const;
+
+const runtimeToolNames = [
+  "desmume_status",
+  "desmume_start",
+  "desmume_probe_gdb",
+  "desmume_wait_for_gdb",
+  "desmume_read_register_packet",
+  "desmume_read_memory",
+  "desmume_breakpoint_add",
+  "desmume_breakpoint_remove",
+  "desmume_breakpoint_list",
+  "desmume_continue",
+  "desmume_step_instruction",
+  "desmume_pause",
+  "desmume_wait_for_stop",
+  "desmume_capture_stop_context",
+  "desmume_executable_ranges_replace",
+  "desmume_capture_runtime_evidence",
+  "desmume_stop",
+  "nds_correlate_stop_context",
+] as const;
+
+const ndsStaticAnalysisToolNames = [
+  ...ndsCoreToolNames,
+  ...ndsPatternToolNames,
 ] as const;
 
 const ndsMutationToolNames = [
@@ -66,9 +104,12 @@ const reOrchestrationToolNames = [
   "re_resume_investigation",
 ] as const;
 
+function profileIncludesAny(names: readonly string[]): boolean {
+  return names.some((name) => activeProfileTools.has(name));
+}
+
 function visibleProfileTools(names: readonly string[]): readonly string[] {
-  const allowed = new Set(TOOL_PROFILES[activeToolProfile]);
-  return names.filter((name) => allowed.has(name));
+  return names.filter((name) => activeProfileTools.has(name));
 }
 
 function projectDirectory(project: string): string {
@@ -82,65 +123,101 @@ function textResult(value: unknown, isError = false) {
   };
 }
 
-server.tool(
-  "get_project_status",
-  "Read Git status for one project under the configured workspace root.",
-  { project: z.string().min(1) },
-  async ({ project }) => {
-    try {
-      const cwd = projectDirectory(project);
-      await access(path.join(cwd, ".git"));
-      const result = await runProcess({
-        executable: "git",
-        args: ["status", "--short", "--branch"],
-        cwd,
-        timeoutMs: Math.min(config.commandTimeoutMs, 30_000),
-        maxOutputBytes: config.maxOutputBytes,
-      });
-      return textResult(result, result.exitCode !== 0 || result.timedOut);
-    } catch (error) {
-      return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
-    }
-  },
-);
+if (profileIncludesAny(projectToolNames)) {
+  server.tool(
+    "get_project_status",
+    "Read Git status for one project under the configured workspace root.",
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      try {
+        const cwd = projectDirectory(project);
+        await access(path.join(cwd, ".git"));
+        const result = await runProcess({
+          executable: "git",
+          args: ["status", "--short", "--branch"],
+          cwd,
+          timeoutMs: Math.min(config.commandTimeoutMs, 30_000),
+          maxOutputBytes: config.maxOutputBytes,
+        });
+        return textResult(result, result.exitCode !== 0 || result.timedOut);
+      } catch (error) {
+        return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
+      }
+    },
+  );
 
-const verificationScript = z.enum(["test", "typecheck", "build", "check"]);
+  const verificationScript = z.enum(["test", "typecheck", "build", "check"]);
 
-server.tool(
-  "run_project_verification",
-  "Run one allowlisted npm verification script in a project. Arbitrary commands are not accepted.",
-  {
-    project: z.string().min(1),
-    script: verificationScript,
-  },
-  async ({ project, script }) => {
-    try {
-      const cwd = projectDirectory(project);
-      await access(path.join(cwd, "package.json"));
-      const result = await runProcess({
-        executable: "npm",
-        args: ["run", script],
-        cwd,
-        timeoutMs: config.commandTimeoutMs,
-        maxOutputBytes: config.maxOutputBytes,
-      });
-      return textResult(result, result.exitCode !== 0 || result.timedOut);
-    } catch (error) {
-      return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
-    }
-  },
-);
+  server.tool(
+    "run_project_verification",
+    "Run one allowlisted npm verification script in a project. Arbitrary commands are not accepted.",
+    {
+      project: z.string().min(1),
+      script: verificationScript,
+    },
+    async ({ project, script }) => {
+      try {
+        const cwd = projectDirectory(project);
+        await access(path.join(cwd, "package.json"));
+        const result = await runProcess({
+          executable: "npm",
+          args: ["run", script],
+          cwd,
+          timeoutMs: config.commandTimeoutMs,
+          maxOutputBytes: config.maxOutputBytes,
+        });
+        return textResult(result, result.exitCode !== 0 || result.timedOut);
+      } catch (error) {
+        return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
+      }
+    },
+  );
+}
 
-registerBakuganTools(server, config);
-const desmumeDebugger = registerDesmumeTools(server, config, desmumeManager);
-registerNdsTools(server, config);
-registerNdsPatternTools(server, config);
-registerNdsFunctionTools(server, config);
-registerReOrchestrationTools(server, config);
-registerNdsMutationTools(server, config);
-registerNdsGhidraTools(server, config);
-registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
-registerRuntimeEvidenceTools(server, config, desmumeManager);
+if (profileIncludesAny(bakuganToolNames)) {
+  const { registerBakuganTools } = await import("./tools/bakugan.js");
+  registerBakuganTools(server, config);
+}
+
+if (profileIncludesAny(runtimeToolNames)) {
+  const { registerDesmumeTools } = await import("./tools/desmume.js");
+  const { registerNdsRuntimeTools } = await import("./tools/nds-runtime.js");
+  const { registerRuntimeEvidenceTools } = await import("./tools/runtime-evidence.js");
+  const desmumeDebugger = registerDesmumeTools(server, config, desmumeManager);
+  registerNdsRuntimeTools(server, config, desmumeManager, desmumeDebugger);
+  registerRuntimeEvidenceTools(server, config, desmumeManager);
+}
+
+if (profileIncludesAny(ndsCoreToolNames)) {
+  const { registerNdsTools } = await import("./tools/nds.js");
+  registerNdsTools(server, config);
+}
+
+if (profileIncludesAny(ndsPatternToolNames)) {
+  const { registerNdsPatternTools } = await import("./tools/nds-pattern.js");
+  registerNdsPatternTools(server, config);
+}
+
+if (profileIncludesAny(ndsFunctionToolNames)) {
+  const { registerNdsFunctionTools } = await import("./tools/nds-functions.js");
+  registerNdsFunctionTools(server, config);
+}
+
+if (profileIncludesAny(reOrchestrationToolNames)) {
+  const { registerReOrchestrationTools } = await import("./tools/re-orchestration.js");
+  registerReOrchestrationTools(server, config);
+}
+
+if (profileIncludesAny(ndsMutationToolNames)) {
+  const { registerNdsMutationTools } = await import("./tools/nds-mutation.js");
+  registerNdsMutationTools(server, config);
+}
+
+if (profileIncludesAny(ndsGhidraToolNames)) {
+  const { registerNdsGhidraTools } = await import("./tools/nds-ghidra.js");
+  registerNdsGhidraTools(server, config);
+}
+
 registerControllerCheckpointTools(server, config);
 
 server.tool(
