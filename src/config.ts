@@ -12,7 +12,7 @@ export interface ServerConfig {
   readonly maxOutputBytes: number;
   readonly ghidraHome?: string | null;
   readonly ghidraTimeoutMs?: number;
-  readonly toolProfile: ToolProfileName;
+  readonly toolProfile?: ToolProfileName;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
