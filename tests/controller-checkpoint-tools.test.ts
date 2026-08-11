@@ -191,7 +191,7 @@ test("stale checkpoint writes return structured corrective errors", async () => 
 
 test("controller checkpoint registration and authority are surfaced by server capabilities", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile("src/index.ts", "utf8"));
-  assert.match(source, /registerControllerCheckpointTools\(server, config\)/);
+  assert.match(source, /registerControllerCheckpointTools\(exposedServer, config\)/);
   assert.match(source, /controller_checkpoint_read/);
   assert.match(source, /controller_checkpoint_write/);
   assert.match(source, /controller-state-only/);
