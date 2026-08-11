@@ -48,6 +48,16 @@ const ndsMutationToolNames = [
   "nds_mutation_verify",
 ] as const;
 
+const ndsGhidraToolNames = [
+  "nds_ghidra_bootstrap",
+  "nds_ghidra_status",
+  "nds_ghidra_inspect_function",
+  "nds_ghidra_decompile_function",
+  "nds_ghidra_search_symbols",
+  "nds_ghidra_list_references",
+  "nds_ghidra_list_calls",
+] as const;
+
 function visibleProfileTools(names: readonly string[]): readonly string[] {
   const allowed = new Set(TOOL_PROFILES[activeToolProfile]);
   return names.filter((name) => allowed.has(name));
@@ -148,6 +158,7 @@ server.tool(
       controllerCheckpointPolicy:
         "Provider-neutral exact-ROM-SHA controller checkpoints are stored only beneath analysis/generated/nds/<sha-prefix>/controller. Checkpoint prose has authority controller-state-only, uses fail-closed revisions and integrity hashes, and must not replace deterministic RE-MCP revalidation of consequential ROM facts.",
       ndsStaticAnalysisTools: visibleProfileTools(ndsStaticAnalysisToolNames),
+      ndsGhidraTools: visibleProfileTools(ndsGhidraToolNames),
       ndsStaticAnalysisPolicy:
         "Read-only Nintendo DS ROM parsing, deterministic address resolution, bounded NDS-mapped ARM/Thumb disassembly/direct CFG analysis, bounded deterministic single-instruction reference/xref analysis, bounded deterministic raw pattern search, bounded proven function-entry/call-graph analysis, and exact-ROM-SHA current-stop ARM9 correlation over canonical executable components; current-stop correlation may opt in to read-only already-current Ghidra enrichment, but performs no Ghidra bootstrap, reconciliation, migration, auto-analysis, or mutation; runtime correlation preserves overlapping overlay candidates and uses the observed CPSR mode without guessing loaded overlay state; function entries are proven only by program-entry or deterministic resolved direct-call evidence and function ends are not inferred; reverse scans/function proof may report partial or inconclusive coverage; optional Ghidra integration creates one full-SHA-256-scoped analyst-preserving project through configured analyzeHeadless, imports canonical RE-MCP evidence before normal Ghidra auto-analysis, and treats all Ghidra-derived inference as non-authoritative to RE-MCP; controlled Ghidra inspection requires an already-current SHA-scoped project and runs read-only with auto-analysis disabled while exposing only bounded canonical function/decompiler/symbol/reference/call queries; no loaded-overlay inference, generic binary analysis, heuristic pointer/function discovery, Ghidra-to-RE-MCP evidence promotion, arbitrary byte-range extraction, arbitrary Ghidra command/script execution, or caller-controlled Ghidra output/project paths",
     }),
