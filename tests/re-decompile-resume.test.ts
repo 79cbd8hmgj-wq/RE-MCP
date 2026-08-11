@@ -7,7 +7,9 @@ import type { GhidraInspectionAuthorityResult } from "../src/services/nds/ghidra
 import { readNdsRomMap } from "../src/services/nds/rom-map.js";
 import { decompileReCandidate } from "../src/services/re-orchestration/decompile-candidate.js";
 import { persistInvestigationResult } from "../src/services/re-orchestration/investigation-journal.js";
+import { persistInvestigationResumeArtifact } from "../src/services/re-orchestration/resume-artifact.js";
 import { resumeInvestigation } from "../src/services/re-orchestration/resume.js";
+import type { ReEvidenceEnvelope } from "../src/services/re-orchestration/types.js";
 import { TOOL_PROFILES } from "../src/tools/profiles.js";
 import { createNdsFixture } from "./helpers/nds-fixture.js";
 
@@ -69,34 +71,57 @@ test("Ghidra candidate escalation returns one explicitly non-authoritative bound
   }
 });
 
-test("fresh provider resumes persisted successful operation without replaying primitive analysis", async () => {
+test("fresh provider resumes persisted candidate identities without replaying primitive analysis", async () => {
   const fixture = await createNdsFixture({ arm9Size: 0x80 });
   try {
     const map = await readNdsRomMap(fixture.romPath);
+    const source = { sha256: map.sha256, sha256Prefix: map.sha256Prefix };
+    const result: ReEvidenceEnvelope = {
+      operation: "re_trace_function",
+      sourceRomSha256: map.sha256,
+      component: { processor: "arm9", component: "main", overlayId: null },
+      subject: { runtimeAddress: 0x02000000, mode: "arm", romOffset: 0x200 },
+      confirmedDeterministicEvidence: [],
+      candidates: [{
+        kind: "direct-caller",
+        callerFunctionId: "arm9-main:0x02000020:arm",
+        component: "main",
+        overlayId: null,
+        instructionAddress: 0x02000020,
+        instructionRomOffset: 0x220,
+        mode: "arm",
+        callSiteWindow: [{ deliberately: "not persisted into compact resume state" }],
+      }],
+      ambiguities: [],
+      completedPrimitiveStages: [
+        "canonical-rom-map",
+        "function-entry-proof",
+        "bounded-cfg",
+        "direct-caller-xrefs",
+      ],
+      artifacts: [],
+      recommendedNextAction: "Inspect the bounded caller candidate at 0x02000020.",
+    };
+    const resumeArtifact = await persistInvestigationResumeArtifact(
+      source,
+      fixture.directory,
+      result,
+    );
     await persistInvestigationResult(
-      { sha256: map.sha256, sha256Prefix: map.sha256Prefix },
+      source,
       fixture.directory,
       {
-        operation: "re_trace_function",
+        operation: result.operation,
         normalizedInputs: {
           rom: fixture.romPath.split("/").at(-1),
           processor: "arm9",
           runtimeAddress: 0x02000000,
           mode: "arm",
         },
-        completedStages: [
-          "canonical-rom-map",
-          "function-entry-proof",
-          "bounded-cfg",
-          "direct-caller-xrefs",
-        ],
-        artifacts: [],
-        result: {
-          operation: "re_trace_function",
-          sourceRomSha256: map.sha256,
-          candidates: [{ instructionAddress: 0x02000020 }],
-        },
-        recommendedNextAction: "Inspect the bounded caller candidate at 0x02000020.",
+        completedStages: result.completedPrimitiveStages,
+        artifacts: [resumeArtifact],
+        result: { ...result, artifacts: [resumeArtifact] },
+        recommendedNextAction: result.recommendedNextAction,
       },
     );
 
@@ -105,6 +130,11 @@ test("fresh provider resumes persisted successful operation without replaying pr
     assert.equal(resumed.journal.entryCount, 1);
     assert.equal(resumed.journal.completedOperations[0]?.operation, "re_trace_function");
     assert.equal(resumed.journal.completedStages.includes("direct-caller-xrefs"), true);
+    assert.equal(resumed.resumableResults.length, 1);
+    const candidate = resumed.resumableResults[0]?.candidates[0] as Record<string, unknown>;
+    assert.equal(candidate.instructionAddress, 0x02000020);
+    assert.equal(candidate.callerFunctionId, "arm9-main:0x02000020:arm");
+    assert.equal("callSiteWindow" in candidate, false);
     assert.deepEqual(
       resumed.smallestUnresolvedNextActions,
       ["Inspect the bounded caller candidate at 0x02000020."],
@@ -123,12 +153,15 @@ test("profile exposure keeps resume static and Ghidra escalation controlled", as
   assert.equal(TOOL_PROFILES["re-ghidra-escalation"].includes("re_decompile_candidate"), true);
   assert.equal(TOOL_PROFILES["re-ghidra-escalation"].includes("nds_ghidra_bootstrap"), false);
 
-  const [decompileSource, orchestrationSource] = await Promise.all([
+  const [decompileSource, orchestrationSource, resumeArtifactSource] = await Promise.all([
     readFile("src/services/re-orchestration/decompile-candidate.ts", "utf8"),
     readFile("src/tools/re-orchestration.ts", "utf8"),
+    readFile("src/services/re-orchestration/resume-artifact.ts", "utf8"),
   ]);
   assert.doesNotMatch(decompileSource, /bootstrapNdsGhidraProject|nds_ghidra_bootstrap/);
   assert.match(decompileSource, /decompileNdsGhidraFunction/);
+  assert.match(orchestrationSource, /persistInvestigationResumeArtifact/);
   assert.match(orchestrationSource, /persistEnvelope\(map, config, input, result\)/);
   assert.match(orchestrationSource, /re_resume_investigation/);
+  assert.doesNotMatch(resumeArtifactSource, /callSiteWindow.*:/);
 });
