@@ -41,7 +41,7 @@ export interface ResumeInvestigationResult {
     readonly checkpoint: ControllerCheckpoint | null;
   };
   readonly smallestUnresolvedNextActions: readonly string[];
-  readonly replayRequired: false;
+  readonly replayRequired: boolean;
 }
 
 function mechanicalNextActions(
@@ -85,6 +85,15 @@ async function readResumeArtifacts(
   return resumable.slice(-128);
 }
 
+function requiresReplay(
+  completedOperationCount: number,
+  resumableResults: readonly InvestigationResumeArtifact[],
+): boolean {
+  if (completedOperationCount === 0) return false;
+  if (resumableResults.length < completedOperationCount) return true;
+  return resumableResults.some((result) => result.resumeEvidenceComplete !== true);
+}
+
 export async function resumeInvestigation(
   romPath: string,
   config: ServerConfig,
@@ -98,6 +107,7 @@ export async function resumeInvestigation(
   const projection = journal.projection;
   const checkpoint = checkpointRead.exists ? checkpointRead.checkpoint : null;
   const artifacts = projection?.artifactHashes ?? [];
+  const completedOperations = projection?.completedOperations ?? [];
   const resumableResults = await readResumeArtifacts(
     config.workspaceRoot,
     map.sha256,
@@ -114,7 +124,7 @@ export async function resumeInvestigation(
       lastSequence: journal.metadata?.lastSequence ?? 0,
       journalSha256: journal.metadata?.journalSha256 ?? null,
       projectionSha256: journal.metadata?.projectionSha256 ?? null,
-      completedOperations: projection?.completedOperations ?? [],
+      completedOperations,
       completedStages: projection?.completedStages ?? [],
       artifactHashes: artifacts,
     },
@@ -130,6 +140,6 @@ export async function resumeInvestigation(
       journal.entries.length > 0,
       projection?.recommendedNextActions ?? [],
     ),
-    replayRequired: false,
+    replayRequired: requiresReplay(completedOperations.length, resumableResults),
   };
 }
