@@ -22,8 +22,9 @@ import { createProfiledToolRegistrar, TOOL_PROFILES } from "./tools/profiles.js"
 import { registerRuntimeEvidenceTools } from "./tools/runtime-evidence.js";
 
 const config = loadConfig();
+const activeToolProfile = config.toolProfile ?? "re-full";
 const server = new McpServer({ name: "re-mcp", version: "0.6.0" });
-const exposedServer = createProfiledToolRegistrar(server, config.toolProfile);
+const exposedServer = createProfiledToolRegistrar(server, activeToolProfile);
 const desmumeManager = new OwnedProcessManager();
 
 function projectDirectory(project: string): string {
@@ -106,8 +107,8 @@ exposedServer.tool(
       version: "0.6.0",
       transport: "stdio",
       workspaceRoot: config.workspaceRoot,
-      activeToolProfile: config.toolProfile,
-      advertisedToolCount: TOOL_PROFILES[config.toolProfile].length,
+      activeToolProfile,
+      advertisedToolCount: TOOL_PROFILES[activeToolProfile].length,
       arbitraryShell: false,
       mutationPolicy:
         "Controlled manifest-driven NDS build operations may publish verified deterministic outputs beneath output/nds; source ROMs remain immutable. Milestone 1 permits only same-size guarded canonical byte/component replacements, with no arbitrary ROM offsets and no caller-selected output paths.",
