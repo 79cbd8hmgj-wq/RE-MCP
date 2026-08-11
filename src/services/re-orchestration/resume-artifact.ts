@@ -7,9 +7,10 @@ import type { ReArtifactReference, ReEvidenceEnvelope } from "./types.js";
 
 const RESUME_FORMAT = "re-mcp-investigation-resume-state" as const;
 const RESUME_VERSION = 1 as const;
-const MAX_RESUME_ARTIFACT_BYTES = 128 * 1024;
+const MAX_RESUME_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_CANDIDATES = 64;
 const MAX_AMBIGUITIES = 64;
+const MAX_WINDOW_INSTRUCTIONS = 16;
 
 export interface InvestigationResumeArtifact {
   readonly format: typeof RESUME_FORMAT;
@@ -19,10 +20,12 @@ export interface InvestigationResumeArtifact {
   readonly operation: string;
   readonly component: unknown;
   readonly subject: unknown;
+  readonly confirmedDeterministicEvidence?: readonly unknown[];
   readonly candidates: readonly unknown[];
   readonly ambiguities: readonly unknown[];
   readonly completedPrimitiveStages: readonly string[];
   readonly recommendedNextAction: string | null;
+  readonly resumeEvidenceComplete?: boolean;
   readonly contentSha256: string;
 }
 
@@ -48,6 +51,29 @@ function scalarRecord(value: unknown, keys: readonly string[]): Record<string, u
   return compact;
 }
 
+function compactInstruction(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return {
+    ...scalarRecord(record, [
+      "address",
+      "romOffset",
+      "size",
+      "bytesHex",
+      "mode",
+      "mnemonic",
+      "operands",
+    ]),
+    flow: scalarRecord(record.flow, [
+      "kind",
+      "directTarget",
+      "targetMode",
+      "fallthrough",
+    ]),
+    source: scalarRecord(record.source, ["processor", "component", "overlayId"]),
+  };
+}
+
 function compactReference(value: unknown): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -67,7 +93,9 @@ function compactReference(value: unknown): unknown {
       "component",
       "overlayId",
       "kind",
+      "mode",
     ]),
+    evidence: scalarRecord(record.evidence, ["instructionMnemonic", "mechanism"]),
   };
 }
 
@@ -85,6 +113,14 @@ function compactCandidate(value: unknown): unknown {
     "authority",
   ]);
   if ("reference" in record) compact.reference = compactReference(record.reference);
+  if (Array.isArray(record.callSiteWindow)) {
+    compact.callSiteWindow = record.callSiteWindow
+      .slice(0, MAX_WINDOW_INSTRUCTIONS)
+      .map(compactInstruction);
+  }
+  if ("ghidraDerived" in record) {
+    compact.ghidraDerived = record.ghidraDerived;
+  }
   return compact;
 }
 
@@ -107,10 +143,12 @@ function payloadFor(result: ReEvidenceEnvelope): Omit<InvestigationResumeArtifac
     operation: result.operation,
     component: result.component,
     subject: result.subject,
+    confirmedDeterministicEvidence: result.confirmedDeterministicEvidence,
     candidates: result.candidates.slice(0, MAX_CANDIDATES).map(compactCandidate),
     ambiguities: result.ambiguities.slice(0, MAX_AMBIGUITIES).map(compactAmbiguity),
     completedPrimitiveStages: [...result.completedPrimitiveStages],
     recommendedNextAction: result.recommendedNextAction,
+    resumeEvidenceComplete: true,
   };
 }
 
@@ -191,6 +229,10 @@ export async function readInvestigationResumeArtifact(
     || parsed.authority !== "deterministic-resume-state"
     || !/^[0-9a-f]{64}$/.test(parsed.sourceRomSha256)
     || !/^[0-9a-f]{64}$/.test(parsed.contentSha256)
+    || (parsed.resumeEvidenceComplete !== undefined
+      && typeof parsed.resumeEvidenceComplete !== "boolean")
+    || (parsed.confirmedDeterministicEvidence !== undefined
+      && !Array.isArray(parsed.confirmedDeterministicEvidence))
   ) {
     throw new Error(`Resume artifact has invalid format: ${artifact.path}`);
   }
