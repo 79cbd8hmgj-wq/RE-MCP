@@ -53,5 +53,5 @@ test("downloadable package ships and exercises compiled controller checkpoint su
   assert.match(smoke, /checkpoint-revision-conflict/);
   assert.match(smoke, /checkpoint-integrity-failure/);
   assert.match(smoke, /Controller checkpoint package smoke passed/);
-  assert.match(index, /registerControllerCheckpointTools\(server, config\)/);
+  assert.match(index, /registerControllerCheckpointTools\(exposedServer, config\)/);
 });
