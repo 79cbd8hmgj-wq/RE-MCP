@@ -15,6 +15,7 @@ import {
   InvestigationJournalError,
   persistInvestigationResult,
 } from "../services/re-orchestration/investigation-journal.js";
+import { persistInvestigationResumeArtifact } from "../services/re-orchestration/resume-artifact.js";
 import { resumeInvestigation } from "../services/re-orchestration/resume.js";
 import { traceNdsFunction } from "../services/re-orchestration/trace-function.js";
 import type { ReEvidenceEnvelope } from "../services/re-orchestration/types.js";
@@ -113,22 +114,30 @@ async function persistEnvelope<T extends ReEvidenceEnvelope>(
   normalizedInputs: unknown,
   result: T,
 ): Promise<T & { readonly checkpointRevision: number }> {
+  const source = { sha256: map.sha256, sha256Prefix: map.sha256Prefix };
+  const resumeArtifact = await persistInvestigationResumeArtifact(
+    source,
+    config.workspaceRoot,
+    result,
+  );
+  const persistedArtifacts = [...result.artifacts, resumeArtifact];
+  const resultWithArtifact = { ...result, artifacts: persistedArtifacts };
   const persisted = await persistInvestigationResult(
-    { sha256: map.sha256, sha256Prefix: map.sha256Prefix },
+    source,
     config.workspaceRoot,
     {
       operation: result.operation,
       normalizedInputs,
       completedStages: result.completedPrimitiveStages,
-      artifacts: result.artifacts,
-      result,
+      artifacts: persistedArtifacts,
+      result: resultWithArtifact,
       recommendedNextAction: result.recommendedNextAction,
     },
   );
   return {
-    ...result,
+    ...resultWithArtifact,
     checkpointRevision: persisted.entry.sequence,
-  };
+  } as T & { readonly checkpointRevision: number };
 }
 
 export function registerReOrchestrationTools(
