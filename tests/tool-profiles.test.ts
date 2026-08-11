@@ -100,8 +100,13 @@ function processEnvironment(workspace: string, profile?: ToolProfileName): Recor
   };
 }
 
-function parseTextPayload(response: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {
-  const first = response.content[0] as { readonly type?: unknown; readonly text?: unknown } | undefined;
+function parseTextPayload(response: unknown): Record<string, unknown> {
+  const record = response as { readonly content?: unknown };
+  assert.equal(Array.isArray(record.content), true);
+  const first = (record.content as unknown[])[0] as {
+    readonly type?: unknown;
+    readonly text?: unknown;
+  } | undefined;
   assert.equal(first?.type, "text");
   assert.equal(typeof first?.text, "string");
   return JSON.parse(first.text as string) as Record<string, unknown>;
