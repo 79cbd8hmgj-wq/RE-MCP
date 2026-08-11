@@ -1,11 +1,12 @@
-import type { ArmDisassemblyBackend, ArmMode } from "../disassembly/backend.js";
-import { disassembleNdsRange, type StaticInstruction } from "../nds/disassembly.js";
+import type { ArmDisassemblyBackend } from "../disassembly/backend.js";
+import type { StaticInstruction } from "../nds/disassembly.js";
 import type { NdsProcessor } from "../nds/overlays.js";
 import type { StaticReference } from "../nds/references.js";
 import { resolveRuntimeAddress, type RuntimeResolution } from "../nds/resolver.js";
 import type { NdsRomMap } from "../nds/rom-map.js";
 import type { ReferenceSearchScope, ReferenceSearchSeed } from "../nds/xref-source.js";
 import { findNdsXrefs, type ReferenceScanLimits } from "../nds/xrefs.js";
+import { disassembleReContextWindow } from "./context-window.js";
 import type { ReAmbiguity, ReComponentIdentity, ReEvidenceEnvelope } from "./types.js";
 
 export interface InvestigateNdsDataUsageRequest {
@@ -121,7 +122,7 @@ export async function investigateNdsDataUsage(
   const ambiguities = ambiguityForResolution(resolution);
   for (const reference of xrefs.xrefs.slice(0, limits.maxCandidates)) {
     const source = reference.source;
-    const window = await disassembleNdsRange(
+    const window = await disassembleReContextWindow(
       map,
       {
         processor: request.processor,
@@ -135,16 +136,22 @@ export async function investigateNdsDataUsage(
       },
       backend,
     );
-    if (!("instructions" in window)) {
+    if (window.instructions.length === 0) {
       ambiguities.push({
         kind: "reference-window-unresolved",
-        detail: `Reference window at 0x${source.instructionAddress.toString(16)} resolved as ${window.status}`,
+        detail: `No bounded reference window could be decoded around 0x${source.instructionAddress.toString(16)}.`,
+      });
+    }
+    if (window.backwardDecodeAmbiguous) {
+      ambiguities.push({
+        kind: "reference-window-backward-decode",
+        detail: `Multiple bounded Thumb predecessor decodings can reach reference site 0x${source.instructionAddress.toString(16)}; preserve that ambiguity when interpreting pre-reference context.`,
       });
     }
     candidates.push({
       kind: "direct-reference",
       reference,
-      callSiteWindow: "instructions" in window ? window.instructions : [],
+      callSiteWindow: window.instructions,
     });
   }
 
