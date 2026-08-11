@@ -34,16 +34,22 @@ const windowByteLimitSchema = z.number().int().min(2).max(128).default(32);
 function scopeFromInput(
   includeMain: boolean,
   overlayIds: readonly number[],
+  requiredOverlayId?: number,
 ): FunctionSearchScope & ReferenceSearchScope {
-  if (overlayIds.length === 0) {
+  const normalizedOverlayIds = [...new Set([
+    ...overlayIds,
+    ...(requiredOverlayId === undefined ? [] : [requiredOverlayId]),
+  ])].sort((left, right) => left - right);
+
+  if (normalizedOverlayIds.length === 0) {
     if (!includeMain) {
       throw new Error("Static RE scope must include main code or at least one explicit overlay ID");
     }
     return { kind: "main" };
   }
   return includeMain
-    ? { kind: "main-and-overlays", overlayIds }
-    : { kind: "overlay", overlayIds };
+    ? { kind: "main-and-overlays", overlayIds: normalizedOverlayIds }
+    : { kind: "overlay", overlayIds: normalizedOverlayIds };
 }
 
 function textResultFromText(text: string, isError = false) {
@@ -145,7 +151,7 @@ export function registerReOrchestrationTools(
               runtimeAddress,
               mode,
               ...(overlayId === undefined ? {} : { overlayId }),
-              proofScope: scopeFromInput(includeMain, overlayIds),
+              proofScope: scopeFromInput(includeMain, overlayIds, overlayId),
               seeds,
             },
             {
