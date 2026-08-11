@@ -224,7 +224,7 @@ test("package ships and executes the compiled five-scenario controller benchmark
     "benchmarks/controller/scenarios.json",
     "scripts/controller-benchmark.mjs",
     "targeted-function-investigation",
-    "re_trace_function",
+    "traceNdsFunction",
     "persistInvestigationResult",
     "persistInvestigationResumeArtifact",
     "identity-restriction-02000040",
