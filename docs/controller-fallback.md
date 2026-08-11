@@ -116,6 +116,33 @@ cn --config configs/controller/continue-re-mcp.yaml
 
 For normal RE-MCP work, do not use a CLI mode that prevents required MCP tool access.
 
+### MCP tool profiles
+
+RE-MCP can advertise a task-specific allowlist instead of sending every low-level tool schema to the controller. The default remains the backward-compatible full surface:
+
+```text
+RE_MCP_TOOL_PROFILE=re-full
+```
+
+For ordinary read-only static reverse engineering, prefer:
+
+```text
+RE_MCP_TOOL_PROFILE=re-static-core
+```
+
+Other source-controlled profiles are `re-ghidra-escalation`, `re-runtime`, `re-build`, and `re-project`. An unknown profile prevents RE-MCP startup rather than silently falling back.
+
+The profile changes only MCP advertisement. It does not weaken service semantics or source-ROM safeguards. Excluded tools are not registered with the MCP server, so their schemas are not sent to the model. Use `re-full` for expert/debug sessions that genuinely need the complete surface.
+
+After building, measure the real serialized `tools/list` payload for a profile with:
+
+```bash
+node scripts/measure-tool-schemas.mjs re-static-core
+node scripts/measure-tool-schemas.mjs re-full
+```
+
+The report contains only profile name, advertised tool count, serialized schema bytes, and a four-bytes-per-token estimate; provider-side prompt overhead remains outside RE-MCP's control.
+
 ## 5. Resume or hand off ROM work
 
 Controller switching is state transfer, not evidence transfer.
@@ -160,7 +187,7 @@ If RE-MCP itself rejects an operation, diagnose the structured error and satisfy
 
 ## Acceptance boundary
 
-Repository CI/package checks validate the shipped configuration shape, safety rules, secret placeholders, loopback endpoints, fallback order, and assembled-package contents.
+Repository CI/package checks validate the shipped configuration shape, safety rules, secret placeholders, loopback endpoints, fallback order, assembled-package contents, and tool-profile advertisement contracts.
 
 They **do not prove**:
 
