@@ -8,6 +8,10 @@ import {
   readInvestigationJournal,
   type InvestigationArtifactHash,
 } from "./investigation-journal.js";
+import {
+  readInvestigationResumeArtifact,
+  type InvestigationResumeArtifact,
+} from "./resume-artifact.js";
 
 export interface ResumeInvestigationResult {
   readonly operation: "re_resume_investigation";
@@ -28,6 +32,7 @@ export interface ResumeInvestigationResult {
     readonly completedStages: readonly string[];
     readonly artifactHashes: readonly InvestigationArtifactHash[];
   };
+  readonly resumableResults: readonly InvestigationResumeArtifact[];
   readonly controllerState: {
     readonly authority: "controller-state-only";
     readonly exists: boolean;
@@ -50,8 +55,34 @@ function mechanicalNextActions(
     ];
   }
   return [
-    "Use the latest integrity-bound deterministic result digest/artifact metadata to choose the next bounded high-level operation; do not replay completed primitive stages unless evidence is stale or incomplete.",
+    "Use the integrity-bound resumable result state to choose the next bounded high-level operation; do not replay completed primitive stages unless evidence is stale or incomplete.",
   ];
+}
+
+async function readResumeArtifacts(
+  workspaceRoot: string,
+  sourceRomSha256: string,
+  artifacts: readonly InvestigationArtifactHash[],
+): Promise<readonly InvestigationResumeArtifact[]> {
+  const resumable: InvestigationResumeArtifact[] = [];
+  for (const artifact of artifacts) {
+    if (
+      artifact.kind !== "re-resume-state"
+      || artifact.path === null
+      || artifact.sha256 === null
+    ) {
+      continue;
+    }
+    const state = await readInvestigationResumeArtifact(
+      workspaceRoot,
+      { path: artifact.path, sha256: artifact.sha256 },
+    );
+    if (state.sourceRomSha256 !== sourceRomSha256) {
+      throw new Error(`Resume artifact belongs to a different ROM SHA-256: ${artifact.path}`);
+    }
+    resumable.push(state);
+  }
+  return resumable.slice(-128);
 }
 
 export async function resumeInvestigation(
@@ -66,6 +97,12 @@ export async function resumeInvestigation(
   ]);
   const projection = journal.projection;
   const checkpoint = checkpointRead.exists ? checkpointRead.checkpoint : null;
+  const artifacts = projection?.artifactHashes ?? [];
+  const resumableResults = await readResumeArtifacts(
+    config.workspaceRoot,
+    map.sha256,
+    artifacts,
+  );
 
   return {
     operation: "re_resume_investigation",
@@ -79,8 +116,9 @@ export async function resumeInvestigation(
       projectionSha256: journal.metadata?.projectionSha256 ?? null,
       completedOperations: projection?.completedOperations ?? [],
       completedStages: projection?.completedStages ?? [],
-      artifactHashes: projection?.artifactHashes ?? [],
+      artifactHashes: artifacts,
     },
+    resumableResults,
     controllerState: {
       authority: "controller-state-only",
       exists: checkpoint !== null,
