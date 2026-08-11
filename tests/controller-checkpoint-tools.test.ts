@@ -195,7 +195,7 @@ test("controller checkpoint registration, profile exposure, and authority are su
     readFile("src/index.ts", "utf8"),
     readFile("src/tools/profiles.ts", "utf8"),
   ]);
-  assert.match(source, /registerControllerCheckpointTools\(exposedServer, config\)/);
+  assert.match(source, /registerControllerCheckpointTools\(server, config\)/);
   assert.match(profiles, /controller_checkpoint_read/);
   assert.match(profiles, /controller_checkpoint_write/);
   assert.match(source, /controller-state-only/);
