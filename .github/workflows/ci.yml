@@ -23,6 +23,8 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
+      - name: Tool profile integration test
+        run: node --import tsx --test tests/tool-profiles.test.ts
       - name: Test
         run: npm test
       - name: Build
