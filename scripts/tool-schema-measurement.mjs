@@ -33,6 +33,7 @@ export async function measureToolSchemas(profile, options = {}) {
     return {
       profile: profile.trim(),
       toolCount: result.tools.length,
+      toolNames: result.tools.map((tool) => tool.name).sort(),
       serializedBytes,
       estimatedTokens: Math.ceil(serializedBytes / 4),
     };
