@@ -50,6 +50,7 @@ jobs:
             node scripts/check-controller-checkpoint-install.mjs .
             node scripts/check-controller-fallback-install.mjs .
             node scripts/check-controller-benchmark-install.mjs .
+            node scripts/check-controller-capability-regression.mjs .
           )
           tar -C /tmp -czf "/tmp/re-mcp-${version}.tar.gz" "re-mcp-${version}"
           sha256sum "/tmp/re-mcp-${version}.tar.gz" > "/tmp/re-mcp-${version}.tar.gz.sha256"
