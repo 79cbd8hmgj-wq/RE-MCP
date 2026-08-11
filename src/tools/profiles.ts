@@ -61,6 +61,8 @@ export const FULL_TOOL_NAMES = [
   "nds_ghidra_search_symbols",
   "nds_ghidra_list_references",
   "nds_ghidra_list_calls",
+  "re_trace_function",
+  "re_investigate_data_usage",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
   "server_capabilities",
@@ -68,17 +70,15 @@ export const FULL_TOOL_NAMES = [
 
 export type ShippedToolName = (typeof FULL_TOOL_NAMES)[number];
 
-// Keep the default static surface deliberately small. Richer primitive analysis
-// remains available through re-full and deterministic orchestration is layered
-// onto this profile by later controller-efficiency PRs.
 const staticCore = [
   "verify_file_sha256",
   "nds_inspect_rom",
   "nds_resolve_runtime_address",
-  "nds_resolve_rom_offset",
   "nds_disassemble_range",
   "nds_find_xrefs",
   "nds_search_pattern",
+  "re_trace_function",
+  "re_investigate_data_usage",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
 ] as const satisfies readonly ShippedToolName[];
