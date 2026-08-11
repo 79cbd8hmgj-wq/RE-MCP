@@ -1,11 +1,12 @@
 import type { ArmDisassemblyBackend, ArmMode } from "../disassembly/backend.js";
 import type { ControlFlowLimits } from "../nds/control-flow.js";
-import { disassembleNdsRange, type StaticInstruction } from "../nds/disassembly.js";
+import type { StaticInstruction } from "../nds/disassembly.js";
 import { analyzeNdsFunction } from "../nds/function-analysis.js";
 import type { FunctionSearchScope, FunctionSearchSeed } from "../nds/function-source.js";
 import type { NdsProcessor } from "../nds/overlays.js";
 import type { NdsRomMap } from "../nds/rom-map.js";
 import type { ReferenceScanLimits } from "../nds/xrefs.js";
+import { disassembleReContextWindow } from "./context-window.js";
 import type { ReAmbiguity, ReEvidenceEnvelope } from "./types.js";
 
 export interface TraceNdsFunctionRequest {
@@ -73,7 +74,7 @@ export async function traceNdsFunction(
 
   for (const proof of retainedCallers) {
     const caller = proof.caller;
-    const window = await disassembleNdsRange(
+    const window = await disassembleReContextWindow(
       map,
       {
         processor: request.processor,
@@ -88,10 +89,16 @@ export async function traceNdsFunction(
       backend,
     );
 
-    if (!("instructions" in window)) {
+    if (window.instructions.length === 0) {
       ambiguities.push({
         kind: "call-site-window-unresolved",
-        detail: `Call-site window at 0x${caller.instructionAddress.toString(16)} resolved as ${window.status}`,
+        detail: `No bounded call-site window could be decoded around 0x${caller.instructionAddress.toString(16)}.`,
+      });
+    }
+    if (window.backwardDecodeAmbiguous) {
+      ambiguities.push({
+        kind: "call-site-window-backward-decode",
+        detail: `Multiple bounded Thumb predecessor decodings can reach call site 0x${caller.instructionAddress.toString(16)}; preserve that ambiguity when interpreting pre-call context.`,
       });
     }
 
@@ -103,7 +110,7 @@ export async function traceNdsFunction(
       instructionAddress: caller.instructionAddress,
       instructionRomOffset: caller.instructionRomOffset,
       mode: caller.mode,
-      callSiteWindow: "instructions" in window ? window.instructions : [],
+      callSiteWindow: window.instructions,
     });
   }
 

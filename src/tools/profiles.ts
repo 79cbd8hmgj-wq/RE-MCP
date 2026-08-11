@@ -82,6 +82,7 @@ const staticCore = [
   "re_resume_investigation",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
+  "server_capabilities",
 ] as const satisfies readonly ShippedToolName[];
 
 const ghidraEscalation = [
@@ -111,11 +112,13 @@ const runtime = [
   "desmume_pause",
   "desmume_wait_for_stop",
   "desmume_capture_stop_context",
+  "desmume_executable_ranges_replace",
   "desmume_capture_runtime_evidence",
   "desmume_stop",
   "nds_correlate_stop_context",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
+  "server_capabilities",
 ] as const satisfies readonly ShippedToolName[];
 
 const build = [
@@ -126,6 +129,7 @@ const build = [
   "nds_mutation_verify",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
+  "server_capabilities",
 ] as const satisfies readonly ShippedToolName[];
 
 const project = [
@@ -138,6 +142,7 @@ const project = [
   "verify_file_sha256",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
+  "server_capabilities",
 ] as const satisfies readonly ShippedToolName[];
 
 export const TOOL_PROFILES: Readonly<Record<ToolProfileName, readonly string[]>> = Object.freeze({

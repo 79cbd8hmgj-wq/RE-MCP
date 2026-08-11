@@ -160,6 +160,50 @@ test("trace function returns bounded direct callers and deterministic proof cont
   );
 });
 
+test("trace function preserves bounded instructions before a call site", async () => {
+  const fixture = await createNdsFixture({ arm9Size: 0x80 });
+  const map = await readNdsRomMap(fixture.romPath);
+  const backend = new FakeBackend(new Map([
+    [0x02000000, call(0x02000000, 0x02000018)],
+    [0x02000004, returned(0x02000004)],
+    [0x02000018, instruction(0x02000018, { mnemonic: "ldrb", operandsText: "r1, [r4, #0x12]" })],
+    [0x0200001c, instruction(0x0200001c, { mnemonic: "cmp", operandsText: "r1, #7" })],
+    [0x02000020, call(0x02000020, 0x02000040)],
+    [0x02000024, returned(0x02000024)],
+    [0x02000040, returned(0x02000040)],
+  ]));
+
+  const result = await traceNdsFunction(
+    map,
+    {
+      processor: "arm9",
+      runtimeAddress: 0x02000040,
+      mode: "arm",
+      proofScope: { kind: "main" },
+      seeds: [],
+    },
+    {
+      ...TRACE_LIMITS,
+      maxWindowInstructions: 4,
+      maxWindowBytes: 16,
+    },
+    backend,
+  );
+
+  const candidate = result.candidates.find(
+    (entry) => entry.instructionAddress === 0x02000020,
+  );
+  assert.notEqual(candidate, undefined);
+  assert.deepEqual(
+    candidate?.callSiteWindow.map((entry) => entry.address),
+    [0x02000018, 0x0200001c, 0x02000020, 0x02000024],
+  );
+  assert.deepEqual(
+    candidate?.callSiteWindow.map((entry) => entry.mnemonic),
+    ["ldrb", "cmp", "bl", "bx"],
+  );
+});
+
 test("trace function obeys candidate bounds instead of silently widening work", async () => {
   const fixture = await createNdsFixture({ arm9Size: 0x80 });
   const map = await readNdsRomMap(fixture.romPath);
@@ -220,6 +264,48 @@ test("data usage returns bounded direct references without semantic ranking", as
       (candidate) => candidate.reference.kind === "pc-relative-address",
     ),
     true,
+  );
+});
+
+test("data usage preserves bounded instructions before a reference site", async () => {
+  const fixture = await createNdsFixture({ arm9Size: 0x80 });
+  const map = await readNdsRomMap(fixture.romPath);
+  const backend = new FakeBackend(new Map([
+    [0x02000000, call(0x02000000, 0x02000018)],
+    [0x02000004, returned(0x02000004)],
+    [0x02000018, instruction(0x02000018, { mnemonic: "ldr", operandsText: "r2, [r4, #8]" })],
+    [0x0200001c, instruction(0x0200001c, { mnemonic: "cmp", operandsText: "r2, #3" })],
+    [0x02000020, addressReference(0x02000020, 0x02000040)],
+    [0x02000024, returned(0x02000024)],
+  ]));
+
+  const result = await investigateNdsDataUsage(
+    map,
+    {
+      processor: "arm9",
+      runtimeAddress: 0x02000040,
+      scope: { kind: "main" },
+      seeds: [],
+    },
+    {
+      ...DATA_LIMITS,
+      maxWindowInstructions: 4,
+      maxWindowBytes: 16,
+    },
+    backend,
+  );
+
+  const candidate = result.candidates.find(
+    (entry) => entry.reference.source.instructionAddress === 0x02000020,
+  );
+  assert.notEqual(candidate, undefined);
+  assert.deepEqual(
+    candidate?.callSiteWindow.map((entry) => entry.address),
+    [0x02000018, 0x0200001c, 0x02000020, 0x02000024],
+  );
+  assert.deepEqual(
+    candidate?.callSiteWindow.map((entry) => entry.mnemonic),
+    ["ldr", "cmp", "add", "bx"],
   );
 });
 
@@ -284,14 +370,17 @@ test("static orchestration exposure is profile-scoped and production services im
   assert.equal(TOOL_PROFILES["re-static-core"].includes("nds_mutation_build"), false);
   assert.equal(TOOL_PROFILES["re-static-core"].includes("desmume_continue"), false);
 
-  const [traceSource, dataSource, toolSource, indexSource] = await Promise.all([
+  const [traceSource, dataSource, contextSource, toolSource, indexSource] = await Promise.all([
     readFile("src/services/re-orchestration/trace-function.ts", "utf8"),
     readFile("src/services/re-orchestration/data-usage.ts", "utf8"),
+    readFile("src/services/re-orchestration/context-window.ts", "utf8"),
     readFile("src/tools/re-orchestration.ts", "utf8"),
     readFile("src/index.ts", "utf8"),
   ]);
-  const productionSource = `${traceSource}\n${dataSource}\n${toolSource}`;
+  const productionSource = `${traceSource}\n${dataSource}\n${contextSource}\n${toolSource}`;
   assert.doesNotMatch(productionSource, /nds-mutation|desmume|OwnedProcessManager/);
+  assert.match(traceSource, /disassembleReContextWindow/);
+  assert.match(dataSource, /disassembleReContextWindow/);
   assert.match(indexSource, /registerReOrchestrationTools\(server, config\)/);
   assert.match(indexSource, /"re_trace_function"/);
   assert.match(indexSource, /"re_investigate_data_usage"/);
