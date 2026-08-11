@@ -40,9 +40,11 @@ async function listProfileTools(profile: string) {
   }
 }
 
-test("re-full retains every shipped low-level tool", () => {
-  assert.equal(FULL_TOOL_NAMES.length, 52);
+test("re-full retains every shipped tool including high-level orchestration", () => {
+  assert.equal(FULL_TOOL_NAMES.length, 54);
   assert.deepEqual(TOOL_PROFILES["re-full"], FULL_TOOL_NAMES);
+  assert.equal(FULL_TOOL_NAMES.includes("re_trace_function"), true);
+  assert.equal(FULL_TOOL_NAMES.includes("re_investigate_data_usage"), true);
 });
 
 test("profiles are allowlists and invalid profile names fail closed", () => {
