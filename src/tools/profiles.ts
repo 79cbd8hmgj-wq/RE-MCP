@@ -71,7 +71,6 @@ export const FULL_TOOL_NAMES = [
 export type ShippedToolName = (typeof FULL_TOOL_NAMES)[number];
 
 const staticCore = [
-  "verify_file_sha256",
   "nds_inspect_rom",
   "nds_resolve_runtime_address",
   "nds_disassemble_range",
