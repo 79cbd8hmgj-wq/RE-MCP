@@ -72,7 +72,6 @@ export type ShippedToolName = (typeof FULL_TOOL_NAMES)[number];
 
 const staticCore = [
   "nds_inspect_rom",
-  "nds_resolve_runtime_address",
   "nds_disassemble_range",
   "nds_find_xrefs",
   "nds_search_pattern",
