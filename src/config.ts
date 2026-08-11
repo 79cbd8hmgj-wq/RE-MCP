@@ -1,17 +1,25 @@
 import path from "node:path";
 
+import {
+  isToolProfileName,
+  TOOL_PROFILE_NAMES,
+  type ToolProfileName,
+} from "./tools/profiles.js";
+
 export interface ServerConfig {
   readonly workspaceRoot: string;
   readonly commandTimeoutMs: number;
   readonly maxOutputBytes: number;
   readonly ghidraHome?: string | null;
   readonly ghidraTimeoutMs?: number;
+  readonly toolProfile: ToolProfileName;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const DEFAULT_GHIDRA_TIMEOUT_MS = 900_000;
 const MAX_GHIDRA_TIMEOUT_MS = 3_600_000;
+const DEFAULT_TOOL_PROFILE: ToolProfileName = "re-full";
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined || value.length === 0) {
@@ -36,6 +44,16 @@ function boundedPositiveInteger(
     throw new Error(`${name} must be between 1 and ${maximum}`);
   }
   return parsed;
+}
+
+function toolProfile(value: string | undefined): ToolProfileName {
+  const normalized = value?.trim() || DEFAULT_TOOL_PROFILE;
+  if (!isToolProfileName(normalized)) {
+    throw new Error(
+      `RE_MCP_TOOL_PROFILE must be one of: ${TOOL_PROFILE_NAMES.join(", ")}`,
+    );
+  }
+  return normalized;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -65,5 +83,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
       MAX_GHIDRA_TIMEOUT_MS,
       "RE_MCP_GHIDRA_TIMEOUT_MS",
     ),
+    toolProfile: toolProfile(environment.RE_MCP_TOOL_PROFILE),
   };
 }
