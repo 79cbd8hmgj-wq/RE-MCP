@@ -146,7 +146,7 @@ export function registerReOrchestrationTools(
 ): void {
   server.tool(
     "re_trace_function",
-    "Read-only bounded orchestration for one canonical NDS function: prove the entry, collect direct callers, summarize CFG evidence, persist resumable exact-ROM-SHA state, and return compact call-site windows without semantic guessing.",
+    "Prove one NDS function, collect bounded direct callers/CFG context, and persist exact-ROM-SHA resumable evidence without semantic guessing.",
     {
       rom: z.string().min(1),
       processor: processorSchema,
@@ -216,7 +216,7 @@ export function registerReOrchestrationTools(
 
   server.tool(
     "re_investigate_data_usage",
-    "Read-only bounded orchestration for a known NDS runtime/data address or deterministic hit: resolve canonical ownership, find direct users, persist resumable exact-ROM-SHA state, and return compact source windows without semantic ranking.",
+    "Resolve one NDS data address, collect bounded direct users/context, and persist exact-ROM-SHA resumable evidence without semantic ranking.",
     {
       rom: z.string().min(1),
       processor: processorSchema,
@@ -307,7 +307,7 @@ export function registerReOrchestrationTools(
 
   server.tool(
     "re_resume_investigation",
-    "Revalidate the exact ROM SHA and return integrity-bound completed high-level operations, artifact hashes, controller-state-only checkpoint data, and the mechanically smallest unresolved next actions without replaying prior primitive analysis.",
+    "Revalidate the ROM SHA and return integrity-bound resumable evidence, checkpoint state, and unresolved next actions.",
     { rom: z.string().min(1) },
     async ({ rom }) => {
       const operation = "re_resume_investigation";
