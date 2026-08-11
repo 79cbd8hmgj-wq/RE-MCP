@@ -63,6 +63,8 @@ export const FULL_TOOL_NAMES = [
   "nds_ghidra_list_calls",
   "re_trace_function",
   "re_investigate_data_usage",
+  "re_decompile_candidate",
+  "re_resume_investigation",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
   "server_capabilities",
@@ -77,12 +79,14 @@ const staticCore = [
   "nds_search_pattern",
   "re_trace_function",
   "re_investigate_data_usage",
+  "re_resume_investigation",
   "controller_checkpoint_read",
   "controller_checkpoint_write",
 ] as const satisfies readonly ShippedToolName[];
 
 const ghidraEscalation = [
   ...staticCore,
+  "re_decompile_candidate",
   "nds_ghidra_status",
   "nds_ghidra_inspect_function",
   "nds_ghidra_decompile_function",

@@ -7,10 +7,18 @@ import { DisassemblyBackendError } from "../services/disassembly/backend.js";
 import { createCapstoneArmBackend } from "../services/disassembly/capstone.js";
 import { NdsError } from "../services/nds/errors.js";
 import type { FunctionSearchScope } from "../services/nds/function-source.js";
-import { readNdsRomMap } from "../services/nds/rom-map.js";
+import { readNdsRomMap, type NdsRomMap } from "../services/nds/rom-map.js";
 import type { ReferenceSearchScope } from "../services/nds/xref-source.js";
 import { investigateNdsDataUsage } from "../services/re-orchestration/data-usage.js";
+import { decompileReCandidate } from "../services/re-orchestration/decompile-candidate.js";
+import {
+  InvestigationJournalError,
+  persistInvestigationResult,
+} from "../services/re-orchestration/investigation-journal.js";
+import { persistInvestigationResumeArtifact } from "../services/re-orchestration/resume-artifact.js";
+import { resumeInvestigation } from "../services/re-orchestration/resume.js";
 import { traceNdsFunction } from "../services/re-orchestration/trace-function.js";
+import type { ReEvidenceEnvelope } from "../services/re-orchestration/types.js";
 
 const uint32Schema = z.number().int().min(0).max(0xffffffff);
 const processorSchema = z.enum(["arm9", "arm7"]);
@@ -30,6 +38,7 @@ const cfgInstructionLimitSchema = z.number().int().min(1).max(2048).default(512)
 const cfgByteLimitSchema = z.number().int().min(4).max(16384).default(2048);
 const windowInstructionLimitSchema = z.number().int().min(1).max(16).default(4);
 const windowByteLimitSchema = z.number().int().min(2).max(128).default(32);
+const decompileCharacterLimitSchema = z.number().int().min(256).max(32768).default(8192);
 
 function scopeFromInput(
   includeMain: boolean,
@@ -71,7 +80,7 @@ function boundedResult(
       error: "Serialized RE orchestration result exceeds RE_MCP_MAX_OUTPUT_BYTES",
       operation,
       category: "output-bound-exceeded",
-      correctiveAction: "Reduce candidate, scan, CFG, or call-site window maxima and retry.",
+      correctiveAction: "Reduce candidate, scan, CFG, decompiler, or call-site window maxima and retry.",
     }, null, 2), true);
   }
   return textResultFromText(text, isError);
@@ -82,18 +91,53 @@ function errorResult(config: ServerConfig, operation: string, error: unknown) {
     ? error.category
     : error instanceof NdsError
       ? String(error.category)
-      : "orchestration-failure";
+      : error instanceof InvestigationJournalError
+        ? error.category
+        : "orchestration-failure";
   return boundedResult(config, operation, {
     error: error instanceof Error ? error.message : String(error),
     operation,
     category,
-    correctiveAction:
-      "Narrow the deterministic static-analysis scope, verify the exact ROM/component inputs, and retry without guessing through unresolved evidence.",
+    correctiveAction: error instanceof InvestigationJournalError
+      ? "Repair or remove only the corrupted exact-ROM-SHA investigation state after preserving it for diagnosis; RE-MCP will not report high-level success without durable resumable state."
+      : "Narrow the deterministic analysis scope, verify the exact ROM/component inputs, and retry without guessing through unresolved evidence.",
   }, true);
 }
 
 function derivedGraphLimit(instructions: number, ceiling: number): number {
   return Math.max(1, Math.min(ceiling, instructions));
+}
+
+async function persistEnvelope<T extends ReEvidenceEnvelope>(
+  map: NdsRomMap,
+  config: ServerConfig,
+  normalizedInputs: unknown,
+  result: T,
+): Promise<T & { readonly checkpointRevision: number }> {
+  const source = { sha256: map.sha256, sha256Prefix: map.sha256Prefix };
+  const resumeArtifact = await persistInvestigationResumeArtifact(
+    source,
+    config.workspaceRoot,
+    result,
+  );
+  const persistedArtifacts = [...result.artifacts, resumeArtifact];
+  const resultWithArtifact = { ...result, artifacts: persistedArtifacts };
+  const persisted = await persistInvestigationResult(
+    source,
+    config.workspaceRoot,
+    {
+      operation: result.operation,
+      normalizedInputs,
+      completedStages: result.completedPrimitiveStages,
+      artifacts: persistedArtifacts,
+      result: resultWithArtifact,
+      recommendedNextAction: result.recommendedNextAction,
+    },
+  );
+  return {
+    ...resultWithArtifact,
+    checkpointRevision: persisted.entry.sequence,
+  } as T & { readonly checkpointRevision: number };
 }
 
 export function registerReOrchestrationTools(
@@ -102,7 +146,7 @@ export function registerReOrchestrationTools(
 ): void {
   server.tool(
     "re_trace_function",
-    "Read-only bounded orchestration for one canonical NDS function: prove the entry, collect direct callers, summarize CFG evidence, and return compact call-site windows without semantic guessing.",
+    "Read-only bounded orchestration for one canonical NDS function: prove the entry, collect direct callers, summarize CFG evidence, persist resumable exact-ROM-SHA state, and return compact call-site windows without semantic guessing.",
     {
       rom: z.string().min(1),
       processor: processorSchema,
@@ -121,61 +165,46 @@ export function registerReOrchestrationTools(
       maxWindowInstructions: windowInstructionLimitSchema,
       maxWindowBytes: windowByteLimitSchema,
     },
-    async ({
-      rom,
-      processor,
-      runtimeAddress,
-      mode,
-      overlayId,
-      includeMain,
-      overlayIds,
-      seeds,
-      maxCandidates,
-      maxProofComponents,
-      maxProofInstructions,
-      maxProofBytes,
-      maxCfgInstructions,
-      maxCfgBytes,
-      maxWindowInstructions,
-      maxWindowBytes,
-    }) => {
+    async (input) => {
       const operation = "re_trace_function";
       try {
-        const map = await readNdsRomMap(resolveInside(config.workspaceRoot, rom));
+        const romPath = resolveInside(config.workspaceRoot, input.rom);
+        const map = await readNdsRomMap(romPath);
         const backend = await createCapstoneArmBackend();
         try {
           const result = await traceNdsFunction(
             map,
             {
-              processor,
-              runtimeAddress,
-              mode,
-              ...(overlayId === undefined ? {} : { overlayId }),
-              proofScope: scopeFromInput(includeMain, overlayIds, overlayId),
-              seeds,
+              processor: input.processor,
+              runtimeAddress: input.runtimeAddress,
+              mode: input.mode,
+              ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
+              proofScope: scopeFromInput(input.includeMain, input.overlayIds, input.overlayId),
+              seeds: input.seeds,
             },
             {
-              maxCandidates,
-              maxWindowInstructions,
-              maxWindowBytes,
+              maxCandidates: input.maxCandidates,
+              maxWindowInstructions: input.maxWindowInstructions,
+              maxWindowBytes: input.maxWindowBytes,
               proof: {
-                maxComponents: maxProofComponents,
-                maxBlocks: derivedGraphLimit(maxProofInstructions, 512),
-                maxInstructions: maxProofInstructions,
-                maxBytes: maxProofBytes,
-                maxEdges: derivedGraphLimit(maxProofInstructions * 2, 4096),
-                maxXrefs: Math.max(maxCandidates, Math.min(2048, maxCandidates * 4)),
+                maxComponents: input.maxProofComponents,
+                maxBlocks: derivedGraphLimit(input.maxProofInstructions, 512),
+                maxInstructions: input.maxProofInstructions,
+                maxBytes: input.maxProofBytes,
+                maxEdges: derivedGraphLimit(input.maxProofInstructions * 2, 4096),
+                maxXrefs: Math.max(input.maxCandidates, Math.min(2048, input.maxCandidates * 4)),
               },
               cfg: {
-                maxBlocks: derivedGraphLimit(maxCfgInstructions, 256),
-                maxInstructions: maxCfgInstructions,
-                maxBytes: maxCfgBytes,
-                maxEdges: derivedGraphLimit(maxCfgInstructions * 2, 1024),
+                maxBlocks: derivedGraphLimit(input.maxCfgInstructions, 256),
+                maxInstructions: input.maxCfgInstructions,
+                maxBytes: input.maxCfgBytes,
+                maxEdges: derivedGraphLimit(input.maxCfgInstructions * 2, 1024),
               },
             },
             backend,
           );
-          return boundedResult(config, operation, result);
+          const persisted = await persistEnvelope(map, config, input, result);
+          return boundedResult(config, operation, persisted);
         } finally {
           backend.close();
         }
@@ -187,7 +216,7 @@ export function registerReOrchestrationTools(
 
   server.tool(
     "re_investigate_data_usage",
-    "Read-only bounded orchestration for a known NDS runtime/data address or deterministic hit: resolve canonical ownership, find direct users, and return compact source windows without semantic ranking.",
+    "Read-only bounded orchestration for a known NDS runtime/data address or deterministic hit: resolve canonical ownership, find direct users, persist resumable exact-ROM-SHA state, and return compact source windows without semantic ranking.",
     {
       rom: z.string().min(1),
       processor: processorSchema,
@@ -202,52 +231,92 @@ export function registerReOrchestrationTools(
       maxWindowInstructions: windowInstructionLimitSchema,
       maxWindowBytes: windowByteLimitSchema,
     },
-    async ({
-      rom,
-      processor,
-      runtimeAddress,
-      includeMain,
-      overlayIds,
-      seeds,
-      maxCandidates,
-      maxScanComponents,
-      maxScanInstructions,
-      maxScanBytes,
-      maxWindowInstructions,
-      maxWindowBytes,
-    }) => {
+    async (input) => {
       const operation = "re_investigate_data_usage";
       try {
-        const map = await readNdsRomMap(resolveInside(config.workspaceRoot, rom));
+        const romPath = resolveInside(config.workspaceRoot, input.rom);
+        const map = await readNdsRomMap(romPath);
         const backend = await createCapstoneArmBackend();
         try {
           const result = await investigateNdsDataUsage(
             map,
             {
-              processor,
-              runtimeAddress,
-              scope: scopeFromInput(includeMain, overlayIds),
-              seeds,
+              processor: input.processor,
+              runtimeAddress: input.runtimeAddress,
+              scope: scopeFromInput(input.includeMain, input.overlayIds),
+              seeds: input.seeds,
             },
             {
-              maxCandidates,
-              maxWindowInstructions,
-              maxWindowBytes,
+              maxCandidates: input.maxCandidates,
+              maxWindowInstructions: input.maxWindowInstructions,
+              maxWindowBytes: input.maxWindowBytes,
               scan: {
-                maxComponents: maxScanComponents,
-                maxBlocks: derivedGraphLimit(maxScanInstructions, 512),
-                maxInstructions: maxScanInstructions,
-                maxBytes: maxScanBytes,
-                maxEdges: derivedGraphLimit(maxScanInstructions * 2, 4096),
-                maxXrefs: maxCandidates,
+                maxComponents: input.maxScanComponents,
+                maxBlocks: derivedGraphLimit(input.maxScanInstructions, 512),
+                maxInstructions: input.maxScanInstructions,
+                maxBytes: input.maxScanBytes,
+                maxEdges: derivedGraphLimit(input.maxScanInstructions * 2, 4096),
+                maxXrefs: input.maxCandidates,
               },
             },
             backend,
           );
-          return boundedResult(config, operation, result);
+          const persisted = await persistEnvelope(map, config, input, result);
+          return boundedResult(config, operation, persisted);
         } finally {
           backend.close();
         }
+      } catch (error) {
+        return errorResult(config, operation, error);
+      }
+    },
+  );
+
+  server.tool(
+    "re_decompile_candidate",
+    "Escalate exactly one already-identified canonical candidate to an existing current exact-ROM-SHA Ghidra project. Never bootstraps/reconciles automatically; persists the bounded non-authoritative decompiler candidate before success.",
+    {
+      rom: z.string().min(1),
+      processor: processorSchema,
+      runtimeAddress: uint32Schema,
+      overlayId: uint32Schema.optional(),
+      maxCharacters: decompileCharacterLimitSchema,
+    },
+    async (input) => {
+      const operation = "re_decompile_candidate";
+      try {
+        const romPath = resolveInside(config.workspaceRoot, input.rom);
+        const map = await readNdsRomMap(romPath);
+        const result = await decompileReCandidate(
+          romPath,
+          {
+            processor: input.processor,
+            runtimeAddress: input.runtimeAddress,
+            ...(input.overlayId === undefined ? {} : { overlayId: input.overlayId }),
+            maxCharacters: input.maxCharacters,
+          },
+          config,
+        );
+        const persisted = await persistEnvelope(map, config, input, result);
+        return boundedResult(config, operation, persisted);
+      } catch (error) {
+        return errorResult(config, operation, error);
+      }
+    },
+  );
+
+  server.tool(
+    "re_resume_investigation",
+    "Revalidate the exact ROM SHA and return integrity-bound completed high-level operations, artifact hashes, controller-state-only checkpoint data, and the mechanically smallest unresolved next actions without replaying prior primitive analysis.",
+    { rom: z.string().min(1) },
+    async ({ rom }) => {
+      const operation = "re_resume_investigation";
+      try {
+        const result = await resumeInvestigation(
+          resolveInside(config.workspaceRoot, rom),
+          config,
+        );
+        return boundedResult(config, operation, result);
       } catch (error) {
         return errorResult(config, operation, error);
       }
