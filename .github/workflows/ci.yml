@@ -23,11 +23,11 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
-      - name: Config test
-        run: node --import tsx --test tests/config.test.ts
-      - name: Tool profile integration test
-        run: node --import tsx --test tests/tool-profiles.test.ts
-      - name: Test
+      - name: Tests A-M
+        run: node --import tsx --test tests/[a-m]*.test.ts
+      - name: Tests N-Z
+        run: node --import tsx --test tests/[n-z]*.test.ts
+      - name: Full test suite
         run: npm test
       - name: Build
         run: npm run build
