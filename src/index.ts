@@ -145,6 +145,7 @@ registerControllerCheckpointTools(server, config);
 
 server.tool(
   "server_capabilities",
+  "Describe the current RE-MCP safety boundary and active tool profile.",
   {},
   async () =>
     textResult({
