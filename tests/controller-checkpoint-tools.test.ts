@@ -189,11 +189,15 @@ test("stale checkpoint writes return structured corrective errors", async () => 
   }
 });
 
-test("controller checkpoint registration and authority are surfaced by server capabilities", async () => {
-  const source = await import("node:fs/promises").then(({ readFile }) => readFile("src/index.ts", "utf8"));
+test("controller checkpoint registration, profile exposure, and authority are surfaced", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const [source, profiles] = await Promise.all([
+    readFile("src/index.ts", "utf8"),
+    readFile("src/tools/profiles.ts", "utf8"),
+  ]);
   assert.match(source, /registerControllerCheckpointTools\(server, config\)/);
-  assert.match(source, /controller_checkpoint_read/);
-  assert.match(source, /controller_checkpoint_write/);
+  assert.match(profiles, /controller_checkpoint_read/);
+  assert.match(profiles, /controller_checkpoint_write/);
   assert.match(source, /controller-state-only/);
   assert.match(source, /provider-neutral|controller checkpoint/i);
 });
